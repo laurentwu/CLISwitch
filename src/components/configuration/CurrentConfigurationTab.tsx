@@ -162,8 +162,6 @@ export function CurrentConfigurationTab({
                 <dd className="path-text">{item.executablePath ?? "—"}</dd>
                 <dt>{t("config.directory")}</dt>
                 <dd className="path-text">{item.configDirectory}</dd>
-                <dt>{t("config.source")}</dt>
-                <dd>{item.source}</dd>
                 <dt>{t("config.provider")}</dt>
                 <dd>{item.current?.providerName ?? "—"}</dd>
                 <dt>{t("config.protocol")}</dt>

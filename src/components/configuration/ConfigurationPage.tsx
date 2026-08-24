@@ -75,10 +75,7 @@ export function ConfigurationPage({
   return (
     <div className="page">
       <header className="page-header">
-        <div>
-          <h1>{t("config.title")}</h1>
-          <p>Claude Code · Codex CLI · OpenCode</p>
-        </div>
+        <h1>{t("config.title")}</h1>
       </header>
       <ConfigurationTabs
         configurations={configurations.data}
