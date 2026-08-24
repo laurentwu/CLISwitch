@@ -40,6 +40,7 @@ impl HostEnvironment {
             "CODEX_HOME",
             "XDG_CONFIG_HOME",
             "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
             "APPDATA",
             "LOCALAPPDATA",
             "OPENCODE_CONFIG",

@@ -183,6 +183,344 @@ async fn opencode_stable_schema_maps_each_protocol_to_the_correct_package() {
     }
 }
 
+#[tokio::test]
+async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let mut host = environment(temp.path());
+    let state_home = temp.path().join("custom-state");
+    host.variables.insert(
+        "XDG_STATE_HOME".into(),
+        state_home.to_string_lossy().into_owned(),
+    );
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "provider": {
+            "zhipuai-coding-plan": {
+              "models": {
+                "glm-5.3": { "name": "GLM-5.3" }
+              }
+            }
+          }
+        }"#,
+    )
+    .await;
+    write_fixture(
+        paths.auth_file.as_ref().unwrap(),
+        r#"{
+          "zhipuai-coding-plan": {
+            "type": "api",
+            "key": "fixture-existing-key"
+          }
+        }"#,
+    )
+    .await;
+    let state_file = state_home.join("opencode").join("model.json");
+    write_fixture(
+        &state_file,
+        r#"{
+          "recent": [
+            { "providerID": "zhipuai-coding-plan", "modelID": "glm-5.3" },
+            { "providerID": "zhipuai-coding-plan", "modelID": "glm-5.2" }
+          ]
+        }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+
+    assert_eq!(
+        current.current.provider_name.as_deref(),
+        Some("zhipuai-coding-plan")
+    );
+    assert_eq!(current.current.model.as_deref(), Some("glm-5.3"));
+    assert_eq!(current.current.auth_kind.as_deref(), Some("api"));
+    assert_eq!(current.current.protocol, None);
+    assert!(current.unmanaged_candidate.is_none());
+    assert!(current.current.diagnostics.is_empty());
+    let state_source = current
+        .current
+        .sources
+        .iter()
+        .find(|source| source.source_id == "opencode-model-state")
+        .unwrap();
+    assert_eq!(state_source.display_path, state_file);
+    assert!(state_source.digest.is_some());
+}
+
+#[tokio::test]
+async fn opencode_explicit_default_model_takes_priority_over_last_used_state() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        include_str!("fixtures/opencode/opencode.jsonc"),
+    )
+    .await;
+    write_fixture(
+        paths.auth_file.as_ref().unwrap(),
+        include_str!("fixtures/opencode/auth.json"),
+    )
+    .await;
+    write_fixture(
+        &temp
+            .path()
+            .join(".local")
+            .join("state")
+            .join("opencode")
+            .join("model.json"),
+        r#"{
+          "recent": [
+            { "providerID": "other-provider", "modelID": "other-model" }
+          ]
+        }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+
+    assert_eq!(
+        current.current.provider_name.as_deref(),
+        Some("user_provider")
+    );
+    assert_eq!(current.current.model.as_deref(), Some("existing-model"));
+    assert!(
+        current
+            .current
+            .sources
+            .iter()
+            .all(|source| source.source_id != "opencode-model-state")
+    );
+}
+
+#[tokio::test]
+async fn opencode_invalid_explicit_model_does_not_fall_back_to_last_used_state() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "model": "missing-provider-separator",
+          "provider": {
+            "only-provider": {
+              "models": { "only-model": {} }
+            }
+          }
+        }"#,
+    )
+    .await;
+    write_fixture(
+        &temp
+            .path()
+            .join(".local")
+            .join("state")
+            .join("opencode")
+            .join("model.json"),
+        r#"{
+          "recent": [
+            { "providerID": "state-provider", "modelID": "state-model" }
+          ]
+        }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+
+    assert_eq!(current.current.provider_name, None);
+    assert_eq!(current.current.model, None);
+    assert!(
+        current
+            .current
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("provider/model format"))
+    );
+    assert!(
+        current
+            .current
+            .sources
+            .iter()
+            .all(|source| source.source_id != "opencode-model-state")
+    );
+}
+
+#[tokio::test]
+async fn opencode_falls_back_to_one_unambiguous_configured_model() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "provider": {
+            "only-provider": {
+              "models": {
+                "only-model": { "name": "Only model" }
+              }
+            }
+          }
+        }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+
+    assert_eq!(
+        current.current.provider_name.as_deref(),
+        Some("only-provider")
+    );
+    assert_eq!(current.current.model.as_deref(), Some("only-model"));
+    assert!(current.current.diagnostics.is_empty());
+    let state_source = current
+        .current
+        .sources
+        .iter()
+        .find(|source| source.source_id == "opencode-model-state")
+        .unwrap();
+    assert!(state_source.digest.is_none());
+}
+
+#[tokio::test]
+async fn opencode_invalid_recent_entry_falls_back_to_the_unique_configured_model() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "provider": {
+            "only-provider": {
+              "models": { "only-model": {} }
+            }
+          }
+        }"#,
+    )
+    .await;
+    write_fixture(
+        &temp
+            .path()
+            .join(".local")
+            .join("state")
+            .join("opencode")
+            .join("model.json"),
+        r#"{
+          "recent": [
+            { "providerID": "incomplete-provider" }
+          ]
+        }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+
+    assert_eq!(
+        current.current.provider_name.as_deref(),
+        Some("only-provider")
+    );
+    assert_eq!(current.current.model.as_deref(), Some("only-model"));
+    assert!(
+        current
+            .current
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("no valid modelID"))
+    );
+    assert!(
+        current
+            .current
+            .sources
+            .iter()
+            .find(|source| source.source_id == "opencode-model-state")
+            .is_some_and(|source| source.digest.is_some())
+    );
+}
+
+#[tokio::test]
+async fn opencode_ignores_invalid_model_state_and_uses_the_unique_configured_model() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "provider": {
+            "only-provider": {
+              "models": { "only-model": {} }
+            }
+          }
+        }"#,
+    )
+    .await;
+    write_fixture(
+        &temp
+            .path()
+            .join(".local")
+            .join("state")
+            .join("opencode")
+            .join("model.json"),
+        "{ invalid json",
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+
+    assert_eq!(
+        current.current.provider_name.as_deref(),
+        Some("only-provider")
+    );
+    assert_eq!(current.current.model.as_deref(), Some("only-model"));
+    assert!(
+        current
+            .current
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("parse OpenCode model state"))
+    );
+}
+
+#[tokio::test]
+async fn opencode_does_not_guess_between_ambiguous_configured_models() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "provider": {
+            "one-provider": {
+              "models": {
+                "first-model": {},
+                "second-model": {}
+              }
+            }
+          }
+        }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+
+    assert_eq!(current.current.provider_name, None);
+    assert_eq!(current.current.model, None);
+    assert!(
+        current
+            .current
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("multiple configured models"))
+    );
+}
+
 #[test]
 fn oauth_fixtures_are_recognized_locally_with_stable_account_identity() {
     assert_eq!(
