@@ -573,7 +573,17 @@ pub struct UnmanagedCandidate {
     pub snapshot_id: Uuid,
     pub cli_id: CliId,
     pub source_digests: BTreeMap<PathBuf, Option<String>>,
-    pub connection: ProviderConnection,
+    pub data: UnmanagedCandidateData,
+}
+
+#[derive(Debug, Clone)]
+pub enum UnmanagedCandidateData {
+    Api(ProviderConnection),
+    Oauth {
+        kind: OAuthKind,
+        auth_file: PathBuf,
+        digest: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -18,6 +18,7 @@ use crate::{
     error::{AppError, AppResult},
     services::{
         apply_coordinator::ApplyProgressEvent,
+        cli_manager::UnmanagedCandidateSaveRequest,
         model_catalog::{ReleaseCheck, check_github_release as check_release},
         oauth::{OAuthSessionSnapshot, validate_oauth_browser_url},
     },
@@ -216,16 +217,20 @@ pub async fn save_unmanaged_candidate_provider(
     coding_plan: bool,
     coding_plan_name: Option<String>,
 ) -> AppResult<PublicProvider> {
+    let _mutation_guard = state.apply.try_mutation_guard()?;
     let settings = state.repository.get_settings().await?;
     let provider = state
         .cli_manager
         .save_unmanaged_candidate(
+            &state.oauth,
             &settings,
-            snapshot_id,
-            candidate_id,
-            name,
-            coding_plan,
-            coding_plan_name,
+            UnmanagedCandidateSaveRequest {
+                snapshot_id,
+                candidate_id,
+                name,
+                coding_plan,
+                coding_plan_name,
+            },
         )
         .await?;
     Ok(provider.public(Vec::new()))
