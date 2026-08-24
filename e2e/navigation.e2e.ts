@@ -1,4 +1,14 @@
 describe("CLISwitch desktop shell", () => {
+  const waitForSelectedConfiguration = async (name: string) => {
+    await browser.waitUntil(
+      async () => {
+        const selected = await $('[role=tab][aria-selected="true"]');
+        return (await selected.isExisting()) && (await selected.getText()) === name;
+      },
+      { timeoutMsg: `Expected configuration tab "${name}" to become selected` },
+    );
+  };
+
   it("opens on Current configuration and exposes exactly three top-level sections", async () => {
     await expect($("h1")).toHaveText(expect.stringMatching(/Configurations|配置/));
     const navigation = await $$("nav button");
@@ -21,7 +31,7 @@ describe("CLISwitch desktop shell", () => {
     await $("[role=dialog] input").setValue("E2E configuration");
     const create = await $("[role=dialog] .modal-footer button:last-child");
     await create.click();
-    await expect($('[role=tab][aria-selected="true"]')).toHaveText("E2E configuration");
+    await waitForSelectedConfiguration("E2E configuration");
 
     const navigation = await $$("nav button");
     await navigation[1].click();
@@ -30,6 +40,6 @@ describe("CLISwitch desktop shell", () => {
     await expect($("h1")).toHaveText(expect.stringMatching(/Settings|设置/));
     await navigation[0].click();
     await expect($("h1")).toHaveText(expect.stringMatching(/Configurations|配置/));
-    await expect($('[role=tab][aria-selected="true"]')).toHaveText("E2E configuration");
+    await waitForSelectedConfiguration("E2E configuration");
   });
 });
