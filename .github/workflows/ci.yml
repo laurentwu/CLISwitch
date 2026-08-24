@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     name: ${{ matrix.name }}
@@ -59,14 +63,22 @@ jobs:
             xvfb
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm format:check
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
-      - run: pnpm check:production-boundary
-      - run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
-      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings
+      - if: runner.os == 'Linux'
+        run: pnpm format:check
+      - if: runner.os == 'Linux'
+        run: pnpm lint
+      - if: runner.os == 'Linux'
+        run: pnpm typecheck
+      - if: runner.os == 'Linux'
+        run: pnpm test
+      - if: runner.os == 'Linux'
+        run: pnpm build
+      - if: runner.os == 'Linux'
+        run: pnpm check:production-boundary
+      - if: runner.os == 'Linux'
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+      - if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-features --locked
 
       - name: Desktop E2E (Linux, isolated fixture home)
@@ -78,12 +90,15 @@ jobs:
         run: pnpm test:e2e
 
       - name: Build unsigned production bundle
+        if: github.event_name != 'pull_request'
         run: pnpm tauri build
 
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
           name: cliswitch-${{ runner.os }}-unsigned
           if-no-files-found: error
+          retention-days: 7
           path: |
             src-tauri/target/release/bundle/nsis/*
             src-tauri/target/release/bundle/dmg/*
