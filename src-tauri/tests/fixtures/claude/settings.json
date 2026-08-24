@@ -1,0 +1,11 @@
+{
+  // Scrubbed stable Claude Code settings fixture.
+  "permissions": { "allow": ["Read"] },
+  "env": {
+    "UNRELATED_VALUE": "keep-me",
+    "ANTHROPIC_BASE_URL": "https://old.invalid/v1",
+    "ANTHROPIC_AUTH_TOKEN": "fixture-old-key"
+  },
+  "model": "old-model",
+  "unknown": { "ordered": true }
+}

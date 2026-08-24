@@ -141,3 +141,13 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# CLISwitch build artifacts
+dist/
+src-tauri/target/
+src-tauri/gen/
+.idea/
+.DS_Store
+*.swp
+playwright-report/
+test-results/

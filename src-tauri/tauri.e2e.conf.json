@@ -1,0 +1,25 @@
+{
+  "build": {
+    "beforeBuildCommand": "pnpm build:e2e"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "e2e-main",
+          "description": "Test-only WebdriverIO bridge for the isolated E2E binary",
+          "windows": ["main"],
+          "platforms": ["linux", "macOS", "windows"],
+          "permissions": [
+            "core:default",
+            "core:event:allow-listen",
+            "core:event:allow-unlisten",
+            "wdio:default",
+            "wdio-webdriver:default"
+          ]
+        }
+      ]
+    }
+  }
+}

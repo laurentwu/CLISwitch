@@ -1,0 +1,7 @@
+Plan.md
+PlanReview-*.md
+pnpm-lock.yaml
+src-tauri/Cargo.lock
+src-tauri/gen/
+src-tauri/target/
+dist/
