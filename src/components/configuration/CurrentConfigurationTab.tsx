@@ -200,7 +200,11 @@ export function CurrentConfigurationTab({
                   variant="secondary"
                   onClick={() => {
                     setCandidate(item);
-                    setCandidateName(item.current?.providerName ?? item.label);
+                    setCandidateName(
+                      item.cliId === "codex" && item.current?.authKind === "oauth"
+                        ? "Codex OAuth"
+                        : (item.current?.providerName ?? item.label),
+                    );
                   }}
                 >
                   {t("config.manageCandidate")}

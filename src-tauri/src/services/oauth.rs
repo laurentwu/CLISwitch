@@ -114,6 +114,13 @@ struct OAuthPayload {
     manually_modified: bool,
     status: VerificationStatus,
     replace_provider_id: Option<Uuid>,
+    active_binding: Option<OAuthBindingPayload>,
+}
+
+struct OAuthBindingPayload {
+    cli_id: crate::domain::CliId,
+    native_digest: String,
+    account_identity: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -306,9 +313,86 @@ impl OAuthService {
                 manually_modified: false,
                 status: VerificationStatus::NotOnlineVerified,
                 replace_provider_id,
+                active_binding: None,
             })
             .await?;
         Ok(provider)
+    }
+
+    pub async fn save_active_auth_file(
+        &self,
+        kind: OAuthKind,
+        name: String,
+        path: &Path,
+        expected_digest: &str,
+        settings: &AppSettings,
+    ) -> AppResult<ProviderProfile> {
+        require_plaintext_ack(settings)?;
+        if kind != OAuthKind::Codex {
+            return Err(AppError::Unsupported(
+                "saving detected OAuth auth files is supported only for Codex".into(),
+            ));
+        }
+        let bytes = read_oauth_auth_file(path).await?;
+        let digest = bytes_digest(&bytes);
+        if digest != expected_digest {
+            return Err(AppError::Conflict(
+                "OAuth auth file changed after the scan".into(),
+            ));
+        }
+        let account_id = self
+            .registry
+            .get(kind.target_cli())
+            .validate_imported_auth(&bytes)?;
+        let raw_content = String::from_utf8(bytes)
+            .map_err(|_| AppError::Validation("OAuth auth content must be UTF-8 text".into()))?;
+        self.redactor.register(&raw_content);
+        let binding = OAuthBindingPayload {
+            cli_id: kind.target_cli(),
+            native_digest: digest.clone(),
+            account_identity: account_id.clone(),
+        };
+        if let Some(mut provider) = self
+            .find_matching_oauth_provider(kind, &digest, account_id.as_deref())
+            .await?
+        {
+            let expected_revision = provider.revision;
+            let now = Utc::now();
+            let ProviderData::Oauth(oauth) = &mut provider.data else {
+                unreachable!("OAuth match returned a non-OAuth provider");
+            };
+            oauth.raw_content = raw_content;
+            oauth.digest = digest;
+            oauth.account_id = account_id;
+            oauth.manually_modified = false;
+            oauth.verification = VerificationInfo {
+                status: VerificationStatus::NotOnlineVerified,
+                verified_at: None,
+                error: None,
+            };
+            provider.updated_at = now;
+            let relative = oauth_relative_path(provider.id);
+            self.write_and_update_active_provider(
+                &provider,
+                expected_revision,
+                &relative,
+                &binding,
+            )
+            .await?;
+            provider.revision = expected_revision + 1;
+            return Ok(provider);
+        }
+        self.save_oauth_payload(OAuthPayload {
+            kind,
+            name,
+            raw_content,
+            account_id: account_id.clone(),
+            manually_modified: false,
+            status: VerificationStatus::NotOnlineVerified,
+            replace_provider_id: None,
+            active_binding: Some(binding),
+        })
+        .await
     }
 
     pub async fn update_raw_content(
@@ -572,6 +656,7 @@ impl OAuthService {
                                         manually_modified: false,
                                         status: VerificationStatus::Valid,
                                         replace_provider_id,
+                                        active_binding: None,
                                     })
                                     .await
                                 {
@@ -714,29 +799,25 @@ impl OAuthService {
             manually_modified,
             status,
             replace_provider_id,
+            active_binding,
         } = payload;
+        if replace_provider_id.is_some() && active_binding.is_some() {
+            return Err(AppError::Validation(
+                "replacing an OAuth provider cannot create an active binding".into(),
+            ));
+        }
         self.redactor.register(&raw_content);
         let now = Utc::now();
         let digest = bytes_digest(raw_content.as_bytes());
-        if replace_provider_id.is_none() {
-            for existing in self.repository.list_providers().await? {
-                if existing.oauth_kind != Some(kind) {
-                    continue;
-                }
-                let profile = self.repository.get_provider(existing.id).await?;
-                let ProviderData::Oauth(existing_oauth) = profile.data else {
-                    continue;
-                };
-                let same_account = account_id
-                    .as_deref()
-                    .is_some_and(|account| existing_oauth.account_id.as_deref() == Some(account));
-                if existing_oauth.digest == digest || same_account {
-                    return Err(AppError::Conflict(format!(
-                        "OAuth credentials already exist as provider '{}'; update that provider instead",
-                        existing.name
-                    )));
-                }
-            }
+        if replace_provider_id.is_none()
+            && let Some(existing) = self
+                .find_matching_oauth_provider(kind, &digest, account_id.as_deref())
+                .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "OAuth credentials already exist as provider '{}'; update that provider instead",
+                existing.name
+            )));
         }
         let id = replace_provider_id.unwrap_or_else(Uuid::new_v4);
         let expected_revision = if let Some(id) = replace_provider_id {
@@ -782,16 +863,51 @@ impl OAuthService {
             let path = profile_directory.join("auth.txt");
             let target = resolve_target(&path, &profile_directory).await?;
             atomic_replace(&target, oauth_raw(&provider)?.as_bytes()).await?;
-            if let Err(error) = self
-                .repository
-                .insert_provider(&provider, Some(&relative))
-                .await
-            {
+            let inserted = if let Some(binding) = active_binding {
+                self.repository
+                    .insert_provider_with_active_oauth_binding(
+                        &provider,
+                        &relative,
+                        binding.cli_id,
+                        &binding.native_digest,
+                        binding.account_identity.as_deref(),
+                    )
+                    .await
+            } else {
+                self.repository
+                    .insert_provider(&provider, Some(&relative))
+                    .await
+            };
+            if let Err(error) = inserted {
                 let _ = tokio::fs::remove_dir_all(profile_directory).await;
                 return Err(error);
             }
         }
         Ok(provider)
+    }
+
+    async fn find_matching_oauth_provider(
+        &self,
+        kind: OAuthKind,
+        digest: &str,
+        account_id: Option<&str>,
+    ) -> AppResult<Option<ProviderProfile>> {
+        for existing in self.repository.list_providers().await? {
+            if existing.oauth_kind != Some(kind) {
+                continue;
+            }
+            let profile = self.repository.get_provider(existing.id).await?;
+            let ProviderData::Oauth(existing_oauth) = &profile.data else {
+                continue;
+            };
+            let same_account = account_id
+                .zip(existing_oauth.account_id.as_deref())
+                .is_some_and(|(current, saved)| current == saved);
+            if existing_oauth.digest == digest || same_account {
+                return Ok(Some(profile));
+            }
+        }
+        Ok(None)
     }
 
     async fn write_and_update_provider(
@@ -800,16 +916,55 @@ impl OAuthService {
         expected_revision: i64,
         relative: &Path,
     ) -> AppResult<()> {
+        self.write_and_update_provider_transaction(provider, expected_revision, relative, None)
+            .await
+    }
+
+    async fn write_and_update_active_provider(
+        &self,
+        provider: &ProviderProfile,
+        expected_revision: i64,
+        relative: &Path,
+        binding: &OAuthBindingPayload,
+    ) -> AppResult<()> {
+        self.write_and_update_provider_transaction(
+            provider,
+            expected_revision,
+            relative,
+            Some(binding),
+        )
+        .await
+    }
+
+    async fn write_and_update_provider_transaction(
+        &self,
+        provider: &ProviderProfile,
+        expected_revision: i64,
+        relative: &Path,
+        binding: Option<&OAuthBindingPayload>,
+    ) -> AppResult<()> {
         let profile_directory = self.paths.auth_profile_dir(provider.id).await?;
         let path = profile_directory.join("auth.txt");
         let previous = tokio::fs::read(&path).await.ok();
         let target = resolve_target(&path, &profile_directory).await?;
         atomic_replace(&target, oauth_raw(provider)?.as_bytes()).await?;
-        if let Err(error) = self
-            .repository
-            .update_provider(provider, expected_revision, Some(relative))
-            .await
-        {
+        let updated = if let Some(binding) = binding {
+            self.repository
+                .update_provider_with_active_oauth_binding(
+                    provider,
+                    expected_revision,
+                    relative,
+                    binding.cli_id,
+                    &binding.native_digest,
+                    binding.account_identity.as_deref(),
+                )
+                .await
+        } else {
+            self.repository
+                .update_provider(provider, expected_revision, Some(relative))
+                .await
+        };
+        if let Err(error) = updated {
             if let Some(previous) = previous {
                 let _ = atomic_replace(&target, &previous).await;
             }
@@ -897,6 +1052,20 @@ fn oauth_raw(provider: &ProviderProfile) -> AppResult<&str> {
         ProviderData::Oauth(oauth) => Ok(&oauth.raw_content),
         _ => Err(AppError::Validation("provider is not OAuth".into())),
     }
+}
+
+pub(crate) async fn read_oauth_auth_file(path: &Path) -> AppResult<Vec<u8>> {
+    let metadata = tokio::fs::symlink_metadata(path).await?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_AUTH_BYTES {
+        return Err(AppError::Validation(
+            "OAuth auth file must be a regular file no larger than 1 MiB".into(),
+        ));
+    }
+    let bytes = tokio::fs::read(path).await?;
+    if bytes.len() as u64 > MAX_AUTH_BYTES {
+        return Err(AppError::Validation("OAuth auth file exceeds 1 MiB".into()));
+    }
+    Ok(bytes)
 }
 
 async fn write_marker(directory: &Path, marker: &OwnershipMarker) -> AppResult<()> {
@@ -1078,6 +1247,133 @@ mod tests {
                 .await,
             Err(AppError::Conflict(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn saving_active_auth_reuses_and_refreshes_a_matching_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = PrivatePaths::from_root(temp.path().join("data"));
+        paths.ensure().await.unwrap();
+        let redactor = Redactor::default();
+        let repository = Repository::open(&paths.database, redactor.clone())
+            .await
+            .unwrap();
+        let service = OAuthService::new(
+            repository.clone(),
+            paths,
+            AdapterRegistry::default(),
+            redactor,
+        );
+        let original =
+            br#"{"tokens":{"account_id":"account-a","access_token":"old-token"}}"#.to_vec();
+        let existing = service
+            .import_bytes(OAuthKind::Codex, "Existing".into(), original, None)
+            .await
+            .unwrap();
+        let refreshed =
+            br#"{"tokens":{"account_id":"account-a","access_token":"new-token"}}"#.to_vec();
+        let digest = bytes_digest(&refreshed);
+        let native_auth = temp.path().join("auth.json");
+        tokio::fs::write(&native_auth, &refreshed).await.unwrap();
+        let settings = AppSettings {
+            plaintext_risk_accepted: true,
+            ..AppSettings::default()
+        };
+
+        let saved = service
+            .save_active_auth_file(
+                OAuthKind::Codex,
+                "Ignored duplicate name".into(),
+                &native_auth,
+                &digest,
+                &settings,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.id, existing.id);
+        assert_eq!(saved.name, "Existing");
+        assert_eq!(saved.revision, existing.revision + 1);
+        let ProviderData::Oauth(saved_oauth) = &saved.data else {
+            unreachable!();
+        };
+        assert_eq!(saved_oauth.raw_content.as_bytes(), refreshed);
+        assert_eq!(saved_oauth.digest, digest);
+        assert_eq!(
+            saved_oauth.verification.status,
+            VerificationStatus::NotOnlineVerified
+        );
+
+        let saved_again = service
+            .save_active_auth_file(
+                OAuthKind::Codex,
+                "Another ignored name".into(),
+                &native_auth,
+                &digest,
+                &settings,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved_again.id, existing.id);
+        assert_eq!(repository.list_providers().await.unwrap().len(), 1);
+        let binding = repository
+            .get_active_oauth_binding(crate::domain::CliId::Codex)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(binding.provider_id, existing.id);
+        assert_eq!(binding.native_digest, digest);
+        assert_eq!(binding.account_identity.as_deref(), Some("account-a"));
+    }
+
+    #[tokio::test]
+    async fn saving_active_auth_enforces_plaintext_ack_and_codex_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = PrivatePaths::from_root(temp.path().join("data"));
+        paths.ensure().await.unwrap();
+        let redactor = Redactor::default();
+        let repository = Repository::open(&paths.database, redactor.clone())
+            .await
+            .unwrap();
+        let service = OAuthService::new(
+            repository.clone(),
+            paths,
+            AdapterRegistry::default(),
+            redactor,
+        );
+        let content = br#"{"tokens":{"account_id":"account-a","access_token":"fixture-token"}}"#;
+        let digest = bytes_digest(content);
+        let native_auth = temp.path().join("auth.json");
+        tokio::fs::write(&native_auth, content).await.unwrap();
+
+        assert!(matches!(
+            service
+                .save_active_auth_file(
+                    OAuthKind::Codex,
+                    "Blocked".into(),
+                    &native_auth,
+                    &digest,
+                    &AppSettings::default(),
+                )
+                .await,
+            Err(AppError::Blocked(_))
+        ));
+        let accepted = AppSettings {
+            plaintext_risk_accepted: true,
+            ..AppSettings::default()
+        };
+        assert!(matches!(
+            service
+                .save_active_auth_file(
+                    OAuthKind::Anthropic,
+                    "Unsupported".into(),
+                    &native_auth,
+                    &digest,
+                    &accepted,
+                )
+                .await,
+            Err(AppError::Unsupported(_))
+        ));
+        assert!(repository.list_providers().await.unwrap().is_empty());
     }
 
     #[tokio::test]

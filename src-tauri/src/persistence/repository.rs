@@ -221,6 +221,33 @@ impl Repository {
         provider: &ProviderProfile,
         oauth_relative_path: Option<&Path>,
     ) -> AppResult<()> {
+        self.insert_provider_transaction(provider, oauth_relative_path, None)
+            .await
+    }
+
+    pub async fn insert_provider_with_active_oauth_binding(
+        &self,
+        provider: &ProviderProfile,
+        oauth_relative_path: &Path,
+        cli_id: CliId,
+        native_digest: &str,
+        account_identity: Option<&str>,
+    ) -> AppResult<()> {
+        validate_active_oauth_binding(provider, cli_id, native_digest)?;
+        self.insert_provider_transaction(
+            provider,
+            Some(oauth_relative_path),
+            Some((cli_id, native_digest, account_identity)),
+        )
+        .await
+    }
+
+    async fn insert_provider_transaction(
+        &self,
+        provider: &ProviderProfile,
+        oauth_relative_path: Option<&Path>,
+        active_oauth_binding: Option<(CliId, &str, Option<&str>)>,
+    ) -> AppResult<()> {
         provider.validate()?;
         let mut transaction = self.pool.begin().await?;
         let (kind, coding_plan, coding_plan_name, oauth_kind) = match &provider.data {
@@ -252,6 +279,16 @@ impl Repository {
         .map_err(map_unique_conflict)?;
         self.insert_provider_data(&mut transaction, provider, oauth_relative_path)
             .await?;
+        if let Some((cli_id, native_digest, account_identity)) = active_oauth_binding {
+            upsert_active_oauth_binding_in_transaction(
+                &mut transaction,
+                cli_id,
+                provider.id,
+                native_digest,
+                account_identity,
+            )
+            .await?;
+        }
         transaction.commit().await?;
         Ok(())
     }
@@ -307,6 +344,36 @@ impl Repository {
         provider: &ProviderProfile,
         expected_revision: i64,
         oauth_relative_path: Option<&Path>,
+    ) -> AppResult<()> {
+        self.update_provider_transaction(provider, expected_revision, oauth_relative_path, None)
+            .await
+    }
+
+    pub async fn update_provider_with_active_oauth_binding(
+        &self,
+        provider: &ProviderProfile,
+        expected_revision: i64,
+        oauth_relative_path: &Path,
+        cli_id: CliId,
+        native_digest: &str,
+        account_identity: Option<&str>,
+    ) -> AppResult<()> {
+        validate_active_oauth_binding(provider, cli_id, native_digest)?;
+        self.update_provider_transaction(
+            provider,
+            expected_revision,
+            Some(oauth_relative_path),
+            Some((cli_id, native_digest, account_identity)),
+        )
+        .await
+    }
+
+    async fn update_provider_transaction(
+        &self,
+        provider: &ProviderProfile,
+        expected_revision: i64,
+        oauth_relative_path: Option<&Path>,
+        active_oauth_binding: Option<(CliId, &str, Option<&str>)>,
     ) -> AppResult<()> {
         provider.validate()?;
         let mut transaction = self.pool.begin().await?;
@@ -478,6 +545,16 @@ impl Repository {
                         .await?;
                 }
             }
+        }
+        if let Some((cli_id, native_digest, account_identity)) = active_oauth_binding {
+            upsert_active_oauth_binding_in_transaction(
+                &mut transaction,
+                cli_id,
+                provider.id,
+                native_digest,
+                account_identity,
+            )
+            .await?;
         }
         transaction.commit().await?;
         Ok(())
@@ -820,6 +897,45 @@ impl Repository {
     }
 }
 
+fn validate_active_oauth_binding(
+    provider: &ProviderProfile,
+    cli_id: CliId,
+    native_digest: &str,
+) -> AppResult<()> {
+    match &provider.data {
+        ProviderData::Oauth(oauth)
+            if oauth.oauth_kind.target_cli() == cli_id
+                && oauth.digest.as_str() == native_digest =>
+        {
+            Ok(())
+        }
+        ProviderData::Oauth(_) => Err(AppError::Validation(
+            "active OAuth binding does not match the provider or native digest".into(),
+        )),
+        ProviderData::Api(_) => Err(AppError::Validation(
+            "active OAuth binding requires an OAuth provider".into(),
+        )),
+    }
+}
+
+async fn upsert_active_oauth_binding_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    cli_id: CliId,
+    provider_id: Uuid,
+    native_digest: &str,
+    account_identity: Option<&str>,
+) -> AppResult<()> {
+    sqlx::query("INSERT INTO active_oauth_bindings(cli_id, provider_id, native_digest, account_identity, updated_at) VALUES(?, ?, ?, ?, ?) ON CONFLICT(cli_id) DO UPDATE SET provider_id = excluded.provider_id, native_digest = excluded.native_digest, account_identity = excluded.account_identity, updated_at = excluded.updated_at")
+        .bind(cli_id.to_string())
+        .bind(provider_id.to_string())
+        .bind(native_digest)
+        .bind(account_identity)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
 async fn validate_targets(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     targets: &[ConfigurationTarget],
@@ -1033,6 +1149,60 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[tokio::test]
+    async fn active_oauth_binding_rejects_non_oauth_or_mismatched_provider_data() {
+        let (_temp, _paths, repository) = repository().await;
+        let api = api_provider("API provider");
+        assert!(matches!(
+            repository
+                .insert_provider_with_active_oauth_binding(
+                    &api,
+                    Path::new("unused"),
+                    CliId::Codex,
+                    "sha256:fixture",
+                    None,
+                )
+                .await,
+            Err(AppError::Validation(_))
+        ));
+
+        let now = Utc::now();
+        let oauth = ProviderProfile {
+            id: Uuid::new_v4(),
+            name: "Codex OAuth".into(),
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            data: ProviderData::Oauth(OAuthProviderData {
+                oauth_kind: OAuthKind::Codex,
+                account_id: Some("account-a".into()),
+                account_label: None,
+                raw_content: "fixture".into(),
+                digest: "sha256:fixture".into(),
+                manually_modified: false,
+                verification: VerificationInfo::default(),
+            }),
+        };
+        for (cli_id, digest) in [
+            (CliId::ClaudeCode, "sha256:fixture"),
+            (CliId::Codex, "sha256:different"),
+        ] {
+            assert!(matches!(
+                repository
+                    .insert_provider_with_active_oauth_binding(
+                        &oauth,
+                        Path::new("unused"),
+                        cli_id,
+                        digest,
+                        Some("account-a"),
+                    )
+                    .await,
+                Err(AppError::Validation(_))
+            ));
+        }
+        assert!(repository.list_providers().await.unwrap().is_empty());
     }
 
     #[tokio::test]
