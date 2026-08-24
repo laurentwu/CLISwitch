@@ -46,7 +46,6 @@ export const en = {
       status: "Status",
       executable: "Executable",
       directory: "Configuration directory",
-      source: "Discovery source",
       manageCandidate: "Save unmanaged provider",
       noTargets: "This configuration does not include any CLI yet.",
       applyPreview: "Apply preview",

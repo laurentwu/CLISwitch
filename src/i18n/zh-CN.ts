@@ -46,7 +46,6 @@ export const zhCN = {
       status: "状态",
       executable: "可执行文件",
       directory: "配置目录",
-      source: "发现来源",
       manageCandidate: "保存未纳管供应商",
       noTargets: "此配置尚未包含 CLI。",
       applyPreview: "应用预览",
