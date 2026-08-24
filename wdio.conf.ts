@@ -11,9 +11,9 @@ mkdirSync(fixtureBin, { recursive: true });
 mkdirSync(home, { recursive: true });
 
 const isWindows = process.platform === "win32";
-const fixture = resolve(isWindows ? "e2e/fixtures/fake-cli.cmd" : "e2e/fixtures/fake-cli.sh");
+const fixture = resolve(isWindows ? "e2e/fixtures/fake-cli.ps1" : "e2e/fixtures/fake-cli.sh");
 for (const command of ["claude", "codex", "opencode"]) {
-  const destination = join(fixtureBin, `${command}${isWindows ? ".cmd" : ""}`);
+  const destination = join(fixtureBin, `${command}${isWindows ? ".ps1" : ""}`);
   copyFileSync(fixture, destination);
   if (!isWindows) chmodSync(destination, 0o700);
 }

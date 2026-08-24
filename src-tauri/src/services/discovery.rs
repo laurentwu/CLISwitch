@@ -163,10 +163,15 @@ mod tests {
     #[tokio::test]
     async fn manual_executable_is_canonicalized_and_probed() {
         let temp = tempfile::tempdir().unwrap();
-        let executable = temp.path().join("codex");
-        tokio::fs::write(&executable, "#!/bin/sh\necho codex 1.2.3\n")
-            .await
-            .unwrap();
+        let executable = temp
+            .path()
+            .join(if cfg!(windows) { "codex.ps1" } else { "codex" });
+        let script = if cfg!(windows) {
+            "Write-Output 'codex 1.2.3'\r\n"
+        } else {
+            "#!/bin/sh\necho codex 1.2.3\n"
+        };
+        tokio::fs::write(&executable, script).await.unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
