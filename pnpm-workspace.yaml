@@ -1,0 +1,14 @@
+packages:
+  - .
+
+allowBuilds:
+  edgedriver: false
+  esbuild: true
+  geckodriver: false
+
+minimumReleaseAgeExclude:
+  - "@tanstack/query-core@5.102.1"
+  - "@tanstack/react-query@5.102.1"
+
+onlyBuiltDependencies:
+  - esbuild

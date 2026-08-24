@@ -1,0 +1,14 @@
+{
+  // Scrubbed OpenCode stable-v1 fixture: singular `provider` is intentional.
+  "theme": "system",
+  "provider": {
+    "user_provider": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "User provider",
+      "options": { "baseURL": "https://user.invalid/v1" },
+      "models": { "existing-model": { "name": "Existing" } },
+    },
+  },
+  "model": "user_provider/existing-model",
+  "unknown": [1, 2, 3],
+}

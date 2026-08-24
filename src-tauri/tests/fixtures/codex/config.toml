@@ -1,0 +1,13 @@
+# Scrubbed stable Codex CLI fixture.
+model = "old-model"
+model_provider = "user_provider"
+approval_policy = "on-request"
+
+[model_providers.user_provider]
+name = "User provider"
+base_url = "https://user.invalid/v1"
+wire_api = "responses"
+experimental_bearer_token = "fixture-existing-key"
+
+[profiles.keep_me]
+model = "another-model"
