@@ -161,11 +161,18 @@ pub fn prepare_fixed_invocation(
             "-ExecutionPolicy".into(),
             "Bypass".into(),
             "-File".into(),
-            script.to_string_lossy().into_owned(),
+            powershell_file_argument(&script),
         ];
         fixed_args.extend(args);
         Ok((powershell, fixed_args))
     }
+}
+
+#[cfg(windows)]
+fn powershell_file_argument(script: &Path) -> String {
+    // `canonicalize` returns verbatim paths on Windows, while Windows PowerShell's
+    // `-File` parameter expects a conventional DOS or UNC path.
+    dunce::simplified(script).to_string_lossy().into_owned()
 }
 
 fn bounded_utf8(bytes: &[u8]) -> String {
@@ -215,6 +222,17 @@ pub fn isolated_environment(
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_file_argument_simplifies_verbatim_paths() {
+        let script = Path::new(r"\\?\C:\fixture home\codex.ps1");
+
+        assert_eq!(
+            powershell_file_argument(script),
+            r"C:\fixture home\codex.ps1"
+        );
+    }
 
     #[tokio::test]
     async fn probe_output_is_drained_but_kept_within_the_limit() {
