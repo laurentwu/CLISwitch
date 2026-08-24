@@ -6,9 +6,11 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
+    adapters::opencode_provider_map::{package_protocol, protocol_auth_type, provider_relation},
     adapters::traits::{
-        AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan, CliAdapter,
-        FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id, read_optional,
+        AdapterApiCandidate, AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan,
+        CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id,
+        read_optional,
     },
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
@@ -154,6 +156,95 @@ async fn read_last_used_model(
     }
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedProviderMetadata {
+    display_name: String,
+    protocol: Option<CliProtocol>,
+    auth_type: Option<ConnectionAuthType>,
+    endpoint: Option<String>,
+    explicit_npm: Option<String>,
+}
+
+fn configured_provider<'a>(
+    root: &'a serde_json::Map<String, Value>,
+    provider_id: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
+    root.get("provider")
+        .and_then(Value::as_object)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(Value::as_object)
+}
+
+fn resolve_provider_metadata(
+    provider_id: &str,
+    provider: Option<&serde_json::Map<String, Value>>,
+) -> ResolvedProviderMetadata {
+    let relation = provider_relation(provider_id);
+    let explicit_npm = provider
+        .and_then(|provider| provider.get("npm"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let protocol = match explicit_npm.as_deref() {
+        Some(npm_package) => package_protocol(npm_package).or_else(|| {
+            relation
+                .filter(|relation| relation.npm_package == npm_package)
+                .map(|relation| relation.protocol)
+        }),
+        None => relation.map(|relation| relation.protocol),
+    };
+    let endpoint = provider
+        .and_then(|provider| provider.get("options"))
+        .and_then(Value::as_object)
+        .and_then(|options| options.get("baseURL"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| relation.map(|relation| relation.default_endpoint.to_string()));
+    let display_name = provider
+        .and_then(|provider| provider.get("name"))
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| relation.map(|relation| relation.display_name.to_string()))
+        .unwrap_or_else(|| provider_id.to_string());
+    let auth_type = protocol.map(|protocol| {
+        relation
+            .filter(|relation| relation.protocol == protocol)
+            .map(|relation| relation.auth_type)
+            .unwrap_or_else(|| protocol_auth_type(protocol))
+    });
+    ResolvedProviderMetadata {
+        display_name,
+        protocol,
+        auth_type,
+        endpoint,
+        explicit_npm,
+    }
+}
+
+fn provider_models(
+    provider: Option<&serde_json::Map<String, Value>>,
+    current: Option<&ModelSelection>,
+    provider_id: &str,
+) -> Vec<String> {
+    let mut models = Vec::new();
+    if let Some(current) = current
+        && current.provider_id == provider_id
+    {
+        models.push(current.model_id.clone());
+    }
+    if let Some(configured_models) = provider
+        .and_then(|provider| provider.get("models"))
+        .and_then(Value::as_object)
+    {
+        for model in configured_models.keys() {
+            if !model.is_empty() && !models.contains(model) {
+                models.push(model.clone());
+            }
+        }
+    }
+    models
+}
+
 #[async_trait]
 impl CliAdapter for OpenCodeAdapter {
     fn metadata(&self) -> AdapterMetadata {
@@ -276,47 +367,46 @@ impl CliAdapter for OpenCodeAdapter {
         let model = selection
             .as_ref()
             .map(|selection| selection.model_id.clone());
-        let provider = provider_id.as_ref().and_then(|id| {
-            root.get("provider")
-                .and_then(Value::as_object)
-                .and_then(|providers| providers.get(id))
-                .and_then(Value::as_object)
-        });
-        let endpoint = provider
-            .and_then(|provider| provider.get("options"))
-            .and_then(Value::as_object)
-            .and_then(|options| options.get("baseURL"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let npm = provider
-            .and_then(|provider| provider.get("npm"))
-            .and_then(Value::as_str);
-        let protocol = match npm {
-            Some("@ai-sdk/openai-compatible") => Some(CliProtocol::OpenaiChat),
-            Some("@ai-sdk/openai") => Some(CliProtocol::OpenaiResponses),
-            Some("@ai-sdk/anthropic") => Some(CliProtocol::AnthropicMessages),
-            Some(value)
-                if provider_id
-                    .as_deref()
-                    .is_some_and(|id| id.starts_with("cliswitch_")) =>
-            {
-                return Err(AppError::Unsupported(format!(
-                    "unsupported OpenCode provider package: {value}"
-                )));
-            }
-            _ => None,
-        };
+        let provider = provider_id
+            .as_deref()
+            .and_then(|id| configured_provider(root, id));
+        let current_metadata = provider_id
+            .as_deref()
+            .map(|id| resolve_provider_metadata(id, provider));
+        if let (Some(provider_id), Some(metadata)) = (&provider_id, &current_metadata)
+            && provider_id.starts_with("cliswitch_")
+            && metadata.explicit_npm.is_some()
+            && metadata.protocol.is_none()
+        {
+            return Err(AppError::Unsupported(format!(
+                "unsupported OpenCode provider package: {}",
+                metadata.explicit_npm.as_deref().unwrap_or_default()
+            )));
+        }
+        let protocol = current_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.protocol);
         let auth_file = paths
             .auth_file
             .as_ref()
             .ok_or_else(|| AppError::Unsupported("OpenCode auth path is unavailable".into()))?;
         let auth_text = read_optional(auth_file, "{}\n").await?;
         let auth = parse_jsonc_value(&auth_text)?;
-        let key = provider_id.as_ref().and_then(|id| {
-            auth.get(id)
+        let empty_auth_root = serde_json::Map::new();
+        let auth_root = match auth.as_object() {
+            Some(auth_root) => auth_root,
+            None => {
+                diagnostics.push(
+                    "OpenCode auth root is not an object; provider credentials were ignored".into(),
+                );
+                &empty_auth_root
+            }
+        };
+        let current_auth_kind = provider_id.as_ref().and_then(|id| {
+            auth_root
+                .get(id)
                 .and_then(Value::as_object)
-                .filter(|entry| entry.get("type").and_then(Value::as_str) == Some("api"))
-                .and_then(|entry| entry.get("key"))
+                .and_then(|entry| entry.get("type"))
                 .and_then(Value::as_str)
                 .map(str::to_string)
         });
@@ -324,22 +414,100 @@ impl CliAdapter for OpenCodeAdapter {
             .as_deref()
             .and_then(|id| id.strip_prefix("cliswitch_"))
             .and_then(|id| Uuid::parse_str(id).ok());
-        let candidate = match (&endpoint, &key, &model, protocol) {
-            (Some(endpoint), Some(key), Some(model), Some(protocol)) => Some(ProviderConnection {
+        let mut unmanaged_api_candidates = Vec::new();
+        for (auth_provider_id, auth_value) in auth_root {
+            let Some(auth_entry) = auth_value.as_object() else {
+                diagnostics.push(format!(
+                    "OpenCode provider {auth_provider_id} has an invalid auth entry and cannot be saved"
+                ));
+                continue;
+            };
+            match auth_entry.get("type").and_then(Value::as_str) {
+                Some("oauth") => {
+                    diagnostics.push(format!(
+                        "OpenCode provider {auth_provider_id} uses OAuth; OpenCode OAuth providers are recognized but cannot be saved in this version"
+                    ));
+                    continue;
+                }
+                Some("api") => {}
+                Some(auth_type) => {
+                    diagnostics.push(format!(
+                        "OpenCode provider {auth_provider_id} uses unsupported auth type {auth_type} and cannot be saved"
+                    ));
+                    continue;
+                }
+                None => {
+                    diagnostics.push(format!(
+                        "OpenCode provider {auth_provider_id} has no auth type and cannot be saved"
+                    ));
+                    continue;
+                }
+            }
+            let Some(key) = auth_entry
+                .get("key")
+                .and_then(Value::as_str)
+                .filter(|key| !key.trim().is_empty())
+            else {
+                diagnostics.push(format!(
+                    "OpenCode provider {auth_provider_id} has no API key and cannot be saved"
+                ));
+                continue;
+            };
+            let configured = configured_provider(root, auth_provider_id);
+            let metadata = resolve_provider_metadata(auth_provider_id, configured);
+            let models = provider_models(configured, selection.as_ref(), auth_provider_id);
+            let mut missing = Vec::new();
+            if metadata.protocol.is_none() {
+                missing.push("a supported npm package or provider relation");
+            }
+            if metadata.endpoint.is_none() {
+                missing.push("options.baseURL or a default endpoint relation");
+            }
+            if models.is_empty() {
+                missing.push("a configured or current model");
+            }
+            if !missing.is_empty() {
+                diagnostics.push(format!(
+                    "OpenCode provider {auth_provider_id} was recognized but cannot be saved without {}",
+                    missing.join(", ")
+                ));
+                continue;
+            }
+            let protocol = metadata.protocol.expect("checked above");
+            let endpoint = match Url::parse(metadata.endpoint.as_deref().expect("checked above")) {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    diagnostics.push(format!(
+                        "OpenCode provider {auth_provider_id} has an invalid endpoint and cannot be saved: {error}"
+                    ));
+                    continue;
+                }
+            };
+            let connection = ProviderConnection {
                 id: Uuid::new_v4(),
                 protocol,
-                endpoint: Url::parse(endpoint)?,
-                auth_type: if protocol == CliProtocol::AnthropicMessages {
-                    ConnectionAuthType::ApiKey
-                } else {
-                    ConnectionAuthType::Bearer
-                },
-                api_key: key.clone(),
-                default_model: model.clone(),
+                endpoint,
+                auth_type: metadata
+                    .auth_type
+                    .unwrap_or_else(|| protocol_auth_type(protocol)),
+                api_key: key.to_string(),
+                default_model: models[0].clone(),
                 verification: VerificationInfo::default(),
-            }),
-            _ => None,
-        };
+            };
+            if let Err(error) = connection.validate() {
+                diagnostics.push(format!(
+                    "OpenCode provider {auth_provider_id} cannot be saved: {error}"
+                ));
+                continue;
+            }
+            unmanaged_api_candidates.push(AdapterApiCandidate {
+                source_provider_id: auth_provider_id.clone(),
+                suggested_name: metadata.display_name,
+                connection,
+                available_models: models,
+                is_current: provider_id.as_deref() == Some(auth_provider_id),
+            });
+        }
         let mut sources = vec![
             SourceFileSnapshot {
                 source_id: "opencode-config".into(),
@@ -363,14 +531,14 @@ impl CliAdapter for OpenCodeAdapter {
             current: CurrentCliConfiguration {
                 provider_name: provider_id,
                 protocol,
-                auth_kind: key.as_ref().map(|_| "api".into()),
+                auth_kind: current_auth_kind,
                 model,
                 managed_provider_id,
                 sources,
                 externally_overridden: false,
                 diagnostics,
             },
-            unmanaged_candidate: candidate,
+            unmanaged_api_candidates,
         })
     }
 

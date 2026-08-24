@@ -216,6 +216,7 @@ pub async fn save_unmanaged_candidate_provider(
     name: String,
     coding_plan: bool,
     coding_plan_name: Option<String>,
+    default_model: Option<String>,
 ) -> AppResult<PublicProvider> {
     let _mutation_guard = state.apply.try_mutation_guard()?;
     let settings = state.repository.get_settings().await?;
@@ -230,6 +231,7 @@ pub async fn save_unmanaged_candidate_provider(
                 name,
                 coding_plan,
                 coding_plan_name,
+                default_model,
             },
         )
         .await?;

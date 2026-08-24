@@ -47,6 +47,8 @@ export const zhCN = {
       executable: "可执行文件",
       directory: "配置目录",
       manageCandidate: "保存未纳管供应商",
+      manageCandidateNamed: "将 {{name}} 保存为供应商",
+      cliProviderId: "CLI 供应商 ID",
       noTargets: "此配置尚未包含 CLI。",
       applyPreview: "应用预览",
       progress: "应用进度",

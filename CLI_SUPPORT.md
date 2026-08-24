@@ -43,6 +43,33 @@ Executable discovery uses, in order, a user-approved manual path, the process PA
 | OpenAI Responses        | `@ai-sdk/openai`            | `{ "type": "api", "key": "…" }` |
 | Anthropic Messages      | `@ai-sdk/anthropic`         | `{ "type": "api", "key": "…" }` |
 
+- OpenCode credentials are enumerated from `auth.json`, then joined to the singular `provider`
+  configuration by provider ID. Every complete `type: "api"` entry is offered separately for
+  saving; OAuth entries are identified but are not savable in 0.1.
+- Self-described custom providers need no catalog entry when they declare a supported `npm`,
+  `options.baseURL`, and at least one model. Built-in providers may use this declarative fallback
+  relation table. Explicit user configuration overrides every fallback value.
+
+| OpenCode provider ID     | CLISwitch name                    | CLISwitch protocol | Auth    | Default endpoint                                |
+| ------------------------ | --------------------------------- | ------------------ | ------- | ----------------------------------------------- |
+| `openai`                 | OpenAI                            | OpenAI Responses   | Bearer  | `https://api.openai.com/v1`                     |
+| `anthropic`              | Anthropic                         | Anthropic Messages | API key | `https://api.anthropic.com`                     |
+| `openrouter`             | OpenRouter                        | OpenAI Chat        | Bearer  | `https://openrouter.ai/api/v1`                  |
+| `zhipuai-coding-plan`    | Zhipu AI Coding Plan              | OpenAI Chat        | Bearer  | `https://open.bigmodel.cn/api/coding/paas/v4`   |
+| `zai-coding-plan`        | Z.AI Coding Plan                  | OpenAI Chat        | Bearer  | `https://api.z.ai/api/coding/paas/v4`           |
+| `minimax-coding-plan`    | MiniMax Token Plan (minimax.io)   | Anthropic Messages | API key | `https://api.minimax.io/anthropic/v1`           |
+| `minimax-cn-coding-plan` | MiniMax Token Plan (minimaxi.com) | Anthropic Messages | API key | `https://api.minimaxi.com/anthropic/v1`         |
+| `alibaba-coding-plan`    | Alibaba Coding Plan               | OpenAI Chat        | Bearer  | `https://coding-intl.dashscope.aliyuncs.com/v1` |
+| `alibaba-coding-plan-cn` | Alibaba Coding Plan (China)       | OpenAI Chat        | Bearer  | `https://coding.dashscope.aliyuncs.com/v1`      |
+| `tencent-coding-plan`    | Tencent Coding Plan (China)       | OpenAI Chat        | Bearer  | `https://api.lkeap.cloud.tencent.com/coding/v3` |
+| `kimi-for-coding`        | Kimi For Coding                   | Anthropic Messages | API key | `https://api.kimi.com/coding/v1`                |
+| `umans-ai-coding-plan`   | Umans AI Coding Plan              | OpenAI Chat        | Bearer  | `https://api.code.umans.ai/v1`                  |
+| `kuae-cloud-coding-plan` | KUAE Cloud Coding Plan            | OpenAI Chat        | Bearer  | `https://coding-plan-endpoint.kuaecloud.net/v1` |
+
+Adding another built-in API-key provider requires one row in
+`src-tauri/src/adapters/opencode_provider_map.rs` plus a fixture assertion; the scanner and save
+flow do not require provider-specific branching.
+
 - Provider endpoint is written to `options.baseURL`; the selected model is placed in the provider `models` object.
 - Config JSONC and auth JSON are patched at managed paths while retaining unrelated fields and formatting where the CST writer supports it.
 

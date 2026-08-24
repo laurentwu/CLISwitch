@@ -7,8 +7,9 @@ use uuid::Uuid;
 
 use crate::{
     adapters::traits::{
-        AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan, CliAdapter,
-        FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id, read_optional,
+        AdapterApiCandidate, AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan,
+        CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id,
+        read_optional,
     },
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
@@ -128,6 +129,16 @@ impl CliAdapter for CodexAdapter {
                 digest: file_digest(auth_file).await?,
             });
         }
+        let unmanaged_api_candidates = candidate
+            .into_iter()
+            .map(|connection| AdapterApiCandidate {
+                source_provider_id: provider_id.clone(),
+                suggested_name: provider_id.clone(),
+                available_models: vec![connection.default_model.clone()],
+                is_current: true,
+                connection,
+            })
+            .collect();
         Ok(AdapterReadResult {
             current: CurrentCliConfiguration {
                 provider_name: Some(provider_id),
@@ -147,7 +158,7 @@ impl CliAdapter for CodexAdapter {
                     .map(|method| vec![format!("forced_login_method is set to {method}")])
                     .unwrap_or_default(),
             },
-            unmanaged_candidate: candidate,
+            unmanaged_api_candidates,
         })
     }
 
