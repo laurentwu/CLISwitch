@@ -106,9 +106,18 @@ pub struct AdapterPaths {
 }
 
 #[derive(Debug, Clone)]
+pub struct AdapterApiCandidate {
+    pub source_provider_id: String,
+    pub suggested_name: String,
+    pub connection: ProviderConnection,
+    pub available_models: Vec<String>,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Clone)]
 pub struct AdapterReadResult {
     pub current: CurrentCliConfiguration,
-    pub unmanaged_candidate: Option<ProviderConnection>,
+    pub unmanaged_api_candidates: Vec<AdapterApiCandidate>,
 }
 
 #[derive(Debug, Clone)]

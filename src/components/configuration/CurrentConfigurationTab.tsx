@@ -8,12 +8,13 @@ import type {
   AppSettings,
   CliId,
   DetectedCli,
+  DetectedProviderCandidate,
   PublicProvider,
   SavedConfiguration,
   ScanSnapshot,
 } from "../../shared/types";
 import { CLI_IDS } from "../../shared/types";
-import { Badge, Button, Card, Field, Input, Modal, Spinner } from "../ui";
+import { Badge, Button, Card, Field, Input, Modal, Select, Spinner } from "../ui";
 import { BackupRestoreDialog } from "./BackupRestoreDialog";
 
 function statusTone(status: DetectedCli["status"]): "neutral" | "good" | "warn" | "bad" {
@@ -36,8 +37,9 @@ export function CurrentConfigurationTab({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [candidate, setCandidate] = useState<DetectedCli>();
+  const [candidate, setCandidate] = useState<DetectedProviderCandidate>();
   const [candidateName, setCandidateName] = useState("");
+  const [candidateModel, setCandidateModel] = useState("");
   const [saveOpen, setSaveOpen] = useState(false);
   const [configurationName, setConfigurationName] = useState("");
   const [backupsOpen, setBackupsOpen] = useState(false);
@@ -54,14 +56,16 @@ export function CurrentConfigurationTab({
     mutationFn: () =>
       command<PublicProvider>("save_unmanaged_candidate_provider", {
         snapshotId: scan?.id,
-        candidateId: candidate?.candidateId,
+        candidateId: candidate?.id,
         name: candidateName.trim(),
         codingPlan: false,
         codingPlanName: null,
+        defaultModel: candidateModel || null,
       }),
     onSuccess: () => {
       setCandidate(undefined);
       setCandidateName("");
+      setCandidateModel("");
       void queryClient.invalidateQueries({ queryKey: ["providers"] });
       refresh.mutate();
     },
@@ -193,20 +197,28 @@ export function CurrentConfigurationTab({
                   <ArchiveRestore size={15} /> {t("config.backups")}
                 </Button>
               </div>
-              {item.candidateId ? (
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setCandidate(item);
-                    setCandidateName(
-                      item.cliId === "codex" && item.current?.authKind === "oauth"
-                        ? "Codex OAuth"
-                        : (item.current?.providerName ?? item.label),
-                    );
-                  }}
-                >
-                  {t("config.manageCandidate")}
-                </Button>
+              {item.providerCandidates?.length ? (
+                <div className="section-actions">
+                  {item.providerCandidates.map((providerCandidate) => (
+                    <Button
+                      key={providerCandidate.id}
+                      variant="secondary"
+                      onClick={() => {
+                        setCandidate(providerCandidate);
+                        setCandidateName(providerCandidate.suggestedName);
+                        setCandidateModel(
+                          providerCandidate.defaultModel ??
+                            providerCandidate.availableModels[0] ??
+                            "",
+                        );
+                      }}
+                    >
+                      {t("config.manageCandidateNamed", {
+                        name: providerCandidate.suggestedName,
+                      })}
+                    </Button>
+                  ))}
+                </div>
               ) : null}
             </Card>
           );
@@ -221,10 +233,19 @@ export function CurrentConfigurationTab({
       <Modal
         open={Boolean(candidate)}
         title={t("config.manageCandidate")}
-        onClose={() => setCandidate(undefined)}
+        onClose={() => {
+          setCandidate(undefined);
+          setCandidateModel("");
+        }}
         footer={
           <>
-            <Button variant="ghost" onClick={() => setCandidate(undefined)}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setCandidate(undefined);
+                setCandidateModel("");
+              }}
+            >
               {t("common.cancel")}
             </Button>
             <Button
@@ -254,6 +275,30 @@ export function CurrentConfigurationTab({
             onChange={(event) => setCandidateName(event.target.value)}
           />
         </Field>
+        {candidate?.availableModels.length ? (
+          <Field label={t("providers.defaultModel")}>
+            <Select
+              value={candidateModel}
+              onChange={(event) => setCandidateModel(event.target.value)}
+            >
+              {candidate.availableModels.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : null}
+        {candidate ? (
+          <dl className="detail-grid">
+            <dt>{t("config.cliProviderId")}</dt>
+            <dd>{candidate.sourceProviderId}</dd>
+            <dt>{t("config.protocol")}</dt>
+            <dd>{candidate.protocol ?? "—"}</dd>
+            <dt>{t("providers.endpoint")}</dt>
+            <dd className="path-text">{candidate.endpoint ?? "—"}</dd>
+          </dl>
+        ) : null}
       </Modal>
       <Modal
         open={saveOpen}

@@ -7,9 +7,9 @@ use uuid::Uuid;
 use crate::{
     adapters::{ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter},
     domain::{
-        ApiProviderData, AppSettings, CliId, CurrentCliConfiguration, DetectedCli, OAuthKind,
-        ProviderData, ProviderProfile, ScanSnapshot, ScanStatus, SourceFileSnapshot,
-        UnmanagedCandidate, UnmanagedCandidateData,
+        ApiProviderData, AppSettings, CliId, CurrentCliConfiguration, DetectedCli,
+        DetectedProviderCandidate, OAuthKind, ProviderData, ProviderProfile, ScanSnapshot,
+        ScanStatus, SourceFileSnapshot, UnmanagedCandidate, UnmanagedCandidateData,
     },
     error::{AppError, AppResult},
     filesystem::digest::{bytes_digest, file_digest},
@@ -79,6 +79,7 @@ pub struct UnmanagedCandidateSaveRequest {
     pub name: String,
     pub coding_plan: bool,
     pub coding_plan_name: Option<String>,
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +89,8 @@ pub struct CliManager {
     candidates: Arc<RwLock<HashMap<Uuid, CandidateEntry>>>,
     latest_snapshot: Arc<RwLock<Option<ScanSnapshot>>>,
     redactor: Redactor,
+    #[cfg(test)]
+    environment_override: Option<HostEnvironment>,
 }
 
 impl CliManager {
@@ -98,6 +101,8 @@ impl CliManager {
             candidates: Arc::new(RwLock::new(HashMap::new())),
             latest_snapshot: Arc::new(RwLock::new(None)),
             redactor,
+            #[cfg(test)]
+            environment_override: None,
         }
     }
 
@@ -109,9 +114,17 @@ impl CliManager {
         self.latest_snapshot.read().await.clone()
     }
 
+    fn capture_environment(&self) -> AppResult<HostEnvironment> {
+        #[cfg(test)]
+        if let Some(environment) = &self.environment_override {
+            return Ok(environment.clone());
+        }
+        HostEnvironment::capture()
+    }
+
     pub async fn scan(&self, settings: &AppSettings) -> ScanSnapshot {
         let snapshot_id = Uuid::new_v4();
-        let environment = match HostEnvironment::capture() {
+        let environment = match self.capture_environment() {
             Ok(environment) => environment,
             Err(error) => {
                 let snapshot = ScanSnapshot {
@@ -137,7 +150,7 @@ impl CliManager {
                                 externally_overridden: false,
                                 diagnostics: vec![self.redactor.sanitize(error.to_string())],
                             }),
-                            candidate_id: None,
+                            provider_candidates: Vec::new(),
                         })
                         .collect(),
                 };
@@ -175,7 +188,7 @@ impl CliManager {
                         version: None,
                         source: "manual override".into(),
                         current: Some(error_current(&self.redactor, error)),
-                        candidate_id: None,
+                        provider_candidates: Vec::new(),
                     });
                     continue;
                 }
@@ -190,26 +203,34 @@ impl CliManager {
                     version: None,
                     source: "not found".into(),
                     current: None,
-                    candidate_id: None,
+                    provider_candidates: Vec::new(),
                 });
                 continue;
             };
             match adapter.read_current(&paths, &environment).await {
                 Ok(mut read) => {
                     let mut oauth_unmanaged = false;
-                    if let Some(candidate) = &read.unmanaged_candidate
-                        && let Some(provider_id) = self.match_saved_connection(candidate).await
-                    {
-                        read.current.managed_provider_id = Some(provider_id);
-                        read.current.provider_name = self
-                            .repository
-                            .get_provider(provider_id)
-                            .await
-                            .ok()
-                            .map(|provider| provider.name);
-                        read.unmanaged_candidate = None;
+                    let mut unmatched_api_candidates = Vec::new();
+                    for candidate in std::mem::take(&mut read.unmanaged_api_candidates) {
+                        if let Some(provider_id) =
+                            self.match_saved_connection(&candidate.connection).await
+                        {
+                            if candidate.is_current {
+                                read.current.managed_provider_id = Some(provider_id);
+                                read.current.provider_name = self
+                                    .repository
+                                    .get_provider(provider_id)
+                                    .await
+                                    .ok()
+                                    .map(|provider| provider.name);
+                            }
+                        } else {
+                            unmatched_api_candidates.push(candidate);
+                        }
                     }
-                    if read.current.auth_kind.as_deref() == Some("oauth") {
+                    if read.current.auth_kind.as_deref() == Some("oauth")
+                        && cli_id != CliId::Opencode
+                    {
                         match self.repository.get_active_oauth_binding(cli_id).await {
                             Ok(Some(binding)) => {
                                 let identity_matches =
@@ -299,10 +320,7 @@ impl CliManager {
                     };
                     let status = if read.current.externally_overridden {
                         ScanStatus::ExternallyOverridden
-                    } else if oauth_unmanaged
-                        || (read.unmanaged_candidate.is_some()
-                            && read.current.managed_provider_id.is_none())
-                    {
+                    } else if oauth_unmanaged || !unmatched_api_candidates.is_empty() {
                         ScanStatus::Unmanaged
                     } else if read.current.model.is_some()
                         || read.current.provider_name.is_some()
@@ -312,17 +330,46 @@ impl CliManager {
                     } else {
                         ScanStatus::Installed
                     };
-                    let candidate_data = read
-                        .unmanaged_candidate
-                        .map(UnmanagedCandidateData::Api)
-                        .or(oauth_candidate);
-                    let candidate_id = if let Some(data) = candidate_data {
-                        if let UnmanagedCandidateData::Api(connection) = &data {
+                    let mut candidate_data = unmatched_api_candidates
+                        .into_iter()
+                        .map(|candidate| {
+                            (
+                                candidate.source_provider_id,
+                                candidate.suggested_name,
+                                UnmanagedCandidateData::Api {
+                                    connection: candidate.connection,
+                                    available_models: candidate.available_models,
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if let Some(data) = oauth_candidate {
+                        candidate_data.push(("codex".into(), "Codex OAuth".into(), data));
+                    }
+                    let mut provider_candidates = Vec::with_capacity(candidate_data.len());
+                    for (source_provider_id, suggested_name, data) in candidate_data {
+                        if let UnmanagedCandidateData::Api { connection, .. } = &data {
                             self.redactor.register(&connection.api_key);
                         }
+                        let (protocol, endpoint, auth_type, available_models, default_model) =
+                            match &data {
+                                UnmanagedCandidateData::Api {
+                                    connection,
+                                    available_models,
+                                } => (
+                                    Some(connection.protocol),
+                                    Some(connection.endpoint.clone()),
+                                    Some(connection.auth_type),
+                                    available_models.clone(),
+                                    Some(connection.default_model.clone()),
+                                ),
+                                UnmanagedCandidateData::Oauth { .. } => {
+                                    (None, None, None, Vec::new(), None)
+                                }
+                            };
                         let candidate_id = Uuid::new_v4();
                         let source_digests = match &data {
-                            UnmanagedCandidateData::Api(_) => read
+                            UnmanagedCandidateData::Api { .. } => read
                                 .current
                                 .sources
                                 .iter()
@@ -341,16 +388,25 @@ impl CliManager {
                                     id: candidate_id,
                                     snapshot_id,
                                     cli_id,
+                                    source_provider_id: source_provider_id.clone(),
+                                    suggested_name: suggested_name.clone(),
                                     source_digests,
                                     data,
                                 },
                                 created_at: std::time::Instant::now(),
                             },
                         );
-                        Some(candidate_id)
-                    } else {
-                        None
-                    };
+                        provider_candidates.push(DetectedProviderCandidate {
+                            id: candidate_id,
+                            source_provider_id,
+                            suggested_name,
+                            protocol,
+                            endpoint,
+                            auth_type,
+                            available_models,
+                            default_model,
+                        });
+                    }
                     items.push(DetectedCli {
                         cli_id,
                         label: cli_id.label().into(),
@@ -360,7 +416,7 @@ impl CliManager {
                         version: executable.version,
                         source: executable.source,
                         current: Some(read.current),
-                        candidate_id,
+                        provider_candidates,
                     });
                 }
                 Err(error) => {
@@ -391,7 +447,7 @@ impl CliManager {
                             externally_overridden: false,
                             diagnostics: vec![self.redactor.sanitize(error.to_string())],
                         }),
-                        candidate_id: None,
+                        provider_candidates: Vec::new(),
                     });
                 }
             }
@@ -417,6 +473,7 @@ impl CliManager {
             name,
             coding_plan,
             coding_plan_name,
+            default_model,
         } = request;
         if !settings.plaintext_risk_accepted {
             return Err(AppError::Blocked(
@@ -446,7 +503,23 @@ impl CliManager {
             }
         }
         let provider = match &entry.candidate.data {
-            UnmanagedCandidateData::Api(connection) => {
+            UnmanagedCandidateData::Api {
+                connection,
+                available_models,
+            } => {
+                let selected_model = default_model
+                    .as_deref()
+                    .unwrap_or(&connection.default_model)
+                    .trim();
+                if selected_model.is_empty()
+                    || !available_models.iter().any(|model| model == selected_model)
+                {
+                    return Err(AppError::Validation(
+                        "selected model is not available for this detected provider".into(),
+                    ));
+                }
+                let mut connection = connection.clone();
+                connection.default_model = selected_model.to_string();
                 let now = Utc::now();
                 let provider = ProviderProfile {
                     id: Uuid::new_v4(),
@@ -457,7 +530,7 @@ impl CliManager {
                     data: ProviderData::Api(ApiProviderData {
                         coding_plan,
                         coding_plan_name,
-                        connections: vec![connection.clone()],
+                        connections: vec![connection],
                     }),
                 };
                 self.repository.insert_provider(&provider, None).await?;
@@ -494,6 +567,7 @@ impl CliManager {
                 && api.connections.iter().any(|connection| {
                     connection.protocol == candidate.protocol
                         && connection.endpoint == candidate.endpoint
+                        && connection.auth_type == candidate.auth_type
                         && connection.api_key == candidate.api_key
                 })
             {
@@ -521,7 +595,11 @@ fn error_current(redactor: &Redactor, error: AppError) -> CurrentCliConfiguratio
 mod tests {
     use super::*;
     use crate::{
-        domain::VerificationStatus, filesystem::private_paths::PrivatePaths,
+        domain::{
+            CliProtocol, ConnectionAuthType, ProviderConnection, VerificationInfo,
+            VerificationStatus,
+        },
+        filesystem::private_paths::PrivatePaths,
         services::oauth::OAuthService,
     };
 
@@ -532,6 +610,146 @@ mod tests {
         repository: Repository,
         settings: AppSettings,
         auth_file: PathBuf,
+    }
+
+    struct OpenCodeScanFixture {
+        _temp: tempfile::TempDir,
+        manager: CliManager,
+        oauth: OAuthService,
+        repository: Repository,
+        settings: AppSettings,
+        config_file: PathBuf,
+        auth_file: PathBuf,
+        managed_provider_id: Uuid,
+        managed_source_provider_id: String,
+    }
+
+    async fn write_json_fixture(path: &std::path::Path, value: &serde_json::Value) {
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(path, serde_json::to_vec_pretty(value).unwrap())
+            .await
+            .unwrap();
+    }
+
+    async fn opencode_scan_fixture() -> OpenCodeScanFixture {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = PrivatePaths::from_root(temp.path().join("data"));
+        paths.ensure().await.unwrap();
+        let redactor = Redactor::default();
+        let repository = Repository::open(&paths.database, redactor.clone())
+            .await
+            .unwrap();
+        let registry = AdapterRegistry::default();
+        let mut manager = CliManager::new(registry.clone(), repository.clone(), redactor.clone());
+        manager.environment_override = Some(HostEnvironment {
+            home: temp.path().to_path_buf(),
+            variables: Default::default(),
+            present_variables: Default::default(),
+            os: std::env::consts::OS.into(),
+        });
+        let oauth = OAuthService::new(repository.clone(), paths, registry, redactor);
+
+        let executable = temp.path().join("fixture-opencode");
+        tokio::fs::write(&executable, b"#!/bin/sh\necho opencode 1.0\n")
+            .await
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let config_directory = temp.path().join("opencode");
+        let config_file = config_directory.join("opencode.json");
+        let auth_file = temp
+            .path()
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json");
+        let mut settings = AppSettings {
+            plaintext_risk_accepted: true,
+            ..AppSettings::default()
+        };
+        for location in &mut settings.manual_locations {
+            location.executable_path = Some(temp.path().join("not-installed"));
+            location.config_directory =
+                Some(temp.path().join(format!("{}-config", location.cli_id)));
+        }
+        let opencode_location = settings
+            .manual_locations
+            .iter_mut()
+            .find(|location| location.cli_id == CliId::Opencode)
+            .unwrap();
+        opencode_location.executable_path = Some(executable);
+        opencode_location.config_directory = Some(config_directory);
+
+        let now = Utc::now();
+        let managed_provider_id = Uuid::new_v4();
+        let managed_source_provider_id = format!("cliswitch_{managed_provider_id}");
+        let managed_provider = ProviderProfile {
+            id: managed_provider_id,
+            name: "Managed OpenCode provider".into(),
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            data: ProviderData::Api(ApiProviderData {
+                coding_plan: false,
+                coding_plan_name: None,
+                connections: vec![ProviderConnection {
+                    id: Uuid::new_v4(),
+                    protocol: CliProtocol::OpenaiChat,
+                    endpoint: url::Url::parse("https://managed.invalid/v1").unwrap(),
+                    auth_type: ConnectionAuthType::Bearer,
+                    api_key: "managed-secret-key".into(),
+                    default_model: "managed-model".into(),
+                    verification: VerificationInfo::default(),
+                }],
+            }),
+        };
+        repository
+            .insert_provider(&managed_provider, None)
+            .await
+            .unwrap();
+
+        let mut providers = serde_json::Map::new();
+        providers.insert(
+            managed_source_provider_id.clone(),
+            serde_json::json!({
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "OpenCode managed source",
+                "options": { "baseURL": "https://managed.invalid/v1" },
+                "models": { "managed-model": {} }
+            }),
+        );
+        let mut auth = serde_json::Map::new();
+        auth.insert(
+            managed_source_provider_id.clone(),
+            serde_json::json!({ "type": "api", "key": "managed-secret-key" }),
+        );
+        write_json_fixture(
+            &config_file,
+            &serde_json::json!({
+                "model": format!("{managed_source_provider_id}/managed-model"),
+                "provider": providers
+            }),
+        )
+        .await;
+        write_json_fixture(&auth_file, &serde_json::Value::Object(auth)).await;
+
+        OpenCodeScanFixture {
+            _temp: temp,
+            manager,
+            oauth,
+            repository,
+            settings,
+            config_file,
+            auth_file,
+            managed_provider_id,
+            managed_source_provider_id,
+        }
     }
 
     async fn codex_oauth_fixture(auth_content: &[u8]) -> CodexOAuthFixture {
@@ -601,6 +819,161 @@ mod tests {
             .unwrap()
     }
 
+    fn opencode_item(snapshot: &ScanSnapshot) -> &DetectedCli {
+        snapshot
+            .items
+            .iter()
+            .find(|item| item.cli_id == CliId::Opencode)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn opencode_scan_reconciles_saved_unmanaged_and_oauth_providers() {
+        let fixture = opencode_scan_fixture().await;
+
+        let managed_scan = fixture.manager.scan(&fixture.settings).await;
+        let managed = opencode_item(&managed_scan);
+        assert_eq!(managed.status, ScanStatus::Detected);
+        assert!(managed.provider_candidates.is_empty());
+        let managed_current = managed.current.as_ref().unwrap();
+        assert_eq!(
+            managed_current.managed_provider_id,
+            Some(fixture.managed_provider_id)
+        );
+        assert_eq!(
+            managed_current.provider_name.as_deref(),
+            Some("Managed OpenCode provider")
+        );
+        assert_eq!(managed_current.auth_kind.as_deref(), Some("api"));
+
+        let mut providers = serde_json::Map::new();
+        providers.insert(
+            fixture.managed_source_provider_id.clone(),
+            serde_json::json!({
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "OpenCode managed source",
+                "options": { "baseURL": "https://managed.invalid/v1" },
+                "models": { "managed-model": {} }
+            }),
+        );
+        providers.insert(
+            "other-provider".into(),
+            serde_json::json!({
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Other provider",
+                "options": { "baseURL": "https://other.invalid/v1" },
+                "models": { "other-model": {} }
+            }),
+        );
+        let mut auth = serde_json::Map::new();
+        auth.insert(
+            fixture.managed_source_provider_id.clone(),
+            serde_json::json!({ "type": "api", "key": "managed-secret-key" }),
+        );
+        auth.insert(
+            "other-provider".into(),
+            serde_json::json!({ "type": "api", "key": "other-secret-key" }),
+        );
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({
+                "model": format!(
+                    "{}/managed-model",
+                    fixture.managed_source_provider_id
+                ),
+                "provider": providers
+            }),
+        )
+        .await;
+        write_json_fixture(&fixture.auth_file, &serde_json::Value::Object(auth)).await;
+
+        let unmanaged_scan = fixture.manager.scan(&fixture.settings).await;
+        let unmanaged = opencode_item(&unmanaged_scan);
+        assert_eq!(unmanaged.status, ScanStatus::Unmanaged);
+        assert_eq!(
+            unmanaged
+                .current
+                .as_ref()
+                .and_then(|current| current.managed_provider_id),
+            Some(fixture.managed_provider_id)
+        );
+        assert_eq!(unmanaged.provider_candidates.len(), 1);
+        let candidate = &unmanaged.provider_candidates[0];
+        assert_eq!(candidate.source_provider_id, "other-provider");
+        assert_eq!(candidate.default_model.as_deref(), Some("other-model"));
+
+        let saved = fixture
+            .manager
+            .save_unmanaged_candidate(
+                &fixture.oauth,
+                &fixture.settings,
+                UnmanagedCandidateSaveRequest {
+                    snapshot_id: unmanaged_scan.id,
+                    candidate_id: candidate.id,
+                    name: "Saved other provider".into(),
+                    coding_plan: false,
+                    coding_plan_name: None,
+                    default_model: None,
+                },
+            )
+            .await
+            .unwrap();
+        let ProviderData::Api(saved_api) = saved.data else {
+            panic!("OpenCode API candidate should save as an API provider");
+        };
+        assert_eq!(saved_api.connections[0].default_model, "other-model");
+
+        let reconciled_scan = fixture.manager.scan(&fixture.settings).await;
+        let reconciled = opencode_item(&reconciled_scan);
+        assert_eq!(reconciled.status, ScanStatus::Detected);
+        assert!(reconciled.provider_candidates.is_empty());
+        assert_eq!(
+            reconciled
+                .current
+                .as_ref()
+                .and_then(|current| current.managed_provider_id),
+            Some(fixture.managed_provider_id)
+        );
+        assert_eq!(fixture.repository.list_providers().await.unwrap().len(), 2);
+
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({
+                "model": "openai/oauth-model",
+                "provider": {
+                    "openai": { "models": { "oauth-model": {} } }
+                }
+            }),
+        )
+        .await;
+        write_json_fixture(
+            &fixture.auth_file,
+            &serde_json::json!({
+                "openai": {
+                    "type": "oauth",
+                    "access": "oauth-access-token",
+                    "refresh": "oauth-refresh-token"
+                }
+            }),
+        )
+        .await;
+
+        let oauth_scan = fixture.manager.scan(&fixture.settings).await;
+        let opencode_oauth = opencode_item(&oauth_scan);
+        assert_eq!(opencode_oauth.status, ScanStatus::Detected);
+        assert!(opencode_oauth.provider_candidates.is_empty());
+        let oauth_current = opencode_oauth.current.as_ref().unwrap();
+        assert_eq!(oauth_current.auth_kind.as_deref(), Some("oauth"));
+        assert_eq!(oauth_current.managed_provider_id, None);
+        assert!(
+            oauth_current
+                .diagnostics
+                .iter()
+                .any(|message| message
+                    .contains("OAuth providers are recognized but cannot be saved"))
+        );
+    }
+
     #[tokio::test]
     async fn unmanaged_codex_oauth_can_be_saved_and_bound_without_changing_auth_file() {
         let auth_content =
@@ -639,7 +1012,9 @@ mod tests {
             Some("oauth")
         );
         let candidate_id = first_codex
-            .candidate_id
+            .provider_candidates
+            .first()
+            .map(|candidate| candidate.id)
             .expect("valid unmanaged Codex OAuth should be savable");
 
         let provider = fixture
@@ -653,6 +1028,7 @@ mod tests {
                     name: "Codex OAuth".into(),
                     coding_plan: false,
                     coding_plan_name: None,
+                    default_model: None,
                 },
             )
             .await
@@ -687,7 +1063,7 @@ mod tests {
         let second_scan = fixture.manager.scan(&fixture.settings).await;
         let second_codex = codex_item(&second_scan);
         assert_eq!(second_codex.status, ScanStatus::Detected);
-        assert_eq!(second_codex.candidate_id, None);
+        assert!(second_codex.provider_candidates.is_empty());
         assert_eq!(
             second_codex
                 .current
@@ -704,7 +1080,7 @@ mod tests {
         )
         .await;
         let scan = fixture.manager.scan(&fixture.settings).await;
-        let candidate_id = codex_item(&scan).candidate_id.unwrap();
+        let candidate_id = codex_item(&scan).provider_candidates[0].id;
         tokio::fs::write(
             &fixture.auth_file,
             br#"{"tokens":{"account_id":"fixture-account","access_token":"new-token"}}"#,
@@ -724,6 +1100,7 @@ mod tests {
                         name: "Codex OAuth".into(),
                         coding_plan: false,
                         coding_plan_name: None,
+                        default_model: None,
                     },
                 )
                 .await,
@@ -745,7 +1122,7 @@ mod tests {
         let scan = fixture.manager.scan(&fixture.settings).await;
         let codex = codex_item(&scan);
         assert_eq!(codex.status, ScanStatus::Unmanaged);
-        assert_eq!(codex.candidate_id, None);
+        assert!(codex.provider_candidates.is_empty());
         assert!(
             codex
                 .current
@@ -754,6 +1131,102 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|message| message.contains("cannot be saved"))
+        );
+    }
+
+    #[tokio::test]
+    async fn detected_api_provider_saves_only_an_advertised_model() {
+        let fixture = codex_oauth_fixture(br#"{}"#).await;
+        let snapshot_id = Uuid::new_v4();
+        let candidate_id = Uuid::new_v4();
+        fixture.manager.candidates.write().await.insert(
+            candidate_id,
+            CandidateEntry {
+                candidate: UnmanagedCandidate {
+                    id: candidate_id,
+                    snapshot_id,
+                    cli_id: CliId::Opencode,
+                    source_provider_id: "fixture-provider".into(),
+                    suggested_name: "Fixture provider".into(),
+                    source_digests: Default::default(),
+                    data: UnmanagedCandidateData::Api {
+                        connection: crate::domain::ProviderConnection {
+                            id: Uuid::new_v4(),
+                            protocol: crate::domain::CliProtocol::AnthropicMessages,
+                            endpoint: url::Url::parse("https://fixture.invalid/v1").unwrap(),
+                            auth_type: crate::domain::ConnectionAuthType::ApiKey,
+                            api_key: "fixture-secret-key".into(),
+                            default_model: "model-a".into(),
+                            verification: VerificationInfo::default(),
+                        },
+                        available_models: vec!["model-a".into(), "model-b".into()],
+                    },
+                },
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        let invalid = fixture
+            .manager
+            .save_unmanaged_candidate(
+                &fixture.oauth,
+                &fixture.settings,
+                UnmanagedCandidateSaveRequest {
+                    snapshot_id,
+                    candidate_id,
+                    name: "Fixture provider".into(),
+                    coding_plan: false,
+                    coding_plan_name: None,
+                    default_model: Some("unadvertised-model".into()),
+                },
+            )
+            .await;
+        assert!(matches!(invalid, Err(AppError::Validation(_))));
+        assert!(
+            fixture
+                .repository
+                .list_providers()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let saved = fixture
+            .manager
+            .save_unmanaged_candidate(
+                &fixture.oauth,
+                &fixture.settings,
+                UnmanagedCandidateSaveRequest {
+                    snapshot_id,
+                    candidate_id,
+                    name: "Fixture provider".into(),
+                    coding_plan: false,
+                    coding_plan_name: None,
+                    default_model: Some("model-b".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let saved_id = saved.id;
+        let ProviderData::Api(api) = saved.data else {
+            panic!("detected API candidate should save as an API provider");
+        };
+        assert_eq!(api.connections[0].default_model, "model-b");
+        assert_eq!(
+            fixture
+                .manager
+                .match_saved_connection(&api.connections[0])
+                .await,
+            Some(saved_id)
+        );
+        let mut different_auth_type = api.connections[0].clone();
+        different_auth_type.auth_type = ConnectionAuthType::Bearer;
+        assert_eq!(
+            fixture
+                .manager
+                .match_saved_connection(&different_auth_type)
+                .await,
+            None
         );
     }
 }

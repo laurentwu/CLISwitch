@@ -126,6 +126,17 @@ export interface CurrentCliConfiguration {
   diagnostics: string[];
 }
 
+export interface DetectedProviderCandidate {
+  id: string;
+  sourceProviderId: string;
+  suggestedName: string;
+  protocol?: CliProtocol | null;
+  endpoint?: string | null;
+  authType?: ConnectionAuthType | null;
+  availableModels: string[];
+  defaultModel?: string | null;
+}
+
 export interface DetectedCli {
   cliId: CliId;
   label: string;
@@ -135,7 +146,7 @@ export interface DetectedCli {
   version?: string | null;
   source: string;
   current?: CurrentCliConfiguration | null;
-  candidateId?: string | null;
+  providerCandidates?: DetectedProviderCandidate[];
 }
 
 export interface ScanSnapshot {

@@ -537,6 +537,19 @@ pub struct CurrentCliConfiguration {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DetectedProviderCandidate {
+    pub id: Uuid,
+    pub source_provider_id: String,
+    pub suggested_name: String,
+    pub protocol: Option<CliProtocol>,
+    pub endpoint: Option<Url>,
+    pub auth_type: Option<ConnectionAuthType>,
+    pub available_models: Vec<String>,
+    pub default_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DetectedCli {
     pub cli_id: CliId,
     pub label: String,
@@ -546,7 +559,7 @@ pub struct DetectedCli {
     pub version: Option<String>,
     pub source: String,
     pub current: Option<CurrentCliConfiguration>,
-    pub candidate_id: Option<Uuid>,
+    pub provider_candidates: Vec<DetectedProviderCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -572,13 +585,18 @@ pub struct UnmanagedCandidate {
     pub id: Uuid,
     pub snapshot_id: Uuid,
     pub cli_id: CliId,
+    pub source_provider_id: String,
+    pub suggested_name: String,
     pub source_digests: BTreeMap<PathBuf, Option<String>>,
     pub data: UnmanagedCandidateData,
 }
 
 #[derive(Debug, Clone)]
 pub enum UnmanagedCandidateData {
-    Api(ProviderConnection),
+    Api {
+        connection: ProviderConnection,
+        available_models: Vec<String>,
+    },
     Oauth {
         kind: OAuthKind,
         auth_file: PathBuf,
@@ -1064,7 +1082,7 @@ mod tests {
                     version: Some("fixture".into()),
                     source: "fixture".into(),
                     current: Some(current()),
-                    candidate_id: None,
+                    provider_candidates: Vec::new(),
                 })
                 .collect(),
         };

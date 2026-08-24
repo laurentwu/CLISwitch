@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use crate::{
     adapters::traits::{
-        AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan, CliAdapter,
-        FileWritePlan, FixedOAuthCommand, HostEnvironment, read_optional,
+        AdapterApiCandidate, AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan,
+        CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, read_optional,
     },
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
@@ -133,6 +133,16 @@ impl CliAdapter for ClaudeCodeAdapter {
                 digest: file_digest(auth_file).await?,
             });
         }
+        let unmanaged_api_candidates = candidate
+            .into_iter()
+            .map(|connection| AdapterApiCandidate {
+                source_provider_id: "claude-code".into(),
+                suggested_name: "Claude Code API".into(),
+                available_models: vec![connection.default_model.clone()],
+                is_current: true,
+                connection,
+            })
+            .collect();
         Ok(AdapterReadResult {
             current: CurrentCliConfiguration {
                 provider_name: endpoint.clone(),
@@ -148,7 +158,7 @@ impl CliAdapter for ClaudeCodeAdapter {
                     Vec::new()
                 },
             },
-            unmanaged_candidate: candidate,
+            unmanaged_api_candidates,
         })
     }
 
