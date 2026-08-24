@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -23,6 +23,137 @@ use crate::{
 #[derive(Debug, Default)]
 pub struct OpenCodeAdapter;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelSelection {
+    provider_id: String,
+    model_id: String,
+}
+
+enum ConfiguredModelSelection {
+    None,
+    Unique(ModelSelection),
+    Ambiguous,
+}
+
+fn parse_model_reference(reference: &str) -> Option<ModelSelection> {
+    let (provider_id, model_id) = reference.split_once('/')?;
+    if provider_id.is_empty() || model_id.is_empty() {
+        return None;
+    }
+    Some(ModelSelection {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+    })
+}
+
+fn parse_last_used_model(state: &Value) -> Result<Option<ModelSelection>, &'static str> {
+    let Some(recent) = state.get("recent") else {
+        return Ok(None);
+    };
+    let recent = recent
+        .as_array()
+        .ok_or("OpenCode model state field recent is not an array")?;
+    let Some(entry) = recent.first() else {
+        return Ok(None);
+    };
+    let provider_id = entry
+        .get("providerID")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("OpenCode's most recent model has no valid providerID")?;
+    let model_id = entry
+        .get("modelID")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("OpenCode's most recent model has no valid modelID")?;
+    Ok(Some(ModelSelection {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+    }))
+}
+
+fn configured_model_selection(root: &serde_json::Map<String, Value>) -> ConfiguredModelSelection {
+    let Some(providers) = root.get("provider").and_then(Value::as_object) else {
+        return ConfiguredModelSelection::None;
+    };
+    let mut selected = None;
+    for (provider_id, provider) in providers {
+        let Some(models) = provider
+            .as_object()
+            .and_then(|provider| provider.get("models"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for model_id in models.keys() {
+            if provider_id.is_empty() || model_id.is_empty() {
+                continue;
+            }
+            if selected.is_some() {
+                return ConfiguredModelSelection::Ambiguous;
+            }
+            selected = Some(ModelSelection {
+                provider_id: provider_id.clone(),
+                model_id: model_id.clone(),
+            });
+        }
+    }
+    selected
+        .map(ConfiguredModelSelection::Unique)
+        .unwrap_or(ConfiguredModelSelection::None)
+}
+
+fn model_state_path(environment: &HostEnvironment) -> PathBuf {
+    environment
+        .absolute_path("XDG_STATE_HOME")
+        .unwrap_or_else(|| environment.home.join(".local").join("state"))
+        .join("opencode")
+        .join("model.json")
+}
+
+async fn read_last_used_model(
+    path: &Path,
+) -> (Option<ModelSelection>, Option<String>, Option<String>) {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (None, None, None);
+        }
+        Err(error) => {
+            return (
+                None,
+                None,
+                Some(format!("Unable to read OpenCode model state: {error}")),
+            );
+        }
+    };
+    let digest = Some(bytes_digest(&bytes));
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => text,
+        Err(error) => {
+            return (
+                None,
+                digest,
+                Some(format!("OpenCode model state is not valid UTF-8: {error}")),
+            );
+        }
+    };
+    let state = match parse_jsonc_value(text) {
+        Ok(state) => state,
+        Err(error) => {
+            return (
+                None,
+                digest,
+                Some(format!("Unable to parse OpenCode model state: {error}")),
+            );
+        }
+    };
+    match parse_last_used_model(&state) {
+        Ok(model) => (model, digest, None),
+        Err(error) => (None, digest, Some(error.into())),
+    }
+}
+
 #[async_trait]
 impl CliAdapter for OpenCodeAdapter {
     fn metadata(&self) -> AdapterMetadata {
@@ -30,7 +161,8 @@ impl CliAdapter for OpenCodeAdapter {
             cli_id: CliId::Opencode,
             display_name: "OpenCode".into(),
             command: "opencode".into(),
-            schema_fingerprint: "stable-v1:provider/npm/options/models+auth.type-api".into(),
+            schema_fingerprint:
+                "stable-v1:provider/npm/options/models+auth.type-api+state.model.recent".into(),
         }
     }
 
@@ -80,7 +212,7 @@ impl CliAdapter for OpenCodeAdapter {
     async fn read_current(
         &self,
         paths: &AdapterPaths,
-        _environment: &HostEnvironment,
+        environment: &HostEnvironment,
     ) -> AppResult<AdapterReadResult> {
         let config_text = read_optional(&paths.config_file, "{}\n").await?;
         let config = parse_jsonc_value(&config_text)?;
@@ -93,18 +225,57 @@ impl CliAdapter for OpenCodeAdapter {
                     .into(),
             ));
         }
-        let default_model = root
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let provider_id = default_model.as_deref().and_then(|model| {
-            model
-                .split_once('/')
-                .map(|(provider, _)| provider.to_string())
-        });
-        let model = default_model
-            .as_deref()
-            .and_then(|model| model.split_once('/').map(|(_, model)| model.to_string()));
+        let mut diagnostics = Vec::new();
+        let state_file = model_state_path(environment);
+        let mut state_digest = None;
+        let explicit_model = root.get("model");
+        let selection = match explicit_model {
+            Some(Value::String(reference)) => match parse_model_reference(reference) {
+                Some(selection) => Some(selection),
+                None => {
+                    diagnostics.push(
+                        "OpenCode model must use the provider/model format; last-used state was not used because model is explicitly configured"
+                            .into(),
+                    );
+                    None
+                }
+            },
+            Some(_) => {
+                diagnostics.push(
+                    "OpenCode model must be a provider/model string; last-used state was not used because model is explicitly configured"
+                        .into(),
+                );
+                None
+            }
+            None => {
+                let (last_used, digest, diagnostic) = read_last_used_model(&state_file).await;
+                state_digest = digest;
+                if let Some(diagnostic) = diagnostic {
+                    diagnostics.push(diagnostic);
+                }
+                if last_used.is_some() {
+                    last_used
+                } else {
+                    match configured_model_selection(root) {
+                        ConfiguredModelSelection::Unique(selection) => Some(selection),
+                        ConfiguredModelSelection::Ambiguous => {
+                            diagnostics.push(
+                                "OpenCode has multiple configured models and no explicit or valid last-used model; the active model cannot be inferred"
+                                    .into(),
+                            );
+                            None
+                        }
+                        ConfiguredModelSelection::None => None,
+                    }
+                }
+            }
+        };
+        let provider_id = selection
+            .as_ref()
+            .map(|selection| selection.provider_id.clone());
+        let model = selection
+            .as_ref()
+            .map(|selection| selection.model_id.clone());
         let provider = provider_id.as_ref().and_then(|id| {
             root.get("provider")
                 .and_then(Value::as_object)
@@ -169,6 +340,25 @@ impl CliAdapter for OpenCodeAdapter {
             }),
             _ => None,
         };
+        let mut sources = vec![
+            SourceFileSnapshot {
+                source_id: "opencode-config".into(),
+                display_path: paths.config_file.clone(),
+                digest: file_digest(&paths.config_file).await?,
+            },
+            SourceFileSnapshot {
+                source_id: "opencode-auth".into(),
+                display_path: auth_file.clone(),
+                digest: file_digest(auth_file).await?,
+            },
+        ];
+        if explicit_model.is_none() {
+            sources.push(SourceFileSnapshot {
+                source_id: "opencode-model-state".into(),
+                display_path: state_file,
+                digest: state_digest,
+            });
+        }
         Ok(AdapterReadResult {
             current: CurrentCliConfiguration {
                 provider_name: provider_id,
@@ -176,20 +366,9 @@ impl CliAdapter for OpenCodeAdapter {
                 auth_kind: key.as_ref().map(|_| "api".into()),
                 model,
                 managed_provider_id,
-                sources: vec![
-                    SourceFileSnapshot {
-                        source_id: "opencode-config".into(),
-                        display_path: paths.config_file.clone(),
-                        digest: file_digest(&paths.config_file).await?,
-                    },
-                    SourceFileSnapshot {
-                        source_id: "opencode-auth".into(),
-                        display_path: auth_file.clone(),
-                        digest: file_digest(auth_file).await?,
-                    },
-                ],
+                sources,
                 externally_overridden: false,
-                diagnostics: Vec::new(),
+                diagnostics,
             },
             unmanaged_candidate: candidate,
         })
