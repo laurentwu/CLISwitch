@@ -12,6 +12,15 @@ use crate::{
     process::fixed_command::run_fixed,
 };
 
+// Windows PowerShell can take several seconds to cold-start under load. Keep
+// the shorter budget for native Unix executables while allowing Windows shims
+// enough time to return their version reliably.
+const VERSION_PROBE_TIMEOUT: Duration = if cfg!(windows) {
+    Duration::from_secs(8)
+} else {
+    Duration::from_secs(3)
+};
+
 #[derive(Debug, Clone)]
 pub struct DiscoveredExecutable {
     pub path: PathBuf,
@@ -119,7 +128,7 @@ async fn validate_executable(path: &Path) -> AppResult<PathBuf> {
 }
 
 async fn probe_version(path: &Path) -> Option<String> {
-    let output = run_fixed(path, &["--version"], None, Duration::from_secs(3))
+    let output = run_fixed(path, &["--version"], None, VERSION_PROBE_TIMEOUT)
         .await
         .ok()?;
     let text = if output.stdout.trim().is_empty() {
