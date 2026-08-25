@@ -89,6 +89,20 @@ jobs:
         if: runner.os != 'Linux'
         run: pnpm test:e2e
 
+      - name: Print Windows E2E logs on failure
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path logs)) {
+            Write-Warning "No E2E logs were captured."
+            exit 0
+          }
+
+          Get-ChildItem logs -File -Recurse | ForEach-Object {
+            Write-Output "--- $($_.FullName) ---"
+            Get-Content $_.FullName
+          }
+
       - name: Build unsigned production bundle
         if: github.event_name != 'pull_request'
         run: pnpm tauri build
