@@ -7,8 +7,29 @@ import type {} from "@wdio/types";
 const e2eRoot = mkdtempSync(join(tmpdir(), "cliswitch-e2e-"));
 const fixtureBin = join(e2eRoot, "bin");
 const home = join(e2eRoot, "home");
-mkdirSync(fixtureBin, { recursive: true });
-mkdirSync(home, { recursive: true });
+const roamingAppData = join(home, "AppData", "Roaming");
+const localAppData = join(home, "AppData", "Local");
+
+// WDIO runs config-level onComplete hooks before service teardown. Defer the
+// cleanup until the launcher exits so Windows has released the app's database.
+process.once("exit", () => {
+  try {
+    rmSync(e2eRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+  } catch {
+    // Temporary-directory cleanup must not replace the test result.
+  }
+});
+
+// Windows resolves Tauri's app data directory through the Known Folder API,
+// which rejects overridden APPDATA paths when their directory tree is missing.
+for (const directory of [fixtureBin, home, roamingAppData, localAppData]) {
+  mkdirSync(directory, { recursive: true });
+}
 
 const isWindows = process.platform === "win32";
 const fixture = resolve(isWindows ? "e2e/fixtures/fake-cli.ps1" : "e2e/fixtures/fake-cli.sh");
@@ -30,8 +51,8 @@ const appEnvironment: Record<string, string> = {
   CODEX_HOME: join(home, ".codex"),
   XDG_CONFIG_HOME: join(home, ".config"),
   XDG_DATA_HOME: join(home, ".local", "share"),
-  APPDATA: join(home, "AppData", "Roaming"),
-  LOCALAPPDATA: join(home, "AppData", "Local"),
+  APPDATA: roamingAppData,
+  LOCALAPPDATA: localAppData,
 };
 
 export const config: WebdriverIO.Config = {
@@ -57,7 +78,4 @@ export const config: WebdriverIO.Config = {
   connectionRetryTimeout: 90_000,
   connectionRetryCount: 2,
   mochaOpts: { ui: "bdd", timeout: 60_000 },
-  onComplete: () => {
-    rmSync(e2eRoot, { recursive: true, force: true });
-  },
 };

@@ -12,6 +12,15 @@ use crate::{
     process::fixed_command::run_fixed,
 };
 
+// Windows PowerShell can take several seconds to cold-start under load. Keep
+// the shorter budget for native Unix executables while allowing Windows shims
+// enough time to return their version reliably.
+const VERSION_PROBE_TIMEOUT: Duration = if cfg!(windows) {
+    Duration::from_secs(8)
+} else {
+    Duration::from_secs(3)
+};
+
 #[derive(Debug, Clone)]
 pub struct DiscoveredExecutable {
     pub path: PathBuf,
@@ -119,7 +128,7 @@ async fn validate_executable(path: &Path) -> AppResult<PathBuf> {
 }
 
 async fn probe_version(path: &Path) -> Option<String> {
-    let output = run_fixed(path, &["--version"], None, Duration::from_secs(3))
+    let output = run_fixed(path, &["--version"], None, VERSION_PROBE_TIMEOUT)
         .await
         .ok()?;
     let text = if output.stdout.trim().is_empty() {
@@ -163,20 +172,25 @@ mod tests {
     #[tokio::test]
     async fn manual_executable_is_canonicalized_and_probed() {
         let temp = tempfile::tempdir().unwrap();
-        let executable = temp
-            .path()
-            .join(if cfg!(windows) { "codex.ps1" } else { "codex" });
-        let script = if cfg!(windows) {
-            "Write-Output 'codex 1.2.3'\r\n"
-        } else {
-            "#!/bin/sh\necho codex 1.2.3\n"
+        #[cfg(windows)]
+        let executable = {
+            let path = std::env::var_os("PATH").expect("test PATH should be available");
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("rustc.exe"))
+                .find(|candidate| candidate.is_file())
+                .expect("rustc.exe should be available while running Cargo tests")
         };
-        tokio::fs::write(&executable, script).await.unwrap();
         #[cfg(unix)]
-        {
+        let executable = {
             use std::os::unix::fs::PermissionsExt;
+
+            let executable = temp.path().join("codex");
+            tokio::fs::write(&executable, "#!/bin/sh\necho codex 1.2.3\n")
+                .await
+                .unwrap();
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+            executable
+        };
         let environment = HostEnvironment {
             home: temp.path().to_path_buf(),
             variables: BTreeMap::new(),
@@ -187,7 +201,18 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(found.path.is_absolute());
+        assert_eq!(
+            found.path,
+            tokio::fs::canonicalize(&executable).await.unwrap()
+        );
+        #[cfg(windows)]
+        assert!(
+            found
+                .version
+                .as_deref()
+                .is_some_and(|version| version.starts_with("rustc "))
+        );
+        #[cfg(unix)]
         assert_eq!(found.version.as_deref(), Some("codex 1.2.3"));
     }
 }
