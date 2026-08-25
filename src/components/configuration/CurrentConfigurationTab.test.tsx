@@ -60,6 +60,39 @@ const codexOAuthScan: ScanSnapshot = {
 };
 
 describe("CurrentConfigurationTab", () => {
+  it("labels successful scan diagnostics without calling the scan a failure", () => {
+    const client = new QueryClient();
+    const diagnostic =
+      "OpenCode has multiple configured models and no explicit or valid last-used model";
+    const scan: ScanSnapshot = {
+      ...codexOAuthScan,
+      items: [
+        {
+          ...codexOAuthScan.items[0],
+          current: {
+            ...codexOAuthScan.items[0].current!,
+            diagnostics: [diagnostic],
+          },
+        },
+      ],
+    };
+    render(
+      <QueryClientProvider client={client}>
+        <CurrentConfigurationTab
+          scan={scan}
+          configurations={[]}
+          providers={[]}
+          catalog={catalog}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("扫描诊断")).toBeInTheDocument();
+    expect(screen.getByText(diagnostic)).toBeInTheDocument();
+    expect(screen.queryByText("扫描失败")).not.toBeInTheDocument();
+  });
+
   it("offers to save detected Codex OAuth with an OAuth-specific default name", () => {
     const client = new QueryClient();
     render(

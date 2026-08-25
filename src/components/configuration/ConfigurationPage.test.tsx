@@ -1,9 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { AppSnapshot } from "../../shared/types";
 import { ConfigurationPage } from "./ConfigurationPage";
+
+const commandMock = vi.hoisted(() => vi.fn());
+vi.mock("../../shared/ipc", () => ({ command: commandMock }));
 
 const snapshot: AppSnapshot = {
   catalog: {
@@ -76,6 +79,8 @@ const snapshot: AppSnapshot = {
 };
 
 describe("ConfigurationPage", () => {
+  beforeEach(() => commandMock.mockReset());
+
   it("omits the CLI subtitle and discovery source details", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
@@ -92,5 +97,28 @@ describe("ConfigurationPage", () => {
     expect(screen.queryByText("Claude Code · Codex CLI · OpenCode")).not.toBeInTheDocument();
     expect(screen.queryByText("发现来源")).not.toBeInTheDocument();
     expect(screen.queryByText("hidden-discovery-source")).not.toBeInTheDocument();
+  });
+
+  it("keeps cached content visible when background refreshes fail", async () => {
+    commandMock.mockImplementation(async (name: string) => {
+      if (name === "list_configurations") {
+        throw Object.assign(new Error("temporarily offline"), { code: "network" });
+      }
+      if (name === "list_providers") return snapshot.providers;
+      return snapshot.current;
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0 } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ConfigurationPage snapshot={snapshot} guarded={(action) => action()} onError={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("测试供应商")).toBeInTheDocument();
+    expect(await screen.findByText("无法刷新配置列表")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveClass("alert-warning");
   });
 });

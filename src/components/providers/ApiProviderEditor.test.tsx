@@ -8,7 +8,6 @@ import { ApiProviderEditor } from "./ApiProviderEditor";
 const commandMock = vi.hoisted(() => vi.fn());
 vi.mock("../../shared/ipc", () => ({
   command: commandMock,
-  errorMessage: (error: unknown) => String(error),
 }));
 
 const catalog: ProviderCatalog = {

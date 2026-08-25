@@ -8,6 +8,15 @@ import { X } from "lucide-react";
 import { clsx } from "clsx";
 import { useTranslation } from "react-i18next";
 
+export { Alert, ErrorAlert, ErrorDetails } from "./Alert";
+export { AppErrorBoundary } from "./ErrorBoundary";
+export {
+  NotificationViewport,
+  useErrorNotifier,
+  type ErrorOperation,
+  type ErrorReporter,
+} from "./Notifications";
+
 export function Button({
   variant = "primary",
   className,

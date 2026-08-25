@@ -2,16 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { AppLayout } from "../components/layout/AppLayout";
-import { Modal, Button, Spinner } from "../components/ui";
+import { Modal, Button, ErrorAlert, Spinner, useErrorNotifier } from "../components/ui";
 import { ConfigurationPage } from "../components/configuration/ConfigurationPage";
 import { ProviderPage } from "../components/providers/ProviderPage";
 import { SettingsPage } from "../components/settings/SettingsPage";
-import { command, errorMessage, onEvent } from "../shared/ipc";
+import { command, onEvent } from "../shared/ipc";
 import type { AppSnapshot, CloseState, StartupStatus } from "../shared/types";
 import { useUiStore, type Navigation } from "../stores/ui";
 
 export function App() {
   const { t } = useTranslation();
+  const reportError = useErrorNotifier();
   const startup = useQuery({
     queryKey: ["startup-status"],
     queryFn: () => command<StartupStatus>("get_startup_status"),
@@ -25,11 +26,20 @@ export function App() {
     );
   }
   if (startup.isError || !startup.data) {
+    const error = startup.error ?? {
+      code: "unknown",
+      message: "Startup status did not contain data",
+    };
     return (
       <div className="fatal-panel">
         <h1>{t("common.error")}</h1>
-        <p>{errorMessage(startup.error)}</p>
-        <Button onClick={() => startup.refetch()}>{t("common.retry")}</Button>
+        <ErrorAlert
+          error={error}
+          title={t("errors.operations.load")}
+          onRetry={() => void startup.refetch()}
+          detailsOpen
+          tone="error"
+        />
       </div>
     );
   }
@@ -38,15 +48,16 @@ export function App() {
       <div className="fatal-panel">
         <h1>{t("startup.title")}</h1>
         <p>{t("startup.readOnly")}</p>
-        <p>
-          <strong>{startup.data.code ?? "startup"}</strong>: {startup.data.message}
-        </p>
+        <ErrorAlert
+          error={{ code: startup.data.code ?? "startup", message: startup.data.message }}
+          title={t("errors.operations.load")}
+          detailsOpen
+          tone="error"
+        />
         <p className="path-text">{startup.data.appDataDirectory}</p>
         <Button
           onClick={() =>
-            command("open_startup_data_directory").catch(() => {
-              /* The diagnostic remains readable even if the OS opener is unavailable. */
-            })
+            command("open_startup_data_directory").catch((error) => reportError(error, "open"))
           }
         >
           {t("settings.openDirectory")}
@@ -59,13 +70,13 @@ export function App() {
 
 function ReadyApp() {
   const { t, i18n } = useTranslation();
+  const reportError = useErrorNotifier();
   const navigation = useUiStore((state) => state.navigation);
   const dirty = useUiStore((state) => state.dirty);
   const saveCurrent = useUiStore((state) => state.saveCurrent);
   const setNavigation = useUiStore((state) => state.setNavigation);
   const setDirty = useUiStore((state) => state.setDirty);
   const [pending, setPending] = useState<null | (() => void)>(null);
-  const [fatal, setFatal] = useState<string>();
   const [closeConfirmationOpen, setCloseConfirmationOpen] = useState(false);
   const shutdownInFlight = useRef(false);
   const snapshot = useQuery({
@@ -83,8 +94,10 @@ function ReadyApp() {
   }, [snapshot.data, i18n]);
 
   useEffect(() => {
-    void command("set_frontend_dirty", { dirty }).catch((error) => setFatal(errorMessage(error)));
-  }, [dirty]);
+    void command("set_frontend_dirty", { dirty }).catch((error) =>
+      reportError(error, "background"),
+    );
+  }, [dirty, reportError]);
 
   const shutdown = useCallback(async () => {
     if (shutdownInFlight.current) return;
@@ -93,9 +106,9 @@ function ReadyApp() {
       await command("shutdown_app");
     } catch (error) {
       shutdownInFlight.current = false;
-      setFatal(errorMessage(error));
+      reportError(error, "close");
     }
-  }, []);
+  }, [reportError]);
 
   useEffect(() => {
     let disposed = false;
@@ -111,7 +124,7 @@ function ReadyApp() {
           else void shutdown();
         })
         .catch((error) => {
-          if (!disposed) setFatal(errorMessage(error));
+          if (!disposed) reportError(error, "close");
         });
     })
       .then((unlisten) => {
@@ -119,13 +132,13 @@ function ReadyApp() {
         else cleanup = unlisten;
       })
       .catch((error) => {
-        if (!disposed) setFatal(errorMessage(error));
+        if (!disposed) reportError(error, "background");
       });
     return () => {
       disposed = true;
       cleanup?.();
     };
-  }, [shutdown]);
+  }, [reportError, shutdown]);
 
   const guarded = useCallback((action: () => void) => {
     if (useUiStore.getState().dirty) setPending(() => action);
@@ -141,12 +154,21 @@ function ReadyApp() {
       </div>
     );
   }
-  if (snapshot.isError || !snapshot.data) {
+  if (!snapshot.data) {
+    const error = snapshot.error ?? {
+      code: "unknown",
+      message: "Application snapshot did not contain data",
+    };
     return (
       <div className="fatal-panel">
         <h1>{t("common.error")}</h1>
-        <p>{fatal ?? errorMessage(snapshot.error)}</p>
-        <Button onClick={() => snapshot.refetch()}>{t("common.retry")}</Button>
+        <ErrorAlert
+          error={error}
+          title={t("errors.operations.load")}
+          onRetry={() => void snapshot.refetch()}
+          detailsOpen
+          tone="error"
+        />
       </div>
     );
   }
@@ -154,19 +176,22 @@ function ReadyApp() {
   return (
     <>
       <AppLayout navigation={navigation} onNavigate={navigate}>
-        {fatal ? (
-          <div className="global-error" role="alert">
-            {fatal}
-          </div>
+        {snapshot.isError ? (
+          <ErrorAlert
+            error={snapshot.error}
+            title={t("errors.operations.refresh")}
+            onRetry={() => void snapshot.refetch()}
+            tone="warning"
+          />
         ) : null}
         {navigation === "configuration" ? (
-          <ConfigurationPage snapshot={snapshot.data} guarded={guarded} onError={setFatal} />
+          <ConfigurationPage snapshot={snapshot.data} guarded={guarded} onError={reportError} />
         ) : null}
         {navigation === "providers" ? (
-          <ProviderPage snapshot={snapshot.data} guarded={guarded} onError={setFatal} />
+          <ProviderPage snapshot={snapshot.data} guarded={guarded} onError={reportError} />
         ) : null}
         {navigation === "settings" ? (
-          <SettingsPage snapshot={snapshot.data} onError={setFatal} />
+          <SettingsPage snapshot={snapshot.data} onError={reportError} />
         ) : null}
       </AppLayout>
       <Modal
@@ -198,7 +223,7 @@ function ReadyApp() {
                     setPending(null);
                   }
                 } catch (error) {
-                  setFatal(errorMessage(error));
+                  reportError(error, "save");
                 }
               }}
             >
