@@ -94,6 +94,7 @@ export function ConfigurationPage({
           scan={scan.data}
           configurations={configurations.data}
           providers={providers.data}
+          catalog={snapshot.catalog}
           onError={onError}
         />
       ) : null}
@@ -106,6 +107,7 @@ export function ConfigurationPage({
             snapshot.latestApply?.configurationId === selected.id ? snapshot.latestApply : undefined
           }
           providers={providers.data}
+          catalog={snapshot.catalog}
           configurations={configurations.data}
           scan={scan.data}
           onDeleted={() => setActive("current")}

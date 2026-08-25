@@ -1,35 +1,38 @@
 import { useTranslation } from "react-i18next";
-import type { CliId, ConfigurationTarget, PublicProvider } from "../../shared/types";
-import { CLI_PROTOCOLS } from "../../shared/types";
+import {
+  connectionDisplayName,
+  connectionsForCli,
+  preferredConnectionForCli,
+  providerSupportsCli,
+} from "../../shared/catalog";
+import type {
+  CliId,
+  ConfigurationTarget,
+  ProviderCatalog,
+  PublicProvider,
+} from "../../shared/types";
 import { Field, Input, Select } from "../ui";
 
-function compatibleProviders(cliId: CliId, providers: PublicProvider[]) {
-  return providers.filter((provider) =>
-    provider.kind === "oauth"
-      ? (provider.oauthKind === "anthropic" && cliId === "claude-code") ||
-        (provider.oauthKind === "codex" && cliId === "codex")
-      : provider.connections.some((connection) =>
-          CLI_PROTOCOLS[cliId].includes(connection.protocol),
-        ),
-  );
+function compatibleProviders(catalog: ProviderCatalog, cliId: CliId, providers: PublicProvider[]) {
+  return providers.filter((provider) => providerSupportsCli(catalog, cliId, provider));
 }
 
 export function makeTarget(
+  catalog: ProviderCatalog,
   cliId: CliId,
   provider: PublicProvider,
 ): ConfigurationTarget | undefined {
   if (provider.kind === "oauth")
     return { targetType: "oauth", cliId, providerId: provider.id, model: "default" };
-  const connection = CLI_PROTOCOLS[cliId]
-    .map((protocol) => provider.connections.find((item) => item.protocol === protocol))
-    .find((item) => item !== undefined);
-  if (!connection) return undefined;
+  const compatible = connectionsForCli(catalog, cliId, provider);
+  if (!compatible.length) return undefined;
+  const connection = preferredConnectionForCli(catalog, cliId, provider);
   return {
     targetType: "api",
     cliId,
     providerId: provider.id,
-    connectionId: connection.id,
-    model: connection.defaultModel,
+    connectionId: connection?.id ?? "",
+    model: connection?.defaultModel ?? "",
   };
 }
 
@@ -37,22 +40,19 @@ export function CliTargetRow({
   cliId,
   target,
   providers,
+  catalog,
   onChange,
 }: {
   cliId: CliId;
   target: ConfigurationTarget;
   providers: PublicProvider[];
+  catalog: ProviderCatalog;
   onChange: (target: ConfigurationTarget) => void;
 }) {
   const { t } = useTranslation();
-  const compatible = compatibleProviders(cliId, providers);
+  const compatible = compatibleProviders(catalog, cliId, providers);
   const selected = providers.find((provider) => provider.id === target.providerId);
-  const connections =
-    selected?.kind === "api"
-      ? selected.connections.filter((connection) =>
-          CLI_PROTOCOLS[cliId].includes(connection.protocol),
-        )
-      : [];
+  const connections = selected?.kind === "api" ? connectionsForCli(catalog, cliId, selected) : [];
   return (
     <div className="target-grid">
       <strong>{cliId}</strong>
@@ -61,7 +61,7 @@ export function CliTargetRow({
           value={target.providerId}
           onChange={(event) => {
             const provider = providers.find((item) => item.id === event.target.value);
-            const next = provider && makeTarget(cliId, provider);
+            const next = provider && makeTarget(catalog, cliId, provider);
             if (next) onChange(next);
           }}
         >
@@ -86,9 +86,12 @@ export function CliTargetRow({
                 });
             }}
           >
+            {!target.connectionId ? <option value="">{t("config.selectEndpoint")}</option> : null}
             {connections.map((connection) => (
               <option key={connection.id} value={connection.id}>
-                {connection.protocol}
+                {selected
+                  ? connectionDisplayName(catalog, selected, connection)
+                  : connection.protocol}
               </option>
             ))}
           </Select>

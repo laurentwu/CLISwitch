@@ -6,12 +6,12 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    adapters::opencode_provider_map::{package_protocol, protocol_auth_type, provider_relation},
     adapters::traits::{
         AdapterApiCandidate, AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan,
         CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id,
         read_optional,
     },
+    catalog::{ProviderModelTemplate, embedded_catalog},
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
         OAuthKind, ProviderConnection, ProviderData, ProviderProfile, SourceFileSnapshot,
@@ -159,6 +159,9 @@ async fn read_last_used_model(
 #[derive(Debug, Clone)]
 struct ResolvedProviderMetadata {
     display_name: String,
+    template_id: Option<String>,
+    template_endpoint_id: Option<String>,
+    credential_slot_id: Option<String>,
     protocol: Option<CliProtocol>,
     auth_type: Option<ConnectionAuthType>,
     endpoint: Option<String>,
@@ -178,47 +181,127 @@ fn configured_provider<'a>(
 fn resolve_provider_metadata(
     provider_id: &str,
     provider: Option<&serde_json::Map<String, Value>>,
-) -> ResolvedProviderMetadata {
-    let relation = provider_relation(provider_id);
+) -> AppResult<ResolvedProviderMetadata> {
+    let catalog = embedded_catalog()?;
+    let relation = catalog.native_api_relation(CliId::Opencode, provider_id);
+    let relation_endpoint = relation.and_then(|relation| {
+        catalog
+            .api_template(&relation.provider_template_id)?
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.id == relation.endpoint_id)
+    });
     let explicit_npm = provider
         .and_then(|provider| provider.get("npm"))
         .and_then(Value::as_str)
         .map(str::to_string);
     let protocol = match explicit_npm.as_deref() {
-        Some(npm_package) => package_protocol(npm_package).or_else(|| {
-            relation
-                .filter(|relation| relation.npm_package == npm_package)
-                .map(|relation| relation.protocol)
-        }),
-        None => relation.map(|relation| relation.protocol),
+        Some(npm_package) => catalog
+            .package_protocol(CliId::Opencode, npm_package)
+            .or_else(|| {
+                relation
+                    .filter(|relation| relation.provider_package.as_deref() == Some(npm_package))
+                    .and(relation_endpoint)
+                    .map(|endpoint| endpoint.protocol)
+            }),
+        None => relation_endpoint.map(|endpoint| endpoint.protocol),
     };
+    let template_match = relation
+        .zip(relation_endpoint)
+        .filter(|(_, endpoint)| protocol == Some(endpoint.protocol));
     let endpoint = provider
         .and_then(|provider| provider.get("options"))
         .and_then(Value::as_object)
         .and_then(|options| options.get("baseURL"))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .or_else(|| relation.map(|relation| relation.default_endpoint.to_string()));
+        .or_else(|| template_match.map(|(_, endpoint)| endpoint.base_url.to_string()));
     let display_name = provider
         .and_then(|provider| provider.get("name"))
         .and_then(Value::as_str)
         .filter(|name| !name.trim().is_empty())
         .map(str::to_string)
-        .or_else(|| relation.map(|relation| relation.display_name.to_string()))
+        .or_else(|| {
+            template_match.and_then(|(relation, _)| {
+                catalog
+                    .api_template(&relation.provider_template_id)
+                    .map(|template| template.name.clone())
+            })
+        })
         .unwrap_or_else(|| provider_id.to_string());
     let auth_type = protocol.map(|protocol| {
-        relation
-            .filter(|relation| relation.protocol == protocol)
-            .map(|relation| relation.auth_type)
-            .unwrap_or_else(|| protocol_auth_type(protocol))
+        template_match
+            .and_then(|(relation, endpoint)| {
+                endpoint
+                    .auth_options
+                    .iter()
+                    .find(|option| option.id == relation.auth_option_id)
+                    .map(|option| option.auth_type)
+            })
+            .unwrap_or_else(|| default_auth_type(protocol))
     });
-    ResolvedProviderMetadata {
+    Ok(ResolvedProviderMetadata {
         display_name,
+        template_id: template_match.map(|(relation, _)| relation.provider_template_id.clone()),
+        template_endpoint_id: template_match.map(|(relation, _)| relation.endpoint_id.clone()),
+        credential_slot_id: template_match.map(|(_, endpoint)| endpoint.credential_slot_id.clone()),
         protocol,
         auth_type,
         endpoint,
         explicit_npm,
+    })
+}
+
+const fn default_auth_type(protocol: CliProtocol) -> ConnectionAuthType {
+    match protocol {
+        CliProtocol::AnthropicMessages => ConnectionAuthType::ApiKey,
+        CliProtocol::OpenaiChat | CliProtocol::OpenaiResponses => ConnectionAuthType::Bearer,
     }
+}
+
+fn opencode_models(
+    provider: &ProviderProfile,
+    connection: &ProviderConnection,
+    selected_model: &str,
+) -> Value {
+    let suggestions = provider
+        .template_id
+        .as_deref()
+        .zip(connection.template_endpoint_id.as_deref())
+        .and_then(|(template_id, endpoint_id)| {
+            embedded_catalog()
+                .ok()?
+                .api_template(template_id)?
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.id == endpoint_id)
+                .map(|endpoint| endpoint.models.as_slice())
+        })
+        .unwrap_or_default();
+    let mut models = serde_json::Map::new();
+    for model in suggestions {
+        models.insert(model.id.clone(), opencode_model_value(model));
+    }
+    models
+        .entry(selected_model.to_string())
+        .or_insert_with(|| json!({ "name": selected_model }));
+    Value::Object(models)
+}
+
+fn opencode_model_value(model: &ProviderModelTemplate) -> Value {
+    let mut value =
+        serde_json::Map::from_iter([("name".to_string(), Value::String(model.name.clone()))]);
+    if model.context.is_some() || model.output.is_some() {
+        let mut limit = serde_json::Map::new();
+        if let Some(context) = model.context {
+            limit.insert("context".into(), Value::from(context));
+        }
+        if let Some(output) = model.output {
+            limit.insert("output".into(), Value::from(output));
+        }
+        value.insert("limit".into(), Value::Object(limit));
+    }
+    Value::Object(value)
 }
 
 fn provider_models(
@@ -372,7 +455,8 @@ impl CliAdapter for OpenCodeAdapter {
             .and_then(|id| configured_provider(root, id));
         let current_metadata = provider_id
             .as_deref()
-            .map(|id| resolve_provider_metadata(id, provider));
+            .map(|id| resolve_provider_metadata(id, provider))
+            .transpose()?;
         if let (Some(provider_id), Some(metadata)) = (&provider_id, &current_metadata)
             && provider_id.starts_with("cliswitch_")
             && metadata.explicit_npm.is_some()
@@ -454,8 +538,28 @@ impl CliAdapter for OpenCodeAdapter {
                 continue;
             };
             let configured = configured_provider(root, auth_provider_id);
-            let metadata = resolve_provider_metadata(auth_provider_id, configured);
-            let models = provider_models(configured, selection.as_ref(), auth_provider_id);
+            let metadata = resolve_provider_metadata(auth_provider_id, configured)?;
+            let mut models = provider_models(configured, selection.as_ref(), auth_provider_id);
+            if let Some((template_id, endpoint_id)) = metadata
+                .template_id
+                .as_deref()
+                .zip(metadata.template_endpoint_id.as_deref())
+                && let Some(endpoint) =
+                    embedded_catalog()?
+                        .api_template(template_id)
+                        .and_then(|template| {
+                            template
+                                .endpoints
+                                .iter()
+                                .find(|endpoint| endpoint.id == endpoint_id)
+                        })
+            {
+                for model in &endpoint.models {
+                    if !models.contains(&model.id) {
+                        models.push(model.id.clone());
+                    }
+                }
+            }
             let mut missing = Vec::new();
             if metadata.protocol.is_none() {
                 missing.push("a supported npm package or provider relation");
@@ -485,11 +589,16 @@ impl CliAdapter for OpenCodeAdapter {
             };
             let connection = ProviderConnection {
                 id: Uuid::new_v4(),
+                template_endpoint_id: metadata.template_endpoint_id.clone(),
+                credential_slot_id: metadata
+                    .credential_slot_id
+                    .clone()
+                    .unwrap_or_else(|| "api-key".into()),
                 protocol,
                 endpoint,
                 auth_type: metadata
                     .auth_type
-                    .unwrap_or_else(|| protocol_auth_type(protocol)),
+                    .unwrap_or_else(|| default_auth_type(protocol)),
                 api_key: key.to_string(),
                 default_model: models[0].clone(),
                 verification: VerificationInfo::default(),
@@ -503,6 +612,7 @@ impl CliAdapter for OpenCodeAdapter {
             unmanaged_api_candidates.push(AdapterApiCandidate {
                 source_provider_id: auth_provider_id.clone(),
                 suggested_name: metadata.display_name,
+                template_id: metadata.template_id,
                 connection,
                 available_models: models,
                 is_current: provider_id.as_deref() == Some(auth_provider_id),
@@ -563,11 +673,25 @@ impl CliAdapter for OpenCodeAdapter {
             .iter()
             .find(|connection| connection.id == connection_id)
             .ok_or_else(|| AppError::Validation("connection does not exist".into()))?;
-        let package = match connection.protocol {
-            CliProtocol::OpenaiChat => "@ai-sdk/openai-compatible",
-            CliProtocol::OpenaiResponses => "@ai-sdk/openai",
-            CliProtocol::AnthropicMessages => "@ai-sdk/anthropic",
-        };
+        let catalog = embedded_catalog()?;
+        let relation_package = provider
+            .template_id
+            .as_deref()
+            .zip(connection.template_endpoint_id.as_deref())
+            .and_then(|(template_id, endpoint_id)| {
+                catalog
+                    .api_relations(CliId::Opencode, template_id)
+                    .find(|relation| relation.endpoint_id == endpoint_id)
+                    .and_then(|relation| relation.provider_package.as_deref())
+            });
+        let package = relation_package
+            .or_else(|| catalog.protocol_package(CliId::Opencode, connection.protocol))
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "OpenCode has no provider package for {}",
+                    connection.protocol
+                ))
+            })?;
         let provider_id = namespaced_provider_id(provider.id);
         let config_source = read_optional(&paths.config_file, "{}\n").await?;
         let parsed = parse_jsonc_value(&config_source)?;
@@ -580,9 +704,7 @@ impl CliAdapter for OpenCodeAdapter {
             "npm": package,
             "name": provider.name,
             "options": { "baseURL": connection.endpoint.as_str() },
-            "models": {
-                target.model(): { "name": target.model() }
-            }
+            "models": opencode_models(provider, connection, target.model())
         });
         let target_config = patch_jsonc(
             &config_source,

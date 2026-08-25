@@ -2,8 +2,24 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "../../i18n";
-import type { ScanSnapshot } from "../../shared/types";
+import type { ProviderCatalog, ScanSnapshot } from "../../shared/types";
 import { CurrentConfigurationTab } from "./CurrentConfigurationTab";
+
+const catalog: ProviderCatalog = {
+  schemaVersion: 1,
+  clis: [],
+  providerTemplates: [
+    {
+      mode: "api",
+      id: "glm-coding-plan",
+      name: "GLM Coding Plan",
+      category: "coding-plan",
+      credentialSlots: [],
+      endpoints: [],
+    },
+  ],
+  relations: [],
+};
 
 const codexOAuthScan: ScanSnapshot = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -52,6 +68,7 @@ describe("CurrentConfigurationTab", () => {
           scan={codexOAuthScan}
           configurations={[]}
           providers={[]}
+          catalog={catalog}
           onError={vi.fn()}
         />
       </QueryClientProvider>,
@@ -88,7 +105,8 @@ describe("CurrentConfigurationTab", () => {
             {
               id: "00000000-0000-4000-8000-000000000011",
               sourceProviderId: "zhipuai-coding-plan",
-              suggestedName: "Zhipu AI Coding Plan",
+              suggestedName: "GLM Coding Plan",
+              templateId: "glm-coding-plan",
               protocol: "openai-chat",
               endpoint: "https://open.bigmodel.cn/api/coding/paas/v4",
               authType: "bearer",
@@ -111,23 +129,29 @@ describe("CurrentConfigurationTab", () => {
     };
     render(
       <QueryClientProvider client={client}>
-        <CurrentConfigurationTab scan={scan} configurations={[]} providers={[]} onError={vi.fn()} />
+        <CurrentConfigurationTab
+          scan={scan}
+          configurations={[]}
+          providers={[]}
+          catalog={catalog}
+          onError={vi.fn()}
+        />
       </QueryClientProvider>,
     );
 
     expect(
-      screen.getByRole("button", { name: "将 Zhipu AI Coding Plan 保存为供应商" }),
+      screen.getByRole("button", { name: "将 GLM Coding Plan 保存为供应商" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "将 Custom gateway 保存为供应商" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "将 Zhipu AI Coding Plan 保存为供应商" }));
+    fireEvent.click(screen.getByRole("button", { name: "将 GLM Coding Plan 保存为供应商" }));
     const dialog = screen.getByRole("dialog", { name: "保存未纳管供应商" });
-    expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue(
-      "Zhipu AI Coding Plan",
-    );
-    expect(within(dialog).getByRole("combobox", { name: "默认模型" })).toHaveValue("glm-current");
+    expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue("GLM Coding Plan");
+    expect(within(dialog).getByRole("combobox", { name: /默认模型/ })).toHaveValue("glm-current");
     expect(within(dialog).getByText("zhipuai-coding-plan")).toBeInTheDocument();
+    expect(within(dialog).getByText("GLM Coding Plan")).toBeInTheDocument();
+    expect(within(dialog).queryByText("glm-coding-plan")).not.toBeInTheDocument();
   });
 });

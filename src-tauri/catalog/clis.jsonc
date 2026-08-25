@@ -1,0 +1,40 @@
+{
+  // Bundled, read-only CLI capabilities. Keep IDs stable because relations reference them.
+  "schemaVersion": 1,
+  "clis": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "protocols": ["anthropic-messages"],
+      "authModes": [{ "id": "anthropic-oauth", "oauthKind": "anthropic" }],
+      "protocolAdapters": [],
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "protocols": ["openai-responses"],
+      "authModes": [{ "id": "codex-oauth", "oauthKind": "codex" }],
+      "protocolAdapters": [],
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "protocols": ["openai-responses", "openai-chat", "anthropic-messages"],
+      "authModes": [],
+      "protocolAdapters": [
+        {
+          "protocol": "openai-chat",
+          "providerPackage": "@ai-sdk/openai-compatible",
+        },
+        {
+          "protocol": "openai-responses",
+          "providerPackage": "@ai-sdk/openai",
+        },
+        {
+          "protocol": "anthropic-messages",
+          "providerPackage": "@ai-sdk/anthropic",
+        },
+      ],
+    },
+  ],
+}

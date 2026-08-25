@@ -109,6 +109,7 @@ pub struct AdapterPaths {
 pub struct AdapterApiCandidate {
     pub source_provider_id: String,
     pub suggested_name: String,
+    pub template_id: Option<String>,
     pub connection: ProviderConnection,
     pub available_models: Vec<String>,
     pub is_current: bool,

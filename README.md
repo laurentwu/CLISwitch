@@ -12,6 +12,7 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 - A horizontal `Current configuration / named configurations / +` workspace.
 - Local discovery with explicit executable and config-directory overrides.
 - Endpoint + key providers with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages connections.
+- Bundled JSONC catalogs for provider templates and explicit CLI-to-template endpoint/auth relations; users edit only their saved provider instances.
 - Anthropic OAuth for Claude Code and Codex OAuth for Codex CLI, using installed official CLIs or offline auth-file import.
 - Full plaintext viewing, copying, and editing of API keys and OAuth source content.
 - Preview-before-apply, optimistic digest conflict checks, sequential per-CLI writes, atomic replacement, verification, rollback, cancellation, and retry of failed items only.

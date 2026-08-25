@@ -267,6 +267,8 @@ mod tests {
             .await;
         let connection = ProviderConnection {
             id: uuid::Uuid::new_v4(),
+            template_endpoint_id: None,
+            credential_slot_id: "api-key".into(),
             protocol: CliProtocol::OpenaiResponses,
             endpoint: Url::parse(&format!("{}/v1", source.uri())).unwrap(),
             auth_type: ConnectionAuthType::Bearer,

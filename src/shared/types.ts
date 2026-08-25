@@ -17,6 +17,8 @@ export interface VerificationInfo {
 
 export interface ProviderConnection {
   id: string;
+  templateEndpointId?: string | null;
+  credentialSlotId: string;
   protocol: CliProtocol;
   endpoint: string;
   authType: ConnectionAuthType;
@@ -31,10 +33,12 @@ export interface PublicProvider {
   id: string;
   name: string;
   kind: "api" | "oauth";
+  templateId?: string | null;
+  templateName?: string | null;
+  templateMode?: "api" | "auth" | null;
+  templateCategory?: string | null;
   oauthKind?: OAuthKind | null;
   oauthAccountLabel?: string | null;
-  codingPlan: boolean;
-  codingPlanName?: string;
   connections: PublicProviderConnection[];
   verificationStatus?: VerificationStatus | null;
   referencedBy: string[];
@@ -45,6 +49,7 @@ export interface PublicProvider {
 interface ProviderBase {
   id: string;
   name: string;
+  templateId?: string | null;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -52,8 +57,6 @@ interface ProviderBase {
 
 export interface ApiProviderDetail extends ProviderBase {
   profileType: "api";
-  codingPlan: boolean;
-  codingPlanName?: string | null;
   connections: ProviderConnection[];
 }
 
@@ -130,6 +133,7 @@ export interface DetectedProviderCandidate {
   id: string;
   sourceProviderId: string;
   suggestedName: string;
+  templateId?: string | null;
   protocol?: CliProtocol | null;
   endpoint?: string | null;
   authType?: ConnectionAuthType | null;
@@ -267,6 +271,7 @@ export interface OAuthSessionSnapshot {
 }
 
 export interface AppSnapshot {
+  catalog: ProviderCatalog;
   settings: AppSettings;
   providers: PublicProvider[];
   configurations: SavedConfiguration[];
@@ -296,10 +301,11 @@ export interface CloseState {
 
 export interface ApiProviderDraft {
   name: string;
-  codingPlan: boolean;
-  codingPlanName?: string;
+  templateId?: string;
   connections: Array<{
     id?: string;
+    templateEndpointId?: string;
+    credentialSlotId: string;
     protocol: CliProtocol;
     endpoint: string;
     authType: ConnectionAuthType;
@@ -310,8 +316,91 @@ export interface ApiProviderDraft {
 
 export const CLI_IDS: CliId[] = ["claude-code", "codex", "opencode"];
 
-export const CLI_PROTOCOLS: Record<CliId, CliProtocol[]> = {
-  "claude-code": ["anthropic-messages"],
-  codex: ["openai-responses"],
-  opencode: ["openai-responses", "openai-chat", "anthropic-messages"],
-};
+export interface CatalogAuthMode {
+  id: string;
+  oauthKind: OAuthKind;
+}
+
+export interface CliProtocolAdapter {
+  protocol: CliProtocol;
+  providerPackage: string;
+}
+
+export interface CatalogCli {
+  id: CliId;
+  name: string;
+  protocols: CliProtocol[];
+  authModes: CatalogAuthMode[];
+  protocolAdapters: CliProtocolAdapter[];
+}
+
+export interface EndpointAuthOption {
+  id: string;
+  authType: ConnectionAuthType;
+}
+
+export interface ProviderModelTemplate {
+  id: string;
+  name: string;
+  default: boolean;
+  context?: number | null;
+  output?: number | null;
+}
+
+export interface ProviderEndpointTemplate {
+  id: string;
+  name: string;
+  protocol: CliProtocol;
+  baseUrl: string;
+  credentialSlotId: string;
+  authOptions: EndpointAuthOption[];
+  defaultAuthOptionId: string;
+  models: ProviderModelTemplate[];
+}
+
+export interface ApiProviderTemplate {
+  mode: "api";
+  id: string;
+  name: string;
+  category: string;
+  credentialSlots: Array<{ id: string; name: string }>;
+  endpoints: ProviderEndpointTemplate[];
+}
+
+export interface AuthProviderTemplate {
+  mode: "auth";
+  id: string;
+  name: string;
+  authKind: OAuthKind;
+}
+
+export type ProviderTemplate = ApiProviderTemplate | AuthProviderTemplate;
+
+export interface ApiCliProviderRelation {
+  mode: "api";
+  id: string;
+  cliId: CliId;
+  providerTemplateId: string;
+  endpointId: string;
+  authOptionId: string;
+  providerPackage?: string | null;
+  default: boolean;
+  nativeProviderIds: string[];
+}
+
+export interface AuthCliProviderRelation {
+  mode: "auth";
+  id: string;
+  cliId: CliId;
+  providerTemplateId: string;
+  authModeId: string;
+}
+
+export type CliProviderRelation = ApiCliProviderRelation | AuthCliProviderRelation;
+
+export interface ProviderCatalog {
+  schemaVersion: number;
+  clis: CatalogCli[];
+  providerTemplates: ProviderTemplate[];
+  relations: CliProviderRelation[];
+}
