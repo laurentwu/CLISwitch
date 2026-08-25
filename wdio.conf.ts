@@ -10,6 +10,21 @@ const home = join(e2eRoot, "home");
 const roamingAppData = join(home, "AppData", "Roaming");
 const localAppData = join(home, "AppData", "Local");
 
+// WDIO runs config-level onComplete hooks before service teardown. Defer the
+// cleanup until the launcher exits so Windows has released the app's database.
+process.once("exit", () => {
+  try {
+    rmSync(e2eRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+  } catch {
+    // Temporary-directory cleanup must not replace the test result.
+  }
+});
+
 // Windows resolves Tauri's app data directory through the Known Folder API,
 // which rejects overridden APPDATA paths when their directory tree is missing.
 for (const directory of [fixtureBin, home, roamingAppData, localAppData]) {
@@ -63,7 +78,4 @@ export const config: WebdriverIO.Config = {
   connectionRetryTimeout: 90_000,
   connectionRetryCount: 2,
   mochaOpts: { ui: "bdd", timeout: 60_000 },
-  onComplete: () => {
-    rmSync(e2eRoot, { recursive: true, force: true });
-  },
 };
