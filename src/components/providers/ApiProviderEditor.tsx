@@ -16,6 +16,7 @@ import type {
   ProviderEndpointTemplate,
   PublicProvider,
 } from "../../shared/types";
+import { useNotificationStore } from "../../stores/notifications";
 import { useUiStore } from "../../stores/ui";
 import { Alert, Badge, Button, Card, Field, Input, Select, type ErrorReporter } from "../ui";
 
@@ -161,6 +162,7 @@ export function ApiProviderEditor({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const pushNotification = useNotificationStore((state) => state.push);
   const setDirty = useUiStore((state) => state.setDirty);
   const setSaveCurrent = useUiStore((state) => state.setSaveCurrent);
   const [notice, setNotice] = useState<EditorNotice>();
@@ -332,7 +334,11 @@ export function ApiProviderEditor({
         connectionId,
       });
       setModelOptions((current) => ({ ...current, [fieldId]: values }));
-      setNotice({ tone: "info", message: values.join(", ") || t("common.none") });
+      pushNotification({
+        tone: "success",
+        title: t("providers.fetchModelsSucceeded"),
+        dedupeKey: `fetch-models-success\0${detail.id}\0${connectionId}`,
+      });
       if (!form.getValues(`connections.${index}.defaultModel`) && values[0])
         form.setValue(`connections.${index}.defaultModel`, values[0], { shouldDirty: true });
     } catch (error) {

@@ -3,6 +3,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { ApiProviderDetail, ProviderCatalog } from "../../shared/types";
+import { useNotificationStore } from "../../stores/notifications";
+import { NotificationViewport } from "../ui";
 import { ApiProviderEditor } from "./ApiProviderEditor";
 
 const commandMock = vi.hoisted(() => vi.fn());
@@ -40,7 +42,10 @@ const catalog: ProviderCatalog = {
 };
 
 describe("ApiProviderEditor", () => {
-  beforeEach(() => commandMock.mockReset());
+  beforeEach(() => {
+    commandMock.mockReset();
+    useNotificationStore.getState().clear();
+  });
 
   it("expands a provider template into all endpoints and one shared credential input", () => {
     render(
@@ -109,5 +114,109 @@ describe("ApiProviderEditor", () => {
       document.querySelector('datalist#models-0 option[value="fetched-second"]'),
     ).not.toBeNull();
     expect(document.querySelector('datalist#models-0 option[value="fetched-first"]')).toBeNull();
+  });
+
+  it("shows fetched models in the default-model suggestions and reports success in a toast", async () => {
+    const detail: ApiProviderDetail = {
+      id: "provider-1",
+      name: "Custom provider",
+      profileType: "api",
+      revision: 1,
+      createdAt: "2026-08-23T00:00:00Z",
+      updatedAt: "2026-08-23T00:00:00Z",
+      connections: [
+        {
+          id: "connection-1",
+          credentialSlotId: "api-key",
+          protocol: "openai-responses",
+          endpoint: "https://example.test/v1",
+          authType: "bearer",
+          apiKey: "secret",
+          defaultModel: "saved-default",
+          verification: { status: "never-tested" },
+        },
+      ],
+    };
+    commandMock
+      .mockResolvedValueOnce(["fetched-first", "fetched-second", "fetched-first"])
+      .mockResolvedValueOnce(["fetched-latest"]);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApiProviderEditor
+          detail={detail}
+          providers={[]}
+          catalog={catalog}
+          onClose={vi.fn()}
+          onError={vi.fn()}
+        />
+        <NotificationViewport />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+
+    await waitFor(() => {
+      expect(
+        document.querySelector('datalist#models-0 option[value="fetched-first"]'),
+      ).not.toBeNull();
+      expect(
+        document.querySelector('datalist#models-0 option[value="fetched-second"]'),
+      ).not.toBeNull();
+    });
+    expect(
+      document.querySelectorAll('datalist#models-0 option[value="fetched-first"]'),
+    ).toHaveLength(1);
+    expect(screen.getByRole("combobox", { name: /默认模型/ })).toHaveValue("saved-default");
+    expect(screen.getByRole("status")).toHaveTextContent("获取模型成功");
+
+    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+
+    await waitFor(() => {
+      expect(
+        document.querySelector('datalist#models-0 option[value="fetched-latest"]'),
+      ).not.toBeNull();
+      expect(document.querySelector('datalist#models-0 option[value="fetched-first"]')).toBeNull();
+    });
+  });
+
+  it("selects the first fetched model when the default model is empty", async () => {
+    const detail: ApiProviderDetail = {
+      id: "provider-1",
+      name: "Custom provider",
+      profileType: "api",
+      revision: 1,
+      createdAt: "2026-08-23T00:00:00Z",
+      updatedAt: "2026-08-23T00:00:00Z",
+      connections: [
+        {
+          id: "connection-1",
+          credentialSlotId: "api-key",
+          protocol: "openai-responses",
+          endpoint: "https://example.test/v1",
+          authType: "bearer",
+          apiKey: "secret",
+          defaultModel: "",
+          verification: { status: "never-tested" },
+        },
+      ],
+    };
+    commandMock.mockResolvedValue(["fetched-first", "fetched-second"]);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApiProviderEditor
+          detail={detail}
+          providers={[]}
+          catalog={catalog}
+          onClose={vi.fn()}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: /默认模型/ })).toHaveValue("fetched-first"),
+    );
   });
 });
