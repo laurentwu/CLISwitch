@@ -135,7 +135,7 @@ export function ProviderPage({
                   {provider.kind === "api" ? t("providers.typeApi") : t("providers.typeOauth")}
                 </small>
               </span>
-              {provider.codingPlan ? <Badge>Coding Plan</Badge> : null}
+              {provider.templateName ? <Badge>{provider.templateName}</Badge> : null}
               <Badge tone={provider.referencedBy.length ? "neutral" : "good"}>
                 {provider.referencedBy.length}
               </Badge>
@@ -147,6 +147,7 @@ export function ProviderPage({
           {createApi ? (
             <ApiProviderEditor
               providers={providers.data}
+              catalog={snapshot.catalog}
               onClose={() => select(undefined)}
               onError={onError}
             />
@@ -167,6 +168,7 @@ export function ProviderPage({
               key={`${secret.data.id}:${secret.data.revision}`}
               detail={secret.data}
               providers={providers.data}
+              catalog={snapshot.catalog}
               onClose={() => select(undefined)}
               onError={onError}
             />

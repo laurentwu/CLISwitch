@@ -3,16 +3,18 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Play, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command, errorMessage } from "../../shared/ipc";
+import { providerSupportsCli } from "../../shared/catalog";
 import { uniqueCopyName, validateEntityName } from "../../shared/names";
 import type {
   ApplyRunSnapshot,
   CliId,
   ConfigurationTarget,
+  ProviderCatalog,
   PublicProvider,
   SavedConfiguration,
   ScanSnapshot,
 } from "../../shared/types";
-import { CLI_IDS, CLI_PROTOCOLS } from "../../shared/types";
+import { CLI_IDS } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { Badge, Button, Card, Field, Input, Modal, Select } from "../ui";
 import { ApplyPreviewDialog } from "./ApplyPreviewDialog";
@@ -23,6 +25,7 @@ export function SavedConfigurationTab({
   matchStatus,
   latestApply,
   providers,
+  catalog,
   configurations,
   scan,
   onDeleted,
@@ -32,6 +35,7 @@ export function SavedConfigurationTab({
   matchStatus?: string;
   latestApply?: ApplyRunSnapshot;
   providers: PublicProvider[];
+  catalog: ProviderCatalog;
   configurations: SavedConfiguration[];
   scan?: ScanSnapshot;
   onDeleted: () => void;
@@ -52,12 +56,19 @@ export function SavedConfigurationTab({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const nameIssue = validateEntityName(name, configurations, configuration.id);
   const duplicateNameIssue = validateEntityName(duplicateName, configurations);
+  const targetsValid = targets.every(
+    (target) =>
+      target.model.trim().length > 0 &&
+      (target.targetType !== "api" || target.connectionId.length > 0),
+  );
   const save = useMutation({
     mutationFn: () => {
-      if (nameIssue) {
+      if (nameIssue || !targetsValid) {
         return Promise.reject(
           new Error(
-            t(nameIssue === "length" ? "validation.nameLength" : "validation.nameDuplicate"),
+            nameIssue
+              ? t(nameIssue === "length" ? "validation.nameLength" : "validation.nameDuplicate")
+              : t("config.selectEndpoint"),
           ),
         );
       }
@@ -104,13 +115,8 @@ export function SavedConfigurationTab({
       );
       return;
     }
-    const provider = providers.find((item) =>
-      item.kind === "oauth"
-        ? (item.oauthKind === "anthropic" && cliId === "claude-code") ||
-          (item.oauthKind === "codex" && cliId === "codex")
-        : item.connections.some((connection) => CLI_PROTOCOLS[cliId].includes(connection.protocol)),
-    );
-    const target = provider && makeTarget(cliId, provider);
+    const provider = providers.find((item) => providerSupportsCli(catalog, cliId, item));
+    const target = provider && makeTarget(catalog, cliId, provider);
     if (!target) {
       onError(t("config.noCompatibleProvider"));
       return;
@@ -123,20 +129,8 @@ export function SavedConfigurationTab({
     if (!provider || provider.kind !== "api") return;
     const next = [...targets];
     for (const cliId of CLI_IDS) {
-      const connection =
-        cliId === "opencode"
-          ? CLI_PROTOCOLS[cliId]
-              .map((protocol) => provider.connections.find((item) => item.protocol === protocol))
-              .find(Boolean)
-          : provider.connections.find((item) => CLI_PROTOCOLS[cliId].includes(item.protocol));
-      if (!connection) continue;
-      const target: ConfigurationTarget = {
-        targetType: "api",
-        cliId,
-        providerId: provider.id,
-        connectionId: connection.id,
-        model: connection.defaultModel,
-      };
+      const target = makeTarget(catalog, cliId, provider);
+      if (!target) continue;
       const index = next.findIndex((item) => item.cliId === cliId);
       if (index >= 0) next[index] = target;
       else next.push(target);
@@ -218,7 +212,10 @@ export function SavedConfigurationTab({
             <Button variant="danger" onClick={() => setDeleteOpen(true)}>
               <Trash2 size={16} /> {t("common.delete")}
             </Button>
-            <Button disabled={save.isPending || Boolean(nameIssue)} onClick={() => save.mutate()}>
+            <Button
+              disabled={save.isPending || Boolean(nameIssue) || !targetsValid}
+              onClick={() => save.mutate()}
+            >
               <Save size={16} /> {t("common.save")}
               {dirty ? (
                 <span className="dirty-marker" aria-label={t("config.unsavedMarker")}>
@@ -226,7 +223,7 @@ export function SavedConfigurationTab({
                 </span>
               ) : null}
             </Button>
-            <Button onClick={() => setApplyOpen(true)}>
+            <Button disabled={!targetsValid} onClick={() => setApplyOpen(true)}>
               <Play size={16} /> {t("config.apply")}
             </Button>
           </div>
@@ -276,6 +273,7 @@ export function SavedConfigurationTab({
                   cliId={cliId}
                   target={target}
                   providers={providers}
+                  catalog={catalog}
                   onChange={(value) => updateTarget(cliId, value)}
                 />
               ) : null}

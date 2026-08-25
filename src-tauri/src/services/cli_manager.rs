@@ -6,10 +6,12 @@ use uuid::Uuid;
 
 use crate::{
     adapters::{ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter},
+    catalog::{ApiProviderTemplate, embedded_catalog},
     domain::{
         ApiProviderData, AppSettings, CliId, CurrentCliConfiguration, DetectedCli,
         DetectedProviderCandidate, OAuthKind, ProviderData, ProviderProfile, ScanSnapshot,
         ScanStatus, SourceFileSnapshot, UnmanagedCandidate, UnmanagedCandidateData,
+        VerificationInfo,
     },
     error::{AppError, AppResult},
     filesystem::digest::{bytes_digest, file_digest},
@@ -77,8 +79,6 @@ pub struct UnmanagedCandidateSaveRequest {
     pub snapshot_id: Uuid,
     pub candidate_id: Uuid,
     pub name: String,
-    pub coding_plan: bool,
-    pub coding_plan_name: Option<String>,
     pub default_model: Option<String>,
 }
 
@@ -337,7 +337,8 @@ impl CliManager {
                                 candidate.source_provider_id,
                                 candidate.suggested_name,
                                 UnmanagedCandidateData::Api {
-                                    connection: candidate.connection,
+                                    template_id: candidate.template_id,
+                                    connection: Box::new(candidate.connection),
                                     available_models: candidate.available_models,
                                 },
                             )
@@ -356,6 +357,7 @@ impl CliManager {
                                 UnmanagedCandidateData::Api {
                                     connection,
                                     available_models,
+                                    ..
                                 } => (
                                     Some(connection.protocol),
                                     Some(connection.endpoint.clone()),
@@ -368,6 +370,10 @@ impl CliManager {
                                 }
                             };
                         let candidate_id = Uuid::new_v4();
+                        let candidate_template_id = match &data {
+                            UnmanagedCandidateData::Api { template_id, .. } => template_id.clone(),
+                            UnmanagedCandidateData::Oauth { .. } => None,
+                        };
                         let source_digests = match &data {
                             UnmanagedCandidateData::Api { .. } => read
                                 .current
@@ -400,6 +406,7 @@ impl CliManager {
                             id: candidate_id,
                             source_provider_id,
                             suggested_name,
+                            template_id: candidate_template_id,
                             protocol,
                             endpoint,
                             auth_type,
@@ -471,8 +478,6 @@ impl CliManager {
             snapshot_id,
             candidate_id,
             name,
-            coding_plan,
-            coding_plan_name,
             default_model,
         } = request;
         if !settings.plaintext_risk_accepted {
@@ -504,34 +509,37 @@ impl CliManager {
         }
         let provider = match &entry.candidate.data {
             UnmanagedCandidateData::Api {
+                template_id,
                 connection,
-                available_models,
+                available_models: _,
             } => {
                 let selected_model = default_model
                     .as_deref()
                     .unwrap_or(&connection.default_model)
                     .trim();
-                if selected_model.is_empty()
-                    || !available_models.iter().any(|model| model == selected_model)
-                {
-                    return Err(AppError::Validation(
-                        "selected model is not available for this detected provider".into(),
-                    ));
+                if selected_model.is_empty() {
+                    return Err(AppError::Validation("selected model is required".into()));
                 }
-                let mut connection = connection.clone();
-                connection.default_model = selected_model.to_string();
+                let connections = match template_id.as_deref() {
+                    Some(template_id) => {
+                        materialize_template_connections(template_id, connection, selected_model)?
+                    }
+                    None => {
+                        let mut connection = connection.as_ref().clone();
+                        connection.template_endpoint_id = None;
+                        connection.default_model = selected_model.to_string();
+                        vec![connection]
+                    }
+                };
                 let now = Utc::now();
                 let provider = ProviderProfile {
                     id: Uuid::new_v4(),
                     name,
+                    template_id: template_id.clone(),
                     revision: 1,
                     created_at: now,
                     updated_at: now,
-                    data: ProviderData::Api(ApiProviderData {
-                        coding_plan,
-                        coding_plan_name,
-                        connections: vec![connection],
-                    }),
+                    data: ProviderData::Api(ApiProviderData { connections }),
                 };
                 self.repository.insert_provider(&provider, None).await?;
                 provider
@@ -578,6 +586,101 @@ impl CliManager {
     }
 }
 
+fn materialize_template_connections(
+    template_id: &str,
+    detected: &crate::domain::ProviderConnection,
+    selected_model: &str,
+) -> AppResult<Vec<crate::domain::ProviderConnection>> {
+    let template = embedded_catalog()?
+        .api_template(template_id)
+        .ok_or_else(|| AppError::Validation(format!("unknown provider template {template_id}")))?;
+    materialize_template_connections_from_template(template_id, template, detected, selected_model)
+}
+
+fn materialize_template_connections_from_template(
+    template_id: &str,
+    template: &ApiProviderTemplate,
+    detected: &crate::domain::ProviderConnection,
+    selected_model: &str,
+) -> AppResult<Vec<crate::domain::ProviderConnection>> {
+    let detected_endpoint_id = detected.template_endpoint_id.as_deref().ok_or_else(|| {
+        AppError::Validation("detected template provider has no endpoint identity".into())
+    })?;
+    let detected_endpoint = template
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == detected_endpoint_id)
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "template {template_id} has no endpoint {detected_endpoint_id}"
+            ))
+        })?;
+    if detected.credential_slot_id != detected_endpoint.credential_slot_id {
+        return Err(AppError::Validation(
+            "detected credential slot does not match the provider template".into(),
+        ));
+    }
+
+    template
+        .endpoints
+        .iter()
+        .map(|endpoint| {
+            if endpoint.credential_slot_id != detected.credential_slot_id {
+                return Err(AppError::Validation(format!(
+                    "saving template {template_id} requires another credential slot"
+                )));
+            }
+            let is_detected = endpoint.id == detected_endpoint_id;
+            let model = if is_detected
+                || endpoint.models.is_empty()
+                || endpoint
+                    .models
+                    .iter()
+                    .any(|model| model.id == selected_model)
+            {
+                selected_model.to_string()
+            } else {
+                endpoint
+                    .default_model()
+                    .unwrap_or(selected_model)
+                    .to_string()
+            };
+            Ok(crate::domain::ProviderConnection {
+                id: if is_detected {
+                    detected.id
+                } else {
+                    Uuid::new_v4()
+                },
+                template_endpoint_id: Some(endpoint.id.clone()),
+                credential_slot_id: endpoint.credential_slot_id.clone(),
+                protocol: endpoint.protocol,
+                endpoint: if is_detected {
+                    detected.endpoint.clone()
+                } else {
+                    endpoint.base_url.clone()
+                },
+                auth_type: if is_detected {
+                    detected.auth_type
+                } else {
+                    endpoint.default_auth_type().ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "template endpoint {} has no default auth mode",
+                            endpoint.id
+                        ))
+                    })?
+                },
+                api_key: detected.api_key.clone(),
+                default_model: model,
+                verification: if is_detected {
+                    detected.verification.clone()
+                } else {
+                    VerificationInfo::default()
+                },
+            })
+        })
+        .collect()
+}
+
 fn error_current(redactor: &Redactor, error: AppError) -> CurrentCliConfiguration {
     CurrentCliConfiguration {
         provider_name: None,
@@ -622,6 +725,107 @@ mod tests {
         auth_file: PathBuf,
         managed_provider_id: Uuid,
         managed_source_provider_id: String,
+    }
+
+    #[test]
+    fn glm_import_materializes_all_endpoints_with_one_shared_secret_and_manual_model() {
+        let detected = ProviderConnection {
+            id: Uuid::new_v4(),
+            template_endpoint_id: Some("openai-chat".into()),
+            credential_slot_id: "api-key".into(),
+            protocol: CliProtocol::OpenaiChat,
+            endpoint: url::Url::parse("https://open.bigmodel.cn/api/coding/paas/v4").unwrap(),
+            auth_type: ConnectionAuthType::Bearer,
+            api_key: "shared-fixture-secret".into(),
+            default_model: "glm-detected".into(),
+            verification: VerificationInfo::default(),
+        };
+
+        let connections = materialize_template_connections(
+            "glm-coding-plan",
+            &detected,
+            "manually-entered-model",
+        )
+        .unwrap();
+
+        assert_eq!(connections.len(), 3);
+        assert!(
+            connections
+                .iter()
+                .all(|connection| connection.credential_slot_id == "api-key")
+        );
+        assert!(
+            connections
+                .iter()
+                .all(|connection| connection.api_key == "shared-fixture-secret")
+        );
+        assert_eq!(
+            connections
+                .iter()
+                .find(|connection| connection.template_endpoint_id.as_deref() == Some("openai-chat"))
+                .map(|connection| connection.default_model.as_str()),
+            Some("manually-entered-model")
+        );
+        for endpoint_id in ["anthropic", "openai-responses"] {
+            assert_eq!(
+                connections
+                    .iter()
+                    .find(|connection| {
+                        connection.template_endpoint_id.as_deref() == Some(endpoint_id)
+                    })
+                    .map(|connection| connection.default_model.as_str()),
+                Some("glm-4.7")
+            );
+        }
+        assert_eq!(
+            connections
+                .iter()
+                .filter_map(|connection| connection.template_endpoint_id.as_deref())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn template_import_rejects_an_endpoint_that_requires_another_credential_slot() {
+        let mut template = embedded_catalog()
+            .unwrap()
+            .api_template("glm-coding-plan")
+            .unwrap()
+            .clone();
+        template
+            .credential_slots
+            .push(crate::catalog::CredentialSlotTemplate {
+                id: "secondary-key".into(),
+                name: "Secondary API Key".into(),
+            });
+        template.endpoints[0].credential_slot_id = "secondary-key".into();
+        let detected = ProviderConnection {
+            id: Uuid::new_v4(),
+            template_endpoint_id: Some("openai-chat".into()),
+            credential_slot_id: "api-key".into(),
+            protocol: CliProtocol::OpenaiChat,
+            endpoint: url::Url::parse("https://open.bigmodel.cn/api/coding/paas/v4").unwrap(),
+            auth_type: ConnectionAuthType::Bearer,
+            api_key: "shared-fixture-secret".into(),
+            default_model: "glm-detected".into(),
+            verification: VerificationInfo::default(),
+        };
+
+        let error = materialize_template_connections_from_template(
+            "glm-coding-plan",
+            &template,
+            &detected,
+            "glm-4.7",
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires another credential slot")
+        );
     }
 
     async fn write_json_fixture(path: &std::path::Path, value: &serde_json::Value) {
@@ -692,14 +896,15 @@ mod tests {
         let managed_provider = ProviderProfile {
             id: managed_provider_id,
             name: "Managed OpenCode provider".into(),
+            template_id: None,
             revision: 1,
             created_at: now,
             updated_at: now,
             data: ProviderData::Api(ApiProviderData {
-                coding_plan: false,
-                coding_plan_name: None,
                 connections: vec![ProviderConnection {
                     id: Uuid::new_v4(),
+                    template_endpoint_id: None,
+                    credential_slot_id: "api-key".into(),
                     protocol: CliProtocol::OpenaiChat,
                     endpoint: url::Url::parse("https://managed.invalid/v1").unwrap(),
                     auth_type: ConnectionAuthType::Bearer,
@@ -911,8 +1116,6 @@ mod tests {
                     snapshot_id: unmanaged_scan.id,
                     candidate_id: candidate.id,
                     name: "Saved other provider".into(),
-                    coding_plan: false,
-                    coding_plan_name: None,
                     default_model: None,
                 },
             )
@@ -1026,8 +1229,6 @@ mod tests {
                     snapshot_id: first_scan.id,
                     candidate_id,
                     name: "Codex OAuth".into(),
-                    coding_plan: false,
-                    coding_plan_name: None,
                     default_model: None,
                 },
             )
@@ -1098,8 +1299,6 @@ mod tests {
                         snapshot_id: scan.id,
                         candidate_id,
                         name: "Codex OAuth".into(),
-                        coding_plan: false,
-                        coding_plan_name: None,
                         default_model: None,
                     },
                 )
@@ -1135,7 +1334,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detected_api_provider_saves_only_an_advertised_model() {
+    async fn detected_api_provider_accepts_a_manually_entered_model() {
         let fixture = codex_oauth_fixture(br#"{}"#).await;
         let snapshot_id = Uuid::new_v4();
         let candidate_id = Uuid::new_v4();
@@ -1150,45 +1349,23 @@ mod tests {
                     suggested_name: "Fixture provider".into(),
                     source_digests: Default::default(),
                     data: UnmanagedCandidateData::Api {
-                        connection: crate::domain::ProviderConnection {
+                        template_id: None,
+                        connection: Box::new(crate::domain::ProviderConnection {
                             id: Uuid::new_v4(),
+                            template_endpoint_id: None,
+                            credential_slot_id: "api-key".into(),
                             protocol: crate::domain::CliProtocol::AnthropicMessages,
                             endpoint: url::Url::parse("https://fixture.invalid/v1").unwrap(),
                             auth_type: crate::domain::ConnectionAuthType::ApiKey,
                             api_key: "fixture-secret-key".into(),
                             default_model: "model-a".into(),
                             verification: VerificationInfo::default(),
-                        },
+                        }),
                         available_models: vec!["model-a".into(), "model-b".into()],
                     },
                 },
                 created_at: std::time::Instant::now(),
             },
-        );
-
-        let invalid = fixture
-            .manager
-            .save_unmanaged_candidate(
-                &fixture.oauth,
-                &fixture.settings,
-                UnmanagedCandidateSaveRequest {
-                    snapshot_id,
-                    candidate_id,
-                    name: "Fixture provider".into(),
-                    coding_plan: false,
-                    coding_plan_name: None,
-                    default_model: Some("unadvertised-model".into()),
-                },
-            )
-            .await;
-        assert!(matches!(invalid, Err(AppError::Validation(_))));
-        assert!(
-            fixture
-                .repository
-                .list_providers()
-                .await
-                .unwrap()
-                .is_empty()
         );
 
         let saved = fixture
@@ -1200,9 +1377,7 @@ mod tests {
                     snapshot_id,
                     candidate_id,
                     name: "Fixture provider".into(),
-                    coding_plan: false,
-                    coding_plan_name: None,
-                    default_model: Some("model-b".into()),
+                    default_model: Some("unadvertised-model".into()),
                 },
             )
             .await
@@ -1211,7 +1386,7 @@ mod tests {
         let ProviderData::Api(api) = saved.data else {
             panic!("detected API candidate should save as an API provider");
         };
-        assert_eq!(api.connections[0].default_model, "model-b");
+        assert_eq!(api.connections[0].default_model, "unadvertised-model");
         assert_eq!(
             fixture
                 .manager

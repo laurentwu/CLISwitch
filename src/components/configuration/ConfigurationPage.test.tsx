@@ -6,6 +6,34 @@ import type { AppSnapshot } from "../../shared/types";
 import { ConfigurationPage } from "./ConfigurationPage";
 
 const snapshot: AppSnapshot = {
+  catalog: {
+    schemaVersion: 1,
+    clis: [
+      {
+        id: "claude-code",
+        name: "Claude Code",
+        protocols: ["anthropic-messages"],
+        authModes: [],
+        protocolAdapters: [],
+      },
+      {
+        id: "codex",
+        name: "Codex CLI",
+        protocols: ["openai-responses"],
+        authModes: [],
+        protocolAdapters: [],
+      },
+      {
+        id: "opencode",
+        name: "OpenCode",
+        protocols: ["openai-responses", "openai-chat", "anthropic-messages"],
+        authModes: [],
+        protocolAdapters: [],
+      },
+    ],
+    providerTemplates: [],
+    relations: [],
+  },
   settings: {
     language: "zh-cn",
     theme: "system",

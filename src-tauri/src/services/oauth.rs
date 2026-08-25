@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     adapters::HostEnvironment,
+    catalog::embedded_catalog,
     domain::{
         ActiveOAuthBinding, AppSettings, OAuthKind, OAuthProviderData, ProviderData,
         ProviderProfile, VerificationInfo, VerificationStatus,
@@ -836,6 +837,9 @@ impl OAuthService {
         let mut provider = ProviderProfile {
             id,
             name,
+            template_id: embedded_catalog()?
+                .auth_template_for_kind(kind)
+                .map(|template| template.id.clone()),
             revision: expected_revision.max(1),
             created_at: now,
             updated_at: now,

@@ -33,27 +33,6 @@ impl CliId {
             Self::Opencode => "OpenCode",
         }
     }
-
-    pub fn supports(self, protocol: CliProtocol) -> bool {
-        matches!(
-            (self, protocol),
-            (Self::ClaudeCode, CliProtocol::AnthropicMessages)
-                | (Self::Codex, CliProtocol::OpenaiResponses)
-                | (Self::Opencode, _)
-        )
-    }
-
-    pub fn protocol_priority(self) -> &'static [CliProtocol] {
-        match self {
-            Self::ClaudeCode => &[CliProtocol::AnthropicMessages],
-            Self::Codex => &[CliProtocol::OpenaiResponses],
-            Self::Opencode => &[
-                CliProtocol::OpenaiResponses,
-                CliProtocol::OpenaiChat,
-                CliProtocol::AnthropicMessages,
-            ],
-        }
-    }
 }
 
 impl fmt::Display for CliId {
@@ -236,6 +215,8 @@ impl Default for VerificationInfo {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConnection {
     pub id: Uuid,
+    pub template_endpoint_id: Option<String>,
+    pub credential_slot_id: String,
     pub protocol: CliProtocol,
     pub endpoint: Url,
     pub auth_type: ConnectionAuthType,
@@ -246,6 +227,11 @@ pub struct ProviderConnection {
 
 impl ProviderConnection {
     pub fn validate(&self) -> AppResult<()> {
+        if self.credential_slot_id.trim().is_empty() {
+            return Err(AppError::Validation(
+                "credential slot ID is required".into(),
+            ));
+        }
         if !matches!(self.endpoint.scheme(), "http" | "https") {
             return Err(AppError::Validation(
                 "endpoint must use HTTP or HTTPS".into(),
@@ -279,8 +265,6 @@ impl ProviderConnection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiProviderData {
-    pub coding_plan: bool,
-    pub coding_plan_name: Option<String>,
     pub connections: Vec<ProviderConnection>,
 }
 
@@ -308,6 +292,7 @@ pub enum ProviderData {
 pub struct ProviderProfile {
     pub id: Uuid,
     pub name: String,
+    pub template_id: Option<String>,
     pub revision: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -325,74 +310,153 @@ impl ProviderProfile {
                         "API provider requires at least one connection".into(),
                     ));
                 }
-                let mut protocols = std::collections::HashSet::new();
+                let mut endpoint_ids = std::collections::HashSet::new();
+                let mut slot_secrets = std::collections::HashMap::new();
                 for connection in &api.connections {
                     connection.validate()?;
-                    if !protocols.insert(connection.protocol) {
+                    if !endpoint_ids.insert(connection.id) {
                         return Err(AppError::Validation(
-                            "a provider cannot repeat a protocol".into(),
+                            "a provider cannot repeat an endpoint ID".into(),
                         ));
                     }
+                    if let Some(previous) = slot_secrets.insert(
+                        connection.credential_slot_id.as_str(),
+                        connection.api_key.as_str(),
+                    ) && previous != connection.api_key.as_str()
+                    {
+                        return Err(AppError::Validation(format!(
+                            "connections sharing credential slot {} must use the same secret",
+                            connection.credential_slot_id
+                        )));
+                    }
+                }
+                if let Some(template_id) = self.template_id.as_deref() {
+                    let catalog = crate::catalog::embedded_catalog()?;
+                    let template = catalog.api_template(template_id).ok_or_else(|| {
+                        AppError::Validation(format!("unknown API provider template {template_id}"))
+                    })?;
+                    if api.connections.len() != template.endpoints.len() {
+                        return Err(AppError::Validation(format!(
+                            "provider template {template_id} requires all configured endpoints"
+                        )));
+                    }
+                    let mut template_endpoint_ids = std::collections::HashSet::new();
+                    for connection in &api.connections {
+                        let endpoint_id =
+                            connection.template_endpoint_id.as_deref().ok_or_else(|| {
+                                AppError::Validation(
+                                    "template provider endpoint is missing its template ID".into(),
+                                )
+                            })?;
+                        if !template_endpoint_ids.insert(endpoint_id) {
+                            return Err(AppError::Validation(format!(
+                                "provider repeats template endpoint {endpoint_id}"
+                            )));
+                        }
+                        let endpoint = template
+                            .endpoints
+                            .iter()
+                            .find(|endpoint| endpoint.id == endpoint_id)
+                            .ok_or_else(|| {
+                                AppError::Validation(format!(
+                                    "template {template_id} has no endpoint {endpoint_id}"
+                                ))
+                            })?;
+                        if connection.protocol != endpoint.protocol
+                            || connection.credential_slot_id != endpoint.credential_slot_id
+                            || !endpoint
+                                .auth_options
+                                .iter()
+                                .any(|option| option.auth_type == connection.auth_type)
+                        {
+                            return Err(AppError::Validation(format!(
+                                "endpoint {endpoint_id} does not match template {template_id}"
+                            )));
+                        }
+                    }
+                } else if api
+                    .connections
+                    .iter()
+                    .any(|connection| connection.template_endpoint_id.is_some())
+                {
+                    return Err(AppError::Validation(
+                        "custom providers cannot reference template endpoints".into(),
+                    ));
                 }
             }
             // Imported/login-created payloads are validated at their respective boundaries. Once
             // saved, the raw editor intentionally accepts any UTF-8 content (including empty or
             // malformed content) and marks it as user-modified/unverified.
-            ProviderData::Oauth(_) => {}
+            ProviderData::Oauth(oauth) => {
+                if let Some(template_id) = self.template_id.as_deref() {
+                    let template = crate::catalog::embedded_catalog()?
+                        .auth_template(template_id)
+                        .ok_or_else(|| {
+                            AppError::Validation(format!(
+                                "unknown auth provider template {template_id}"
+                            ))
+                        })?;
+                    if template.auth_kind != oauth.oauth_kind {
+                        return Err(AppError::Validation(format!(
+                            "auth template {template_id} does not match the saved auth kind"
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
     }
 
     pub fn public(&self, referenced_by: Vec<String>) -> PublicProvider {
-        let (
-            kind,
-            oauth_kind,
-            oauth_account_label,
-            coding_plan,
-            coding_plan_name,
-            connections,
-            verification_status,
-        ) = match &self.data {
-            ProviderData::Api(api) => (
-                "api".to_string(),
-                None,
-                None,
-                api.coding_plan,
-                api.coding_plan_name.clone(),
-                api.connections
-                    .iter()
-                    .map(|connection| PublicProviderConnection {
-                        id: connection.id,
-                        protocol: connection.protocol,
-                        endpoint: connection.endpoint.clone(),
-                        auth_type: connection.auth_type,
-                        default_model: connection.default_model.clone(),
-                        verification: connection.verification.clone(),
-                    })
-                    .collect(),
-                None,
-            ),
-            ProviderData::Oauth(oauth) => (
-                "oauth".to_string(),
-                Some(oauth.oauth_kind),
-                oauth
-                    .account_label
-                    .clone()
-                    .or_else(|| oauth.account_id.clone()),
-                false,
-                None,
-                Vec::new(),
-                Some(oauth.verification.status),
-            ),
-        };
+        let (kind, oauth_kind, oauth_account_label, connections, verification_status) =
+            match &self.data {
+                ProviderData::Api(api) => (
+                    "api".to_string(),
+                    None,
+                    None,
+                    api.connections
+                        .iter()
+                        .map(|connection| PublicProviderConnection {
+                            id: connection.id,
+                            template_endpoint_id: connection.template_endpoint_id.clone(),
+                            credential_slot_id: connection.credential_slot_id.clone(),
+                            protocol: connection.protocol,
+                            endpoint: connection.endpoint.clone(),
+                            auth_type: connection.auth_type,
+                            default_model: connection.default_model.clone(),
+                            verification: connection.verification.clone(),
+                        })
+                        .collect(),
+                    None,
+                ),
+                ProviderData::Oauth(oauth) => (
+                    "oauth".to_string(),
+                    Some(oauth.oauth_kind),
+                    oauth
+                        .account_label
+                        .clone()
+                        .or_else(|| oauth.account_id.clone()),
+                    Vec::new(),
+                    Some(oauth.verification.status),
+                ),
+            };
+        let template = self
+            .template_id
+            .as_deref()
+            .and_then(|id| crate::catalog::embedded_catalog().ok()?.template(id));
         PublicProvider {
             id: self.id,
             name: self.name.clone(),
             kind,
+            template_id: self.template_id.clone(),
+            template_name: template.map(|template| template.name().to_string()),
+            template_mode: template.map(|template| template.mode().to_string()),
+            template_category: template.and_then(|template| match template {
+                crate::catalog::ProviderTemplate::Api(template) => Some(template.category.clone()),
+                crate::catalog::ProviderTemplate::Auth(_) => None,
+            }),
             oauth_kind,
             oauth_account_label,
-            coding_plan,
-            coding_plan_name,
             connections,
             verification_status,
             referenced_by,
@@ -406,6 +470,8 @@ impl ProviderProfile {
 #[serde(rename_all = "camelCase")]
 pub struct PublicProviderConnection {
     pub id: Uuid,
+    pub template_endpoint_id: Option<String>,
+    pub credential_slot_id: String,
     pub protocol: CliProtocol,
     pub endpoint: Url,
     pub auth_type: ConnectionAuthType,
@@ -419,10 +485,12 @@ pub struct PublicProvider {
     pub id: Uuid,
     pub name: String,
     pub kind: String,
+    pub template_id: Option<String>,
+    pub template_name: Option<String>,
+    pub template_mode: Option<String>,
+    pub template_category: Option<String>,
     pub oauth_kind: Option<OAuthKind>,
     pub oauth_account_label: Option<String>,
-    pub coding_plan: bool,
-    pub coding_plan_name: Option<String>,
     pub connections: Vec<PublicProviderConnection>,
     pub verification_status: Option<VerificationStatus>,
     pub referenced_by: Vec<String>,
@@ -541,6 +609,7 @@ pub struct DetectedProviderCandidate {
     pub id: Uuid,
     pub source_provider_id: String,
     pub suggested_name: String,
+    pub template_id: Option<String>,
     pub protocol: Option<CliProtocol>,
     pub endpoint: Option<Url>,
     pub auth_type: Option<ConnectionAuthType>,
@@ -594,7 +663,8 @@ pub struct UnmanagedCandidate {
 #[derive(Debug, Clone)]
 pub enum UnmanagedCandidateData {
     Api {
-        connection: ProviderConnection,
+        template_id: Option<String>,
+        connection: Box<ProviderConnection>,
         available_models: Vec<String>,
     },
     Oauth {
@@ -934,6 +1004,47 @@ pub fn normalize_name(name: &str) -> AppResult<String> {
 mod tests {
     use super::*;
 
+    fn api_provider_from_template(template_id: &str) -> ProviderProfile {
+        let template = crate::catalog::embedded_catalog()
+            .unwrap()
+            .api_template(template_id)
+            .unwrap();
+        let now = Utc::now();
+        ProviderProfile {
+            id: Uuid::new_v4(),
+            name: format!("{template_id} fixture"),
+            template_id: Some(template_id.into()),
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            data: ProviderData::Api(ApiProviderData {
+                connections: template
+                    .endpoints
+                    .iter()
+                    .map(|endpoint| ProviderConnection {
+                        id: Uuid::new_v4(),
+                        template_endpoint_id: Some(endpoint.id.clone()),
+                        credential_slot_id: endpoint.credential_slot_id.clone(),
+                        protocol: endpoint.protocol,
+                        endpoint: endpoint.base_url.clone(),
+                        auth_type: endpoint.default_auth_type().unwrap(),
+                        api_key: "shared-fixture-secret".into(),
+                        default_model: endpoint.default_model().unwrap_or("manual-model").into(),
+                        verification: VerificationInfo::default(),
+                    })
+                    .collect(),
+            }),
+        }
+    }
+
+    fn assert_validation_contains(profile: &ProviderProfile, expected: &str) {
+        let error = profile.validate().unwrap_err().to_string();
+        assert!(
+            error.contains(expected),
+            "expected validation error containing {expected:?}, got {error:?}"
+        );
+    }
+
     #[test]
     fn names_are_trimmed_and_case_insensitive() {
         assert_eq!(normalize_name("  工作配置 ").unwrap(), "工作配置");
@@ -946,18 +1057,87 @@ mod tests {
     }
 
     #[test]
-    fn protocol_matrix_is_fixed() {
-        assert!(CliId::ClaudeCode.supports(CliProtocol::AnthropicMessages));
-        assert!(!CliId::ClaudeCode.supports(CliProtocol::OpenaiResponses));
-        assert!(CliId::Codex.supports(CliProtocol::OpenaiResponses));
-        assert!(!CliId::Codex.supports(CliProtocol::OpenaiChat));
-        assert!(CliId::Opencode.supports(CliProtocol::OpenaiChat));
-    }
-
-    #[test]
     fn oauth_target_is_not_user_selectable() {
         assert_eq!(OAuthKind::Anthropic.target_cli(), CliId::ClaudeCode);
         assert_eq!(OAuthKind::Codex.target_cli(), CliId::Codex);
+    }
+
+    #[test]
+    fn api_template_validation_rejects_unknown_and_incomplete_templates() {
+        let mut unknown = api_provider_from_template("glm-coding-plan");
+        unknown.template_id = Some("unknown-api-template".into());
+        assert_validation_contains(&unknown, "unknown API provider template");
+
+        let mut incomplete = api_provider_from_template("glm-coding-plan");
+        let ProviderData::Api(api) = &mut incomplete.data else {
+            unreachable!()
+        };
+        api.connections.pop();
+        assert_validation_contains(&incomplete, "requires all configured endpoints");
+    }
+
+    #[test]
+    fn api_template_validation_rejects_endpoint_contract_mismatches() {
+        let mut wrong_protocol = api_provider_from_template("glm-coding-plan");
+        let ProviderData::Api(api) = &mut wrong_protocol.data else {
+            unreachable!()
+        };
+        api.connections[0].protocol = CliProtocol::OpenaiChat;
+        assert_validation_contains(&wrong_protocol, "does not match template");
+
+        let mut wrong_slot = api_provider_from_template("glm-coding-plan");
+        let ProviderData::Api(api) = &mut wrong_slot.data else {
+            unreachable!()
+        };
+        api.connections[0].credential_slot_id = "another-key".into();
+        assert_validation_contains(&wrong_slot, "does not match template");
+
+        let mut wrong_auth = api_provider_from_template("anthropic-api");
+        let ProviderData::Api(api) = &mut wrong_auth.data else {
+            unreachable!()
+        };
+        api.connections[0].auth_type = ConnectionAuthType::Bearer;
+        assert_validation_contains(&wrong_auth, "does not match template");
+    }
+
+    #[test]
+    fn api_template_validation_rejects_detached_endpoints_and_divergent_slot_secrets() {
+        let mut custom = api_provider_from_template("glm-coding-plan");
+        custom.template_id = None;
+        assert_validation_contains(
+            &custom,
+            "custom providers cannot reference template endpoints",
+        );
+
+        let mut divergent_secrets = api_provider_from_template("glm-coding-plan");
+        let ProviderData::Api(api) = &mut divergent_secrets.data else {
+            unreachable!()
+        };
+        api.connections[1].api_key = "different-secret".into();
+        assert_validation_contains(&divergent_secrets, "must use the same secret");
+    }
+
+    #[test]
+    fn auth_template_validation_rejects_a_different_oauth_kind() {
+        let now = Utc::now();
+        let profile = ProviderProfile {
+            id: Uuid::new_v4(),
+            name: "Mismatched OAuth".into(),
+            template_id: Some("codex-auth".into()),
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            data: ProviderData::Oauth(OAuthProviderData {
+                oauth_kind: OAuthKind::Anthropic,
+                account_id: None,
+                account_label: None,
+                raw_content: "fixture".into(),
+                digest: "sha256:fixture".into(),
+                manually_modified: false,
+                verification: VerificationInfo::default(),
+            }),
+        };
+        assert_validation_contains(&profile, "does not match the saved auth kind");
     }
 
     #[test]
@@ -966,14 +1146,15 @@ mod tests {
         let profile = ProviderProfile {
             id: Uuid::new_v4(),
             name: "private".into(),
+            template_id: None,
             revision: 1,
             created_at: now,
             updated_at: now,
             data: ProviderData::Api(ApiProviderData {
-                coding_plan: false,
-                coding_plan_name: None,
                 connections: vec![ProviderConnection {
                     id: Uuid::new_v4(),
+                    template_endpoint_id: None,
+                    credential_slot_id: "api-key".into(),
                     protocol: CliProtocol::OpenaiResponses,
                     endpoint: Url::parse("https://example.com/v1").unwrap(),
                     auth_type: ConnectionAuthType::Bearer,
@@ -994,6 +1175,7 @@ mod tests {
         let profile = ProviderProfile {
             id: Uuid::new_v4(),
             name: "manually edited".into(),
+            template_id: Some("codex-auth".into()),
             revision: 2,
             created_at: now,
             updated_at: now,
@@ -1022,14 +1204,15 @@ mod tests {
         let provider = ProviderProfile {
             id: provider_id,
             name: "shared".into(),
+            template_id: None,
             revision: 1,
             created_at: now,
             updated_at: now,
             data: ProviderData::Api(ApiProviderData {
-                coding_plan: false,
-                coding_plan_name: None,
                 connections: vec![ProviderConnection {
                     id: connection_id,
+                    template_endpoint_id: None,
+                    credential_slot_id: "api-key".into(),
                     protocol: CliProtocol::OpenaiResponses,
                     endpoint: Url::parse("https://example.com/v1").unwrap(),
                     auth_type: ConnectionAuthType::Bearer,

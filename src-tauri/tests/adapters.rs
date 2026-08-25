@@ -28,14 +28,15 @@ fn provider(protocol: CliProtocol) -> (ProviderProfile, Uuid) {
         ProviderProfile {
             id: Uuid::new_v4(),
             name: "Fixture provider".into(),
+            template_id: None,
             revision: 1,
             created_at: now,
             updated_at: now,
             data: ProviderData::Api(ApiProviderData {
-                coding_plan: true,
-                coding_plan_name: Some("Fixture Plan".into()),
                 connections: vec![ProviderConnection {
                     id: connection_id,
+                    template_endpoint_id: None,
+                    credential_slot_id: "api-key".into(),
                     protocol,
                     endpoint: Url::parse("https://gateway.invalid/v1").unwrap(),
                     auth_type: if protocol == CliProtocol::AnthropicMessages {
@@ -184,6 +185,79 @@ async fn opencode_stable_schema_maps_each_protocol_to_the_correct_package() {
 }
 
 #[tokio::test]
+async fn opencode_materializes_the_explicitly_selected_glm_endpoint() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(&paths.config_file, "{}\n").await;
+    write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+    let now = Utc::now();
+    let connections = [
+        (
+            "anthropic",
+            CliProtocol::AnthropicMessages,
+            "https://open.bigmodel.cn/api/anthropic",
+        ),
+        (
+            "openai-chat",
+            CliProtocol::OpenaiChat,
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+        ),
+        (
+            "openai-responses",
+            CliProtocol::OpenaiResponses,
+            "https://open.bigmodel.cn/api/v1",
+        ),
+    ]
+    .into_iter()
+    .map(|(endpoint_id, protocol, endpoint)| ProviderConnection {
+        id: Uuid::new_v4(),
+        template_endpoint_id: Some(endpoint_id.into()),
+        credential_slot_id: "api-key".into(),
+        protocol,
+        endpoint: Url::parse(endpoint).unwrap(),
+        auth_type: ConnectionAuthType::Bearer,
+        api_key: "shared-glm-key".into(),
+        default_model: "glm-4.7".into(),
+        verification: VerificationInfo::default(),
+    })
+    .collect::<Vec<_>>();
+    let responses_id = connections
+        .iter()
+        .find(|connection| connection.template_endpoint_id.as_deref() == Some("openai-responses"))
+        .unwrap()
+        .id;
+    let provider = ProviderProfile {
+        id: Uuid::new_v4(),
+        name: "GLM Coding Plan".into(),
+        template_id: Some("glm-coding-plan".into()),
+        revision: 1,
+        created_at: now,
+        updated_at: now,
+        data: ProviderData::Api(ApiProviderData { connections }),
+    };
+    provider.validate().unwrap();
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: provider.id,
+        connection_id: responses_id,
+        model: "manual-glm-model".into(),
+    };
+
+    let plan = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
+
+    assert!(config.contains("@ai-sdk/openai"));
+    assert!(config.contains("https://open.bigmodel.cn/api/v1"));
+    assert!(!config.contains("https://open.bigmodel.cn/api/coding/paas/v4"));
+    assert!(config.contains("manual-glm-model"));
+    assert!(config.contains("glm-4.7"));
+}
+
+#[tokio::test]
 async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
     let temp = TempDir::new().unwrap();
     let adapter = OpenCodeAdapter;
@@ -241,14 +315,21 @@ async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
     assert_eq!(current.unmanaged_api_candidates.len(), 1);
     let candidate = &current.unmanaged_api_candidates[0];
     assert_eq!(candidate.source_provider_id, "zhipuai-coding-plan");
-    assert_eq!(candidate.suggested_name, "Zhipu AI Coding Plan");
+    assert_eq!(candidate.suggested_name, "GLM Coding Plan");
+    assert_eq!(candidate.template_id.as_deref(), Some("glm-coding-plan"));
+    assert_eq!(
+        candidate.connection.template_endpoint_id.as_deref(),
+        Some("openai-chat")
+    );
+    assert_eq!(candidate.connection.credential_slot_id, "api-key");
     assert_eq!(candidate.connection.protocol, CliProtocol::OpenaiChat);
     assert_eq!(candidate.connection.auth_type, ConnectionAuthType::Bearer);
     assert_eq!(
         candidate.connection.endpoint.as_str(),
         "https://open.bigmodel.cn/api/coding/paas/v4"
     );
-    assert_eq!(candidate.available_models, vec!["glm-5.3"]);
+    assert_eq!(candidate.available_models[0], "glm-5.3");
+    assert!(candidate.available_models.contains(&"glm-4.7".into()));
     assert!(candidate.is_current);
     assert!(current.current.diagnostics.is_empty());
     let state_source = current
@@ -653,6 +734,8 @@ async fn opencode_explicit_provider_fields_override_the_relation_defaults() {
     let candidate = &current.unmanaged_api_candidates[0];
 
     assert_eq!(candidate.suggested_name, "Private Zhipu gateway");
+    assert_eq!(candidate.template_id, None);
+    assert_eq!(candidate.connection.template_endpoint_id, None);
     assert_eq!(
         candidate.connection.protocol,
         CliProtocol::AnthropicMessages
@@ -661,6 +744,42 @@ async fn opencode_explicit_provider_fields_override_the_relation_defaults() {
     assert_eq!(
         candidate.connection.endpoint.as_str(),
         "https://private.invalid/anthropic"
+    );
+}
+
+#[tokio::test]
+async fn opencode_recognizes_a_relation_specific_native_provider_package() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "model": "openrouter/fixture-model",
+          "provider": {
+            "openrouter": {
+              "npm": "@openrouter/ai-sdk-provider",
+              "models": { "fixture-model": {} }
+            }
+          }
+        }"#,
+    )
+    .await;
+    write_fixture(
+        paths.auth_file.as_ref().unwrap(),
+        r#"{ "openrouter": { "type": "api", "key": "fixture-openrouter-key" } }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+    let candidate = &current.unmanaged_api_candidates[0];
+
+    assert_eq!(candidate.template_id.as_deref(), Some("openrouter-api"));
+    assert_eq!(candidate.connection.protocol, CliProtocol::OpenaiChat);
+    assert_eq!(
+        candidate.connection.endpoint.as_str(),
+        "https://openrouter.ai/api/v1"
     );
 }
 
