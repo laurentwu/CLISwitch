@@ -101,6 +101,8 @@ impl CliAdapter for CodexAdapter {
         let candidate = match (&endpoint, &key, &model) {
             (Some(endpoint), Some(key), Some(model)) => Some(ProviderConnection {
                 id: Uuid::new_v4(),
+                template_endpoint_id: None,
+                credential_slot_id: "api-key".into(),
                 protocol: CliProtocol::OpenaiResponses,
                 endpoint: Url::parse(endpoint)?,
                 auth_type: ConnectionAuthType::Bearer,
@@ -134,6 +136,7 @@ impl CliAdapter for CodexAdapter {
             .map(|connection| AdapterApiCandidate {
                 source_provider_id: provider_id.clone(),
                 suggested_name: provider_id.clone(),
+                template_id: None,
                 available_models: vec![connection.default_model.clone()],
                 is_current: true,
                 connection,

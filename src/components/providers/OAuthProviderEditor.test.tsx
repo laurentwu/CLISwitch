@@ -8,6 +8,7 @@ import { OAuthProviderEditor } from "./OAuthProviderEditor";
 const detail: OAuthProviderDetail = {
   id: "oauth-id",
   name: "Personal OAuth",
+  templateId: "codex-auth",
   revision: 1,
   createdAt: "2026-08-23T00:00:00Z",
   updatedAt: "2026-08-23T00:00:00Z",
@@ -23,8 +24,8 @@ const publicProvider: PublicProvider = {
   id: detail.id,
   name: detail.name,
   kind: "oauth",
+  templateId: "codex-auth",
   oauthKind: "codex",
-  codingPlan: false,
   connections: [],
   referencedBy: [],
   revision: 1,

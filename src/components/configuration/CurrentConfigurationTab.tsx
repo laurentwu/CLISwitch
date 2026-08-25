@@ -9,12 +9,13 @@ import type {
   CliId,
   DetectedCli,
   DetectedProviderCandidate,
+  ProviderCatalog,
   PublicProvider,
   SavedConfiguration,
   ScanSnapshot,
 } from "../../shared/types";
 import { CLI_IDS } from "../../shared/types";
-import { Badge, Button, Card, Field, Input, Modal, Select, Spinner } from "../ui";
+import { Badge, Button, Card, Field, Input, Modal, Spinner } from "../ui";
 import { BackupRestoreDialog } from "./BackupRestoreDialog";
 
 function statusTone(status: DetectedCli["status"]): "neutral" | "good" | "warn" | "bad" {
@@ -28,11 +29,13 @@ export function CurrentConfigurationTab({
   scan,
   configurations,
   providers,
+  catalog,
   onError,
 }: {
   scan?: ScanSnapshot | null;
   configurations: SavedConfiguration[];
   providers: PublicProvider[];
+  catalog: ProviderCatalog;
   onError: (message: string) => void;
 }) {
   const { t } = useTranslation();
@@ -58,8 +61,6 @@ export function CurrentConfigurationTab({
         snapshotId: scan?.id,
         candidateId: candidate?.id,
         name: candidateName.trim(),
-        codingPlan: false,
-        codingPlanName: null,
         defaultModel: candidateModel || null,
       }),
     onSuccess: () => {
@@ -100,6 +101,10 @@ export function CurrentConfigurationTab({
   };
   const candidateNameIssue = validateEntityName(candidateName, providers);
   const configurationNameIssue = validateEntityName(configurationName, configurations);
+  const candidateTemplateName = candidate?.templateId
+    ? (catalog.providerTemplates.find((template) => template.id === candidate.templateId)?.name ??
+      candidate.templateId)
+    : t("providers.customTemplate");
   return (
     <div className="page-section">
       <div className="section-actions">
@@ -275,24 +280,28 @@ export function CurrentConfigurationTab({
             onChange={(event) => setCandidateName(event.target.value)}
           />
         </Field>
-        {candidate?.availableModels.length ? (
-          <Field label={t("providers.defaultModel")}>
-            <Select
+        {candidate ? (
+          <Field label={t("providers.defaultModel")} hint={t("providers.modelHint")}>
+            <Input
+              list="candidate-models"
               value={candidateModel}
               onChange={(event) => setCandidateModel(event.target.value)}
-            >
+            />
+            <datalist id="candidate-models">
               {candidate.availableModels.map((model) => (
                 <option key={model} value={model}>
                   {model}
                 </option>
               ))}
-            </Select>
+            </datalist>
           </Field>
         ) : null}
         {candidate ? (
           <dl className="detail-grid">
             <dt>{t("config.cliProviderId")}</dt>
             <dd>{candidate.sourceProviderId}</dd>
+            <dt>{t("providers.template")}</dt>
+            <dd>{candidateTemplateName}</dd>
             <dt>{t("config.protocol")}</dt>
             <dd>{candidate.protocol ?? "—"}</dd>
             <dt>{t("providers.endpoint")}</dt>

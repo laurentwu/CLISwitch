@@ -28,6 +28,8 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionDraft {
     pub id: Option<Uuid>,
+    pub template_endpoint_id: Option<String>,
+    pub credential_slot_id: String,
     pub protocol: CliProtocol,
     pub endpoint: Url,
     pub auth_type: ConnectionAuthType,
@@ -39,8 +41,7 @@ pub struct ConnectionDraft {
 #[serde(rename_all = "camelCase")]
 pub struct ApiProviderDraft {
     pub name: String,
-    pub coding_plan: bool,
-    pub coding_plan_name: Option<String>,
+    pub template_id: Option<String>,
     pub connections: Vec<ConnectionDraft>,
 }
 
@@ -214,8 +215,6 @@ pub async fn save_unmanaged_candidate_provider(
     snapshot_id: Uuid,
     candidate_id: Uuid,
     name: String,
-    coding_plan: bool,
-    coding_plan_name: Option<String>,
     default_model: Option<String>,
 ) -> AppResult<PublicProvider> {
     let _mutation_guard = state.apply.try_mutation_guard()?;
@@ -229,8 +228,6 @@ pub async fn save_unmanaged_candidate_provider(
                 snapshot_id,
                 candidate_id,
                 name,
-                coding_plan,
-                coding_plan_name,
                 default_model,
             },
         )
@@ -315,6 +312,8 @@ pub async fn update_provider(
                 continue;
             };
             if previous_connection.protocol == connection.protocol
+                && previous_connection.template_endpoint_id == connection.template_endpoint_id
+                && previous_connection.credential_slot_id == connection.credential_slot_id
                 && previous_connection.endpoint == connection.endpoint
                 && previous_connection.auth_type == connection.auth_type
                 && previous_connection.api_key == connection.api_key
@@ -648,11 +647,22 @@ pub async fn save_current_as_configuration(
             continue;
         };
         let provider = state.repository.get_provider(provider_id).await?;
-        match provider.data {
+        match &provider.data {
             ProviderData::Api(api) => {
                 if let Some(connection) = api.connections.iter().find(|connection| {
                     current.protocol == Some(connection.protocol)
-                        && item.cli_id.supports(connection.protocol)
+                        && match (
+                            provider.template_id.as_deref(),
+                            connection.template_endpoint_id.as_deref(),
+                        ) {
+                            (Some(template_id), Some(endpoint_id)) => state
+                                .catalog
+                                .supports_api_endpoint(item.cli_id, template_id, endpoint_id),
+                            (None, None) => state
+                                .catalog
+                                .supports_protocol(item.cli_id, connection.protocol),
+                            _ => false,
+                        }
                 }) {
                     targets.push(ConfigurationTarget::Api {
                         cli_id: item.cli_id,
@@ -662,7 +672,13 @@ pub async fn save_current_as_configuration(
                     });
                 }
             }
-            ProviderData::Oauth(oauth) if oauth.oauth_kind.target_cli() == item.cli_id => {
+            ProviderData::Oauth(_)
+                if provider.template_id.as_deref().is_some_and(|template_id| {
+                    state
+                        .catalog
+                        .supports_auth_template(item.cli_id, template_id)
+                }) =>
+            {
                 targets.push(ConfigurationTarget::Oauth {
                     cli_id: item.cli_id,
                     provider_id,
@@ -846,17 +862,18 @@ fn provider_from_draft(
     ProviderProfile {
         id,
         name: draft.name,
+        template_id: draft.template_id,
         revision,
         created_at,
         updated_at,
         data: ProviderData::Api(ApiProviderData {
-            coding_plan: draft.coding_plan,
-            coding_plan_name: draft.coding_plan_name,
             connections: draft
                 .connections
                 .into_iter()
                 .map(|connection| ProviderConnection {
                     id: connection.id.unwrap_or_else(Uuid::new_v4),
+                    template_endpoint_id: connection.template_endpoint_id,
+                    credential_slot_id: connection.credential_slot_id,
                     protocol: connection.protocol,
                     endpoint: connection.endpoint,
                     auth_type: connection.auth_type,

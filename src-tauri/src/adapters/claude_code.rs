@@ -101,6 +101,8 @@ impl CliAdapter for ClaudeCodeAdapter {
         let candidate = match (&endpoint, &api_key, &model) {
             (Some(endpoint), Some((auth_type, key)), Some(model)) => Some(ProviderConnection {
                 id: Uuid::new_v4(),
+                template_endpoint_id: None,
+                credential_slot_id: "api-key".into(),
                 protocol: CliProtocol::AnthropicMessages,
                 endpoint: Url::parse(endpoint)?,
                 auth_type: *auth_type,
@@ -138,6 +140,7 @@ impl CliAdapter for ClaudeCodeAdapter {
             .map(|connection| AdapterApiCandidate {
                 source_provider_id: "claude-code".into(),
                 suggested_name: "Claude Code API".into(),
+                template_id: None,
                 available_models: vec![connection.default_model.clone()],
                 is_current: true,
                 connection,

@@ -122,6 +122,8 @@ impl Repository {
                         self.redactor.register(&api_key);
                         Ok(ProviderConnection {
                             id: parse_uuid(connection.try_get::<String, _>("id")?)?,
+                            template_endpoint_id: connection.try_get("template_endpoint_id")?,
+                            credential_slot_id: connection.try_get("credential_slot_id")?,
                             protocol: CliProtocol::from_str(
                                 &connection.try_get::<String, _>("protocol")?,
                             )?,
@@ -141,11 +143,7 @@ impl Repository {
                         })
                     })
                     .collect::<AppResult<Vec<_>>>()?;
-                ProviderData::Api(ApiProviderData {
-                    coding_plan: row.try_get::<i64, _>("coding_plan")? != 0,
-                    coding_plan_name: row.try_get("coding_plan_name")?,
-                    connections,
-                })
+                ProviderData::Api(ApiProviderData { connections })
             }
             "oauth" => {
                 let oauth = sqlx::query("SELECT * FROM oauth_credentials WHERE provider_id = ?")
@@ -182,6 +180,7 @@ impl Repository {
         Ok(ProviderProfile {
             id,
             name: row.try_get("name")?,
+            template_id: row.try_get("template_id")?,
             revision: row.try_get("revision")?,
             created_at: required_datetime(&row, "created_at")?,
             updated_at: required_datetime(&row, "updated_at")?,
@@ -250,27 +249,19 @@ impl Repository {
     ) -> AppResult<()> {
         provider.validate()?;
         let mut transaction = self.pool.begin().await?;
-        let (kind, coding_plan, coding_plan_name, oauth_kind) = match &provider.data {
-            ProviderData::Api(api) => (
-                "api",
-                api.coding_plan,
-                api.coding_plan_name.as_deref(),
-                None,
-            ),
-            ProviderData::Oauth(oauth) => {
-                ("oauth", false, None, Some(oauth.oauth_kind.to_string()))
-            }
+        let (kind, oauth_kind) = match &provider.data {
+            ProviderData::Api(_) => ("api", None),
+            ProviderData::Oauth(oauth) => ("oauth", Some(oauth.oauth_kind.to_string())),
         };
         sqlx::query(
-            "INSERT INTO provider_profiles(id, name, normalized_name, kind, coding_plan, coding_plan_name, oauth_kind, revision, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO provider_profiles(id, name, normalized_name, kind, coding_plan, coding_plan_name, oauth_kind, template_id, revision, created_at, updated_at) VALUES(?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)",
         )
         .bind(provider.id.to_string())
         .bind(provider.name.trim())
         .bind(normalize_name(&provider.name)?)
         .bind(kind)
-        .bind(coding_plan)
-        .bind(coding_plan_name)
         .bind(oauth_kind)
+        .bind(provider.template_id.as_deref())
         .bind(provider.revision)
         .bind(provider.created_at.to_rfc3339())
         .bind(provider.updated_at.to_rfc3339())
@@ -303,9 +294,11 @@ impl Repository {
             ProviderData::Api(api) => {
                 for connection in &api.connections {
                     self.redactor.register(&connection.api_key);
-                    sqlx::query("INSERT INTO provider_connections(id, provider_id, protocol, endpoint, auth_type, api_key, default_model, verification_status, verified_at, verification_error) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                    sqlx::query("INSERT INTO provider_connections(id, provider_id, template_endpoint_id, credential_slot_id, protocol, endpoint, auth_type, api_key, default_model, verification_status, verified_at, verification_error) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                         .bind(connection.id.to_string())
                         .bind(provider.id.to_string())
+                        .bind(connection.template_endpoint_id.as_deref())
+                        .bind(&connection.credential_slot_id)
                         .bind(connection.protocol.to_string())
                         .bind(connection.endpoint.as_str())
                         .bind(connection.auth_type.to_string())
@@ -377,24 +370,16 @@ impl Repository {
     ) -> AppResult<()> {
         provider.validate()?;
         let mut transaction = self.pool.begin().await?;
-        let (kind, coding_plan, coding_plan_name, oauth_kind) = match &provider.data {
-            ProviderData::Api(api) => (
-                "api",
-                api.coding_plan,
-                api.coding_plan_name.as_deref(),
-                None,
-            ),
-            ProviderData::Oauth(oauth) => {
-                ("oauth", false, None, Some(oauth.oauth_kind.to_string()))
-            }
+        let (kind, oauth_kind) = match &provider.data {
+            ProviderData::Api(_) => ("api", None),
+            ProviderData::Oauth(oauth) => ("oauth", Some(oauth.oauth_kind.to_string())),
         };
-        let result = sqlx::query("UPDATE provider_profiles SET name = ?, normalized_name = ?, kind = ?, coding_plan = ?, coding_plan_name = ?, oauth_kind = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?")
+        let result = sqlx::query("UPDATE provider_profiles SET name = ?, normalized_name = ?, kind = ?, oauth_kind = ?, template_id = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?")
             .bind(provider.name.trim())
             .bind(normalize_name(&provider.name)?)
             .bind(kind)
-            .bind(coding_plan)
-            .bind(coding_plan_name)
             .bind(oauth_kind)
+            .bind(provider.template_id.as_deref())
             .bind(Utc::now().to_rfc3339())
             .bind(provider.id.to_string())
             .bind(expected_revision)
@@ -484,7 +469,9 @@ impl Repository {
 
                 for connection in &api.connections {
                     self.redactor.register(&connection.api_key);
-                    let updated = sqlx::query("UPDATE provider_connections SET protocol = ?, endpoint = ?, auth_type = ?, api_key = ?, default_model = ?, verification_status = ?, verified_at = ?, verification_error = ? WHERE provider_id = ? AND id = ?")
+                    let updated = sqlx::query("UPDATE provider_connections SET template_endpoint_id = ?, credential_slot_id = ?, protocol = ?, endpoint = ?, auth_type = ?, api_key = ?, default_model = ?, verification_status = ?, verified_at = ?, verification_error = ? WHERE provider_id = ? AND id = ?")
+                        .bind(connection.template_endpoint_id.as_deref())
+                        .bind(&connection.credential_slot_id)
                         .bind(connection.protocol.to_string())
                         .bind(connection.endpoint.as_str())
                         .bind(connection.auth_type.to_string())
@@ -499,9 +486,11 @@ impl Repository {
                         .await
                         .map_err(map_unique_conflict)?;
                     if updated.rows_affected() == 0 {
-                        sqlx::query("INSERT INTO provider_connections(id, provider_id, protocol, endpoint, auth_type, api_key, default_model, verification_status, verified_at, verification_error) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                        sqlx::query("INSERT INTO provider_connections(id, provider_id, template_endpoint_id, credential_slot_id, protocol, endpoint, auth_type, api_key, default_model, verification_status, verified_at, verification_error) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                             .bind(connection.id.to_string())
                             .bind(provider.id.to_string())
+                            .bind(connection.template_endpoint_id.as_deref())
+                            .bind(&connection.credential_slot_id)
                             .bind(connection.protocol.to_string())
                             .bind(connection.endpoint.as_str())
                             .bind(connection.auth_type.to_string())
@@ -904,8 +893,11 @@ fn validate_active_oauth_binding(
 ) -> AppResult<()> {
     match &provider.data {
         ProviderData::Oauth(oauth)
-            if oauth.oauth_kind.target_cli() == cli_id
-                && oauth.digest.as_str() == native_digest =>
+            if provider.template_id.as_deref().is_some_and(|template_id| {
+                crate::catalog::embedded_catalog()
+                    .map(|catalog| catalog.supports_auth_template(cli_id, template_id))
+                    .unwrap_or(false)
+            }) && oauth.digest.as_str() == native_digest =>
         {
             Ok(())
         }
@@ -949,7 +941,7 @@ async fn validate_targets(
                 ..
             } => {
                 let row = sqlx::query(
-                    "SELECT p.kind AS provider_kind, c.protocol AS protocol FROM provider_profiles p LEFT JOIN provider_connections c ON c.provider_id = p.id AND c.id = ? WHERE p.id = ?",
+                    "SELECT p.kind AS provider_kind, p.template_id AS template_id, c.protocol AS protocol, c.template_endpoint_id AS template_endpoint_id FROM provider_profiles p LEFT JOIN provider_connections c ON c.provider_id = p.id AND c.id = ? WHERE p.id = ?",
                 )
                 .bind(connection_id.to_string())
                 .bind(provider_id.to_string())
@@ -965,9 +957,19 @@ async fn validate_targets(
                     .try_get::<Option<String>, _>("protocol")?
                     .ok_or_else(|| AppError::Validation("connection does not exist".into()))?;
                 let protocol = CliProtocol::from_str(&protocol)?;
-                if !cli_id.supports(protocol) {
+                let template_id: Option<String> = row.try_get("template_id")?;
+                let template_endpoint_id: Option<String> = row.try_get("template_endpoint_id")?;
+                let supported = match (template_id.as_deref(), template_endpoint_id.as_deref()) {
+                    (Some(template_id), Some(endpoint_id)) => crate::catalog::embedded_catalog()?
+                        .supports_api_endpoint(*cli_id, template_id, endpoint_id),
+                    (None, None) => {
+                        crate::catalog::embedded_catalog()?.supports_protocol(*cli_id, protocol)
+                    }
+                    _ => false,
+                };
+                if !supported {
                     return Err(AppError::Validation(format!(
-                        "{cli_id} does not support {protocol}"
+                        "{cli_id} does not support this provider endpoint"
                     )));
                 }
             }
@@ -976,21 +978,31 @@ async fn validate_targets(
                 provider_id,
                 ..
             } => {
-                let row =
-                    sqlx::query("SELECT kind, oauth_kind FROM provider_profiles WHERE id = ?")
-                        .bind(provider_id.to_string())
-                        .fetch_optional(&mut **transaction)
-                        .await?
-                        .ok_or_else(|| AppError::NotFound(format!("provider {provider_id}")))?;
+                let row = sqlx::query(
+                    "SELECT kind, oauth_kind, template_id FROM provider_profiles WHERE id = ?",
+                )
+                .bind(provider_id.to_string())
+                .fetch_optional(&mut **transaction)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("provider {provider_id}")))?;
                 let kind: String = row.try_get("kind")?;
                 let oauth_kind = row.try_get::<Option<String>, _>("oauth_kind")?;
-                if kind != "oauth"
-                    || oauth_kind
-                        .as_deref()
-                        .map(OAuthKind::from_str)
-                        .transpose()?
-                        .is_none_or(|oauth_kind| oauth_kind.target_cli() != *cli_id)
-                {
+                let template_id = row.try_get::<Option<String>, _>("template_id")?;
+                let supports_auth_template = template_id.as_deref().is_some_and(|template_id| {
+                    crate::catalog::embedded_catalog()
+                        .map(|catalog| catalog.supports_auth_template(*cli_id, template_id))
+                        .unwrap_or(false)
+                });
+                let oauth_kind = oauth_kind.as_deref().map(OAuthKind::from_str).transpose()?;
+                let template_matches_kind = template_id
+                    .as_deref()
+                    .and_then(|template_id| {
+                        crate::catalog::embedded_catalog()
+                            .ok()?
+                            .auth_template(template_id)
+                    })
+                    .is_some_and(|template| Some(template.auth_kind) == oauth_kind);
+                if kind != "oauth" || !template_matches_kind || !supports_auth_template {
                     return Err(AppError::Validation(
                         "OAuth target must reference a matching OAuth provider".into(),
                     ));
@@ -1112,19 +1124,103 @@ mod tests {
         (temp, paths, repository)
     }
 
+    #[tokio::test]
+    async fn template_migration_preserves_legacy_providers_and_targets_as_custom_data() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/0001_initial.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let provider_id = Uuid::new_v4().to_string();
+        let connection_id = Uuid::new_v4().to_string();
+        let configuration_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO provider_profiles(id, name, normalized_name, kind, coding_plan, coding_plan_name, revision, created_at, updated_at) VALUES(?, 'Legacy', 'legacy', 'api', 1, 'Legacy plan label', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .bind(&provider_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO provider_connections(id, provider_id, protocol, endpoint, auth_type, api_key, default_model) VALUES(?, ?, 'openai-chat', 'https://legacy.invalid/custom/path', 'bearer', 'legacy-secret', 'legacy-model')")
+            .bind(&connection_id)
+            .bind(&provider_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO saved_configurations(id, name, normalized_name, creation_order, revision, created_at, updated_at) VALUES(?, 'Legacy config', 'legacy config', 1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+            .bind(&configuration_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO configuration_targets(configuration_id, cli_id, target_kind, provider_id, connection_id, model) VALUES(?, 'opencode', 'api', ?, ?, 'legacy-model')")
+            .bind(&configuration_id)
+            .bind(&provider_id)
+            .bind(&connection_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(include_str!("../../migrations/0002_provider_templates.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let row = sqlx::query("SELECT p.template_id, p.coding_plan, p.coding_plan_name, c.endpoint, c.api_key, c.template_endpoint_id, c.credential_slot_id FROM provider_profiles p JOIN provider_connections c ON c.provider_id = p.id WHERE p.id = ?")
+            .bind(&provider_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<Option<String>, _>("template_id"), None);
+        assert_eq!(row.get::<i64, _>("coding_plan"), 1);
+        assert_eq!(
+            row.get::<Option<String>, _>("coding_plan_name").as_deref(),
+            Some("Legacy plan label")
+        );
+        assert_eq!(
+            row.get::<String, _>("endpoint"),
+            "https://legacy.invalid/custom/path"
+        );
+        assert_eq!(row.get::<String, _>("api_key"), "legacy-secret");
+        assert_eq!(row.get::<Option<String>, _>("template_endpoint_id"), None);
+        assert_eq!(
+            row.get::<String, _>("credential_slot_id"),
+            format!("legacy-{connection_id}")
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT connection_id FROM configuration_targets WHERE configuration_id = ?",
+            )
+            .bind(&configuration_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            connection_id
+        );
+
+        sqlx::query("INSERT INTO provider_connections(id, provider_id, protocol, endpoint, auth_type, api_key, default_model, credential_slot_id) VALUES(?, ?, 'openai-chat', 'https://second.invalid/v1', 'bearer', 'second-secret', 'second-model', 'second-key')")
+            .bind(Uuid::new_v4().to_string())
+            .bind(&provider_id)
+            .execute(&pool)
+            .await
+            .expect("endpoint identity must allow two connections using one protocol");
+    }
+
     fn api_provider(name: &str) -> ProviderProfile {
         let now = Utc::now();
         ProviderProfile {
             id: Uuid::new_v4(),
             name: name.into(),
+            template_id: None,
             revision: 1,
             created_at: now,
             updated_at: now,
             data: ProviderData::Api(ApiProviderData {
-                coding_plan: true,
-                coding_plan_name: Some("Team".into()),
                 connections: vec![ProviderConnection {
                     id: Uuid::new_v4(),
+                    template_endpoint_id: None,
+                    credential_slot_id: "api-key".into(),
                     protocol: CliProtocol::OpenaiResponses,
                     endpoint: Url::parse("https://example.test/v1").unwrap(),
                     auth_type: ConnectionAuthType::Bearer,
@@ -1132,6 +1228,39 @@ mod tests {
                     default_model: "model-a".into(),
                     verification: VerificationInfo::default(),
                 }],
+            }),
+        }
+    }
+
+    fn glm_provider(name: &str) -> ProviderProfile {
+        let now = Utc::now();
+        let template = crate::catalog::embedded_catalog()
+            .unwrap()
+            .api_template("glm-coding-plan")
+            .unwrap();
+        ProviderProfile {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            template_id: Some(template.id.clone()),
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            data: ProviderData::Api(ApiProviderData {
+                connections: template
+                    .endpoints
+                    .iter()
+                    .map(|endpoint| ProviderConnection {
+                        id: Uuid::new_v4(),
+                        template_endpoint_id: Some(endpoint.id.clone()),
+                        credential_slot_id: endpoint.credential_slot_id.clone(),
+                        protocol: endpoint.protocol,
+                        endpoint: endpoint.base_url.clone(),
+                        auth_type: endpoint.default_auth_type().unwrap(),
+                        api_key: "shared-fixture-secret".into(),
+                        default_model: endpoint.default_model().unwrap().into(),
+                        verification: VerificationInfo::default(),
+                    })
+                    .collect(),
             }),
         }
     }
@@ -1172,6 +1301,7 @@ mod tests {
         let oauth = ProviderProfile {
             id: Uuid::new_v4(),
             name: "Codex OAuth".into(),
+            template_id: Some("codex-auth".into()),
             revision: 1,
             created_at: now,
             updated_at: now,
@@ -1237,6 +1367,74 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, AppError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn api_targets_follow_catalog_endpoint_relations_and_reject_mixed_identity() {
+        let (_temp, _paths, repository) = repository().await;
+        let provider = glm_provider("GLM Coding Plan");
+        let ProviderData::Api(api) = &provider.data else {
+            unreachable!()
+        };
+        let anthropic_connection = api
+            .connections
+            .iter()
+            .find(|connection| connection.template_endpoint_id.as_deref() == Some("anthropic"))
+            .unwrap()
+            .id;
+        let chat_connection = api
+            .connections
+            .iter()
+            .find(|connection| connection.template_endpoint_id.as_deref() == Some("openai-chat"))
+            .unwrap()
+            .id;
+        repository.insert_provider(&provider, None).await.unwrap();
+
+        repository
+            .insert_configuration(&configuration(
+                "Claude via GLM",
+                vec![ConfigurationTarget::Api {
+                    cli_id: CliId::ClaudeCode,
+                    provider_id: provider.id,
+                    connection_id: anthropic_connection,
+                    model: "glm-4.7".into(),
+                }],
+            ))
+            .await
+            .unwrap();
+
+        let wrong_relation = repository
+            .insert_configuration(&configuration(
+                "Claude via wrong GLM endpoint",
+                vec![ConfigurationTarget::Api {
+                    cli_id: CliId::ClaudeCode,
+                    provider_id: provider.id,
+                    connection_id: chat_connection,
+                    model: "glm-4.7".into(),
+                }],
+            ))
+            .await
+            .unwrap_err();
+        assert!(matches!(wrong_relation, AppError::Validation(_)));
+
+        sqlx::query("UPDATE provider_connections SET template_endpoint_id = NULL WHERE id = ?")
+            .bind(chat_connection.to_string())
+            .execute(repository.pool())
+            .await
+            .unwrap();
+        let mixed_identity = repository
+            .insert_configuration(&configuration(
+                "Mixed endpoint identity",
+                vec![ConfigurationTarget::Api {
+                    cli_id: CliId::Opencode,
+                    provider_id: provider.id,
+                    connection_id: chat_connection,
+                    model: "glm-4.7".into(),
+                }],
+            ))
+            .await
+            .unwrap_err();
+        assert!(matches!(mixed_identity, AppError::Validation(_)));
     }
 
     #[tokio::test]
@@ -1388,6 +1586,7 @@ mod tests {
         let provider = ProviderProfile {
             id,
             name: "Codex OAuth".into(),
+            template_id: Some("codex-auth".into()),
             revision: 1,
             created_at: now,
             updated_at: now,
@@ -1404,6 +1603,18 @@ mod tests {
         let relative = Path::new("auth").join(id.to_string()).join("auth.txt");
         repository
             .insert_provider(&provider, Some(&relative))
+            .await
+            .unwrap();
+
+        repository
+            .insert_configuration(&configuration(
+                "Correct OAuth CLI",
+                vec![ConfigurationTarget::Oauth {
+                    cli_id: CliId::Codex,
+                    provider_id: id,
+                    model: "gpt-fixture".into(),
+                }],
+            ))
             .await
             .unwrap();
 
@@ -1497,6 +1708,7 @@ mod tests {
         if let ProviderData::Api(api) = &mut provider.data {
             let mut secondary = api.connections[0].clone();
             secondary.id = Uuid::new_v4();
+            secondary.credential_slot_id = "secondary-key".into();
             secondary.protocol = CliProtocol::AnthropicMessages;
             api.connections.push(secondary);
         }

@@ -880,14 +880,15 @@ mod tests {
         ProviderProfile {
             id: Uuid::new_v4(),
             name: "Fixture API".into(),
+            template_id: None,
             revision: 1,
             created_at: now,
             updated_at: now,
             data: ProviderData::Api(ApiProviderData {
-                coding_plan: false,
-                coding_plan_name: None,
                 connections: vec![ProviderConnection {
                     id: Uuid::new_v4(),
+                    template_endpoint_id: None,
+                    credential_slot_id: "responses-key".into(),
                     protocol: CliProtocol::OpenaiResponses,
                     endpoint: Url::parse("https://example.test/v1").unwrap(),
                     auth_type: ConnectionAuthType::Bearer,
@@ -1007,6 +1008,8 @@ mod tests {
         let mut provider = api_provider();
         let anthropic_connection = ProviderConnection {
             id: Uuid::new_v4(),
+            template_endpoint_id: None,
+            credential_slot_id: "anthropic-key".into(),
             protocol: CliProtocol::AnthropicMessages,
             endpoint: Url::parse("https://anthropic.example.test/v1").unwrap(),
             auth_type: ConnectionAuthType::Bearer,
@@ -1298,6 +1301,7 @@ mod tests {
         let provider = ProviderProfile {
             id,
             name: "Claude OAuth".into(),
+            template_id: Some("anthropic-auth".into()),
             revision: 1,
             created_at: now,
             updated_at: now,

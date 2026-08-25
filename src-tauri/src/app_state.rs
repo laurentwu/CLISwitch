@@ -6,6 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    catalog::{ProviderCatalog, embedded_catalog},
     domain::{
         AppSettings, ApplyRunSnapshot, ConfigurationMatchStatus, PublicProvider,
         SavedConfiguration, ScanSnapshot, calculate_configuration_match,
@@ -71,6 +72,7 @@ pub struct AppSnapshot {
     pub app_data_directory: std::path::PathBuf,
     pub backup_bytes: u64,
     pub app_version: String,
+    pub catalog: ProviderCatalog,
 }
 
 #[derive(Debug)]
@@ -82,6 +84,7 @@ pub struct AppState {
     pub oauth: OAuthService,
     pub apply: ApplyCoordinator,
     pub models: ModelCatalogService,
+    pub catalog: ProviderCatalog,
     pub redactor: Redactor,
     pub safe_to_exit: Arc<AtomicBool>,
     pub frontend_dirty: Arc<AtomicBool>,
@@ -90,6 +93,7 @@ pub struct AppState {
 
 impl AppState {
     pub async fn initialize(root: std::path::PathBuf) -> AppResult<Self> {
+        let catalog = embedded_catalog()?.clone();
         let paths = PrivatePaths::from_root(root);
         paths.ensure().await?;
         let log_guard = initialize_logging(&paths);
@@ -130,6 +134,7 @@ impl AppState {
             oauth,
             apply,
             models: ModelCatalogService::new()?,
+            catalog,
             redactor,
             safe_to_exit: Arc::new(AtomicBool::new(false)),
             frontend_dirty: Arc::new(AtomicBool::new(false)),
@@ -165,6 +170,7 @@ impl AppState {
             app_data_directory: self.paths.root.clone(),
             backup_bytes: directory_size(&self.paths.backups).await?,
             app_version: env!("CARGO_PKG_VERSION").into(),
+            catalog: self.catalog.clone(),
         })
     }
 }

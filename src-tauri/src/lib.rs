@@ -1,5 +1,6 @@
 pub mod adapters;
 pub mod app_state;
+pub mod catalog;
 #[cfg(feature = "desktop")]
 pub mod commands;
 pub mod domain;

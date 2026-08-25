@@ -35,7 +35,7 @@ Executable discovery uses, in order, a user-approved manual path, the process PA
 - Only the stable singular `provider` object is supported. The beta plural `providers` schema is explicitly refused.
 - Managed providers use namespaced IDs `cliswitch_<provider UUID>` and set the global `model` to `<provider ID>/<model>`.
 - Current-model detection follows OpenCode's precedence: an explicit global `model`, then the first `recent` entry in `$XDG_STATE_HOME/opencode/model.json` (defaulting to `~/.local/state/opencode/model.json`), then a single unambiguous provider/model pair from the config. Ambiguous configured models are reported instead of guessed.
-- Package mapping is fixed and tested:
+- Package mapping is loaded from `src-tauri/catalog/clis.jsonc` and tested:
 
 | CLISwitch protocol      | OpenCode `npm` package      | Auth entry                      |
 | ----------------------- | --------------------------- | ------------------------------- |
@@ -46,16 +46,16 @@ Executable discovery uses, in order, a user-approved manual path, the process PA
 - OpenCode credentials are enumerated from `auth.json`, then joined to the singular `provider`
   configuration by provider ID. Every complete `type: "api"` entry is offered separately for
   saving; OAuth entries are identified but are not savable in 0.1.
-- Self-described custom providers need no catalog entry when they declare a supported `npm`,
+- Self-described custom providers need no template entry when they declare a supported `npm`,
   `options.baseURL`, and at least one model. Built-in providers may use this declarative fallback
-  relation table. Explicit user configuration overrides every fallback value.
+  relation catalog. Explicit user configuration overrides every fallback value.
 
 | OpenCode provider ID     | CLISwitch name                    | CLISwitch protocol | Auth    | Default endpoint                                |
 | ------------------------ | --------------------------------- | ------------------ | ------- | ----------------------------------------------- |
 | `openai`                 | OpenAI                            | OpenAI Responses   | Bearer  | `https://api.openai.com/v1`                     |
 | `anthropic`              | Anthropic                         | Anthropic Messages | API key | `https://api.anthropic.com`                     |
 | `openrouter`             | OpenRouter                        | OpenAI Chat        | Bearer  | `https://openrouter.ai/api/v1`                  |
-| `zhipuai-coding-plan`    | Zhipu AI Coding Plan              | OpenAI Chat        | Bearer  | `https://open.bigmodel.cn/api/coding/paas/v4`   |
+| `zhipuai-coding-plan`    | GLM Coding Plan                   | OpenAI Chat        | Bearer  | `https://open.bigmodel.cn/api/coding/paas/v4`   |
 | `zai-coding-plan`        | Z.AI Coding Plan                  | OpenAI Chat        | Bearer  | `https://api.z.ai/api/coding/paas/v4`           |
 | `minimax-coding-plan`    | MiniMax Token Plan (minimax.io)   | Anthropic Messages | API key | `https://api.minimax.io/anthropic/v1`           |
 | `minimax-cn-coding-plan` | MiniMax Token Plan (minimaxi.com) | Anthropic Messages | API key | `https://api.minimaxi.com/anthropic/v1`         |
@@ -66,9 +66,24 @@ Executable discovery uses, in order, a user-approved manual path, the process PA
 | `umans-ai-coding-plan`   | Umans AI Coding Plan              | OpenAI Chat        | Bearer  | `https://api.code.umans.ai/v1`                  |
 | `kuae-cloud-coding-plan` | KUAE Cloud Coding Plan            | OpenAI Chat        | Bearer  | `https://coding-plan-endpoint.kuaecloud.net/v1` |
 
-Adding another built-in API-key provider requires one row in
-`src-tauri/src/adapters/opencode_provider_map.rs` plus a fixture assertion; the scanner and save
-flow do not require provider-specific branching.
+The GLM Coding Plan template is one provider with one shared credential slot and three endpoint
+identities: Anthropic Messages at `https://open.bigmodel.cn/api/anthropic`, OpenAI Chat at
+`https://open.bigmodel.cn/api/coding/paas/v4`, and OpenAI Responses at
+`https://open.bigmodel.cn/api/v1`. OpenCode has a relation to all three. None is marked as the
+OpenCode default, so a saved configuration must explicitly select one endpoint.
+
+Provider/CLI maintenance is split across three bundled, read-only JSONC files:
+
+- `src-tauri/catalog/clis.jsonc` defines CLIs, supported protocols, auth modes, and protocol SDK
+  packages.
+- `src-tauri/catalog/provider-templates.jsonc` defines API templates (credential slots, endpoints,
+  protocols, and suggested models) and auth templates.
+- `src-tauri/catalog/cli-provider-relations.jsonc` joins a CLI to a template endpoint or auth mode
+  and records recognized native provider IDs.
+
+Model lists are suggestions, not allowlists. Users may enter another model ID. Existing database
+providers migrate as custom providers without endpoint inference; existing auth providers receive
+their exact auth-template identity.
 
 - Provider endpoint is written to `options.baseURL`; the selected model is placed in the provider `models` object.
 - Config JSONC and auth JSON are patched at managed paths while retaining unrelated fields and formatting where the CST writer supports it.
