@@ -85,12 +85,9 @@ export function CurrentConfigurationTab({
     },
     onError: (error) => onError(errorMessage(error)),
   });
-  const choosePath = async (cliId: CliId, kind: "executable" | "directory") => {
+  const chooseConfigDirectory = async (cliId: CliId) => {
     try {
-      const selected = await command<AppSettings | null>(
-        kind === "executable" ? "select_cli_executable" : "select_cli_config_directory",
-        { cliId },
-      );
+      const selected = await command<AppSettings | null>("select_cli_config_directory", { cliId });
       if (selected) {
         await queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
         refresh.mutate();
@@ -144,10 +141,7 @@ export function CurrentConfigurationTab({
                   <Badge>{t("config.notScanned")}</Badge>
                 </header>
                 <div className="section-actions">
-                  <Button variant="secondary" onClick={() => choosePath(cliId, "executable")}>
-                    {t("settings.chooseExecutable")}
-                  </Button>
-                  <Button variant="secondary" onClick={() => choosePath(cliId, "directory")}>
+                  <Button variant="secondary" onClick={() => chooseConfigDirectory(cliId)}>
                     {t("settings.chooseDirectory")}
                   </Button>
                 </div>
@@ -186,10 +180,7 @@ export function CurrentConfigurationTab({
                 </div>
               ))}
               <div className="section-actions">
-                <Button variant="secondary" onClick={() => choosePath(item.cliId, "executable")}>
-                  {t("settings.chooseExecutable")}
-                </Button>
-                <Button variant="secondary" onClick={() => choosePath(item.cliId, "directory")}>
+                <Button variant="secondary" onClick={() => chooseConfigDirectory(item.cliId)}>
                   {t("settings.chooseDirectory")}
                 </Button>
                 <Button
