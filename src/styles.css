@@ -448,6 +448,70 @@ small {
   height: 32px;
   border-radius: 7px;
 }
+.template-picker-hint {
+  margin-top: 0;
+  color: var(--muted);
+}
+.template-groups {
+  display: grid;
+  gap: 20px;
+}
+.template-group {
+  display: grid;
+  gap: 10px;
+}
+.template-group h3 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+.template-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.template-option {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+  transition: 0.15s ease;
+}
+.template-option:hover,
+.template-option:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.template-option-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.template-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.template-option-copy strong,
+.template-option-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.template-option-copy small {
+  color: var(--muted);
+}
 .badge {
   display: inline-flex;
   align-items: center;
@@ -887,5 +951,8 @@ small {
   }
   .target-grid {
     grid-template-columns: 1fr 1fr;
+  }
+  .template-options {
+    grid-template-columns: 1fr;
   }
 }

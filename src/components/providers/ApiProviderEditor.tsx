@@ -149,12 +149,14 @@ function normalizeDraft(value: ApiProviderDraft): ApiProviderDraft {
 
 export function ApiProviderEditor({
   detail,
+  initialTemplateId,
   providers,
   catalog,
   onClose,
   onError,
 }: {
   detail?: ApiProviderDetail;
+  initialTemplateId?: string;
   providers: PublicProvider[];
   catalog: ProviderCatalog;
   onClose: () => void;
@@ -174,6 +176,7 @@ export function ApiProviderEditor({
       ),
     [catalog],
   );
+  const initialTemplate = detail ? undefined : apiTemplate(catalog, initialTemplateId);
   const detailConnections = detail?.connections.map((connection) => ({
     id: connection.id,
     templateEndpointId: connection.templateEndpointId ?? undefined,
@@ -197,18 +200,20 @@ export function ApiProviderEditor({
               : detailConnections,
         }
       : {
-          name: "",
-          templateId: "",
-          connections: [
-            {
-              credentialSlotId: "custom-api-key-1",
-              protocol: "openai-responses",
-              endpoint: "https://api.example.com/v1",
-              authType: "bearer",
-              apiKey: "",
-              defaultModel: "",
-            },
-          ],
+          name: initialTemplate?.name ?? "",
+          templateId: initialTemplate?.id ?? "",
+          connections: initialTemplate
+            ? templateConnections(initialTemplate, [])
+            : [
+                {
+                  credentialSlotId: "custom-api-key-1",
+                  protocol: "openai-responses",
+                  endpoint: "https://api.example.com/v1",
+                  authType: "bearer",
+                  apiKey: "",
+                  defaultModel: "",
+                },
+              ],
         },
   });
   const fields = useFieldArray({ control: form.control, name: "connections" });
@@ -354,7 +359,7 @@ export function ApiProviderEditor({
       })}
     >
       <header className="editor-header">
-        <h2>{detail ? detail.name : t("providers.addApi")}</h2>
+        <h2>{detail ? detail.name : (selectedTemplate?.name ?? t("providers.addApi"))}</h2>
         <div className="section-actions">
           {detail ? (
             <Button
