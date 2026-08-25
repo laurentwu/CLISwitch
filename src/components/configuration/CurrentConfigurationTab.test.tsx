@@ -60,6 +60,25 @@ const codexOAuthScan: ScanSnapshot = {
 };
 
 describe("CurrentConfigurationTab", () => {
+  it("keeps executable paths visible without offering executable selection", () => {
+    const client = new QueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <CurrentConfigurationTab
+          scan={codexOAuthScan}
+          configurations={[]}
+          providers={[]}
+          catalog={catalog}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("/fixture/bin/codex")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "选择可执行文件" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "选择配置目录" })).toHaveLength(3);
+  });
+
   it("offers to save detected Codex OAuth with an OAuth-specific default name", () => {
     const client = new QueryClient();
     render(
