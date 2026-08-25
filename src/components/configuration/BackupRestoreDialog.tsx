@@ -2,20 +2,18 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { command, errorMessage } from "../../shared/ipc";
+import { command } from "../../shared/ipc";
 import type { BackupMetadata, CliId, RestorePreview, ScanSnapshot } from "../../shared/types";
-import { Badge, Button, EmptyState, Modal, Spinner } from "../ui";
+import { Badge, Button, EmptyState, ErrorAlert, Modal, Spinner } from "../ui";
 
 export function BackupRestoreDialog({
   open,
   cliId,
   onClose,
-  onError,
 }: {
   open: boolean;
   cliId?: CliId;
   onClose: () => void;
-  onError: (message: string) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -29,7 +27,6 @@ export function BackupRestoreDialog({
     mutationFn: (backup: BackupMetadata) =>
       command<RestorePreview>("preview_restore", { backupId: backup.id }),
     onSuccess: setRestorePreview,
-    onError: (error) => onError(errorMessage(error)),
   });
   const restore = useMutation({
     mutationFn: (preview: RestorePreview) =>
@@ -40,8 +37,11 @@ export function BackupRestoreDialog({
       void queryClient.invalidateQueries({ queryKey: ["backups"] });
       void queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
     },
-    onError: (error) => onError(errorMessage(error)),
   });
+  const closeRestorePreview = () => {
+    setRestorePreview(undefined);
+    restore.reset();
+  };
   return (
     <>
       <Modal
@@ -49,12 +49,31 @@ export function BackupRestoreDialog({
         title={t("config.backups")}
         onClose={() => {
           setRestorePreview(undefined);
+          prepareRestore.reset();
+          restore.reset();
           onClose();
         }}
         wide
       >
         {backups.isPending ? <Spinner /> : null}
-        {!backups.isPending && !backups.data?.length ? (
+        {backups.isError ? (
+          <ErrorAlert
+            error={backups.error}
+            title={t("errors.query.backups")}
+            onRetry={() => void backups.refetch()}
+            tone={backups.data ? "warning" : undefined}
+          />
+        ) : null}
+        {prepareRestore.isError ? (
+          <ErrorAlert
+            error={prepareRestore.error}
+            title={t("errors.operations.restore")}
+            onRetry={() => {
+              if (prepareRestore.variables) prepareRestore.mutate(prepareRestore.variables);
+            }}
+          />
+        ) : null}
+        {!backups.isPending && !backups.isError && !backups.data?.length ? (
           <EmptyState>{t("common.none")}</EmptyState>
         ) : null}
         <div className="backup-list">
@@ -87,10 +106,10 @@ export function BackupRestoreDialog({
       <Modal
         open={Boolean(restorePreview)}
         title={t("common.confirmRestore")}
-        onClose={() => setRestorePreview(undefined)}
+        onClose={closeRestorePreview}
         footer={
           <>
-            <Button variant="ghost" onClick={() => setRestorePreview(undefined)}>
+            <Button variant="ghost" onClick={closeRestorePreview}>
               {t("common.cancel")}
             </Button>
             <Button
@@ -103,6 +122,9 @@ export function BackupRestoreDialog({
           </>
         }
       >
+        {restore.isError ? (
+          <ErrorAlert error={restore.error} title={t("errors.operations.restore")} />
+        ) : null}
         <div className="path-text">{restorePreview?.targetPath}</div>
         <p>{restorePreview?.restoresTombstone ? t("config.tombstone") : t("config.restore")}</p>
       </Modal>

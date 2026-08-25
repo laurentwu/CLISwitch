@@ -6,7 +6,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Files, Plus, Save, Trash2, Wifi } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { apiTemplate } from "../../shared/catalog";
-import { command, errorMessage } from "../../shared/ipc";
+import { command } from "../../shared/ipc";
 import { uniqueCopyName, validateEntityName } from "../../shared/names";
 import type {
   ApiProviderDetail,
@@ -17,7 +17,12 @@ import type {
   PublicProvider,
 } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
-import { Badge, Button, Card, Field, Input, Select } from "../ui";
+import { Alert, Badge, Button, Card, Field, Input, Select, type ErrorReporter } from "../ui";
+
+type EditorNotice = {
+  tone: "success" | "info" | "warning";
+  message: string;
+};
 
 const connectionSchema = z.object({
   id: z.string().optional(),
@@ -152,13 +157,13 @@ export function ApiProviderEditor({
   providers: PublicProvider[];
   catalog: ProviderCatalog;
   onClose: () => void;
-  onError: (message: string) => void;
+  onError: ErrorReporter;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const setDirty = useUiStore((state) => state.setDirty);
   const setSaveCurrent = useUiStore((state) => state.setSaveCurrent);
-  const [notice, setNotice] = useState<string>();
+  const [notice, setNotice] = useState<EditorNotice>();
   const [modelOptions, setModelOptions] = useState<Record<string, string[]>>({});
   const templates = useMemo(
     () =>
@@ -235,7 +240,7 @@ export function ApiProviderEditor({
       setDirty(false);
       onClose();
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, detail ? "save" : "create"),
   });
   useEffect(() => setDirty(form.formState.isDirty), [form.formState.isDirty, setDirty]);
   const saveCurrentRef = useRef<() => Promise<boolean>>(async () => false);
@@ -273,9 +278,9 @@ export function ApiProviderEditor({
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["providers"] });
-      setNotice(t("common.duplicate"));
+      setNotice({ tone: "success", message: t("providers.duplicateSucceeded") });
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "duplicate"),
   });
 
   const chooseTemplate = (nextTemplateId: string) => {
@@ -302,14 +307,14 @@ export function ApiProviderEditor({
 
   const test = async (connectionId?: string) => {
     if (!detail || !connectionId) {
-      setNotice(t("providers.saveBeforeTest"));
+      setNotice({ tone: "warning", message: t("providers.saveBeforeTest") });
       return;
     }
     try {
       await command("test_connection", { providerId: detail.id, connectionId });
-      setNotice(t("providers.testSucceeded"));
+      setNotice({ tone: "success", message: t("providers.testSucceeded") });
     } catch (error) {
-      onError(errorMessage(error));
+      onError(error, "connectionTest");
     } finally {
       await queryClient.invalidateQueries({ queryKey: ["providers"] });
       await queryClient.invalidateQueries({ queryKey: ["provider-secret", detail.id] });
@@ -318,7 +323,7 @@ export function ApiProviderEditor({
 
   const loadModels = async (connectionId: string | undefined, index: number, fieldId: string) => {
     if (!detail || !connectionId) {
-      setNotice(t("providers.saveBeforeModels"));
+      setNotice({ tone: "warning", message: t("providers.saveBeforeModels") });
       return;
     }
     try {
@@ -327,11 +332,11 @@ export function ApiProviderEditor({
         connectionId,
       });
       setModelOptions((current) => ({ ...current, [fieldId]: values }));
-      setNotice(values.join(", "));
+      setNotice({ tone: "info", message: values.join(", ") || t("common.none") });
       if (!form.getValues(`connections.${index}.defaultModel`) && values[0])
         form.setValue(`connections.${index}.defaultModel`, values[0], { shouldDirty: true });
     } catch (error) {
-      onError(errorMessage(error));
+      onError(error, "fetchModels");
     }
   };
 
@@ -422,7 +427,9 @@ export function ApiProviderEditor({
                           ? "good"
                           : verification.status === "invalid"
                             ? "bad"
-                            : "neutral"
+                            : verification.status === "never-tested"
+                              ? "neutral"
+                              : "warn"
                       }
                     >
                       {t(`status.${verification.status}`)}
@@ -529,10 +536,14 @@ export function ApiProviderEditor({
                         variant="ghost"
                         title={t("common.copy")}
                         onClick={async () => {
-                          await navigator.clipboard.writeText(
-                            form.getValues(`connections.${index}.apiKey`),
-                          );
-                          setNotice(t("common.copied"));
+                          try {
+                            await navigator.clipboard.writeText(
+                              form.getValues(`connections.${index}.apiKey`),
+                            );
+                            setNotice({ tone: "success", message: t("common.copied") });
+                          } catch (error) {
+                            onError(error, "copy");
+                          }
                         }}
                       >
                         <Copy size={15} />
@@ -581,13 +592,9 @@ export function ApiProviderEditor({
           <Plus size={15} /> {t("providers.addConnection")}
         </Button>
       ) : null}
-      {notice ? (
-        <div className="notice" role="status">
-          {notice}
-        </div>
-      ) : null}
+      {notice ? <Alert tone={notice.tone} title={notice.message} announce /> : null}
       {Object.keys(form.formState.errors).length ? (
-        <div className="diagnostic">{t("providers.invalidConnections")}</div>
+        <Alert compact tone="warning" title={t("providers.invalidConnections")} />
       ) : null}
     </form>
   );

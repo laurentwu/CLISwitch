@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { command, errorMessage } from "../../shared/ipc";
+import { command } from "../../shared/ipc";
 import { validateEntityName } from "../../shared/names";
 import type {
   AppSnapshot,
@@ -10,7 +10,7 @@ import type {
   ScanSnapshot,
 } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
-import { Button, Field, Input, Modal } from "../ui";
+import { Button, ErrorAlert, Field, Input, Modal, type ErrorReporter } from "../ui";
 import { ConfigurationTabs } from "./ConfigurationTabs";
 import { CurrentConfigurationTab } from "./CurrentConfigurationTab";
 import { SavedConfigurationTab } from "./SavedConfigurationTab";
@@ -22,7 +22,7 @@ export function ConfigurationPage({
 }: {
   snapshot: AppSnapshot;
   guarded: (action: () => void) => void;
-  onError: (message: string) => void;
+  onError: ErrorReporter;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -68,7 +68,7 @@ export function ConfigurationPage({
       setActive(value.id);
       setDirty(false);
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "create"),
   });
   const nameIssue = validateEntityName(name, configurations.data);
   const selected = configurations.data.find((item) => item.id === active);
@@ -77,6 +77,30 @@ export function ConfigurationPage({
       <header className="page-header">
         <h1>{t("config.title")}</h1>
       </header>
+      {configurations.isError ? (
+        <ErrorAlert
+          error={configurations.error}
+          title={t("errors.query.configurations")}
+          onRetry={() => void configurations.refetch()}
+          tone="warning"
+        />
+      ) : null}
+      {providers.isError ? (
+        <ErrorAlert
+          error={providers.error}
+          title={t("errors.query.providers")}
+          onRetry={() => void providers.refetch()}
+          tone="warning"
+        />
+      ) : null}
+      {scan.isError ? (
+        <ErrorAlert
+          error={scan.error}
+          title={t("errors.query.scan")}
+          onRetry={() => void scan.refetch()}
+          tone="warning"
+        />
+      ) : null}
       <ConfigurationTabs
         configurations={configurations.data}
         active={active}

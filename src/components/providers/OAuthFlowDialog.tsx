@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { command, errorMessage, onEvent } from "../../shared/ipc";
+import { command, onEvent } from "../../shared/ipc";
 import { validateEntityName } from "../../shared/names";
 import type { OAuthKind, OAuthSessionSnapshot, PublicProvider } from "../../shared/types";
-import { Badge, Button, Field, Input, Modal, Spinner } from "../ui";
+import { Badge, Button, ErrorAlert, Field, Input, Modal, Spinner } from "../ui";
 
 export function OAuthFlowDialog({
   open,
@@ -15,7 +15,6 @@ export function OAuthFlowDialog({
   providers,
   onClose,
   onCompleted,
-  onError,
 }: {
   open: boolean;
   kind: OAuthKind;
@@ -25,7 +24,6 @@ export function OAuthFlowDialog({
   providers: PublicProvider[];
   onClose: () => void;
   onCompleted: (providerId?: string) => void;
-  onError: (message: string) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -33,6 +31,8 @@ export function OAuthFlowDialog({
   const [deviceAuth, setDeviceAuth] = useState(false);
   const [sessionId, setSessionId] = useState<string>();
   const [input, setInput] = useState("");
+  const [subscriptionError, setSubscriptionError] = useState<unknown>();
+  const [browserError, setBrowserError] = useState<unknown>();
   const nameIssue = validateEntityName(name, providers, replaceProviderId);
 
   const session = useQuery({
@@ -43,11 +43,26 @@ export function OAuthFlowDialog({
   });
   useEffect(() => {
     if (!sessionId) return;
+    let disposed = false;
     let cleanup: (() => void) | undefined;
     void onEvent<{ sessionId: string }>("cliswitch://oauth-progress", (event) => {
       if (event.sessionId === sessionId) void session.refetch();
-    }).then((unlisten) => (cleanup = unlisten));
-    return () => cleanup?.();
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        setSubscriptionError(undefined);
+        cleanup = unlisten;
+      })
+      .catch((error) => {
+        if (!disposed) setSubscriptionError(error);
+      });
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (session.data?.stage === "success") {
@@ -80,16 +95,13 @@ export function OAuthFlowDialog({
         onCompleted(value.id);
       }
     },
-    onError: (error) => onError(errorMessage(error)),
   });
   const cancel = useMutation({
     mutationFn: () => command("cancel_oauth_login", { sessionId }),
-    onError: (error) => onError(errorMessage(error)),
   });
   const send = useMutation({
     mutationFn: () => command("send_oauth_input", { sessionId, input }),
     onSuccess: () => setInput(""),
-    onError: (error) => onError(errorMessage(error)),
   });
   const browserUrl = session.data?.message
     .match(/https:\/\/[^\s<>"']+/)?.[0]
@@ -119,6 +131,32 @@ export function OAuthFlowDialog({
         </>
       }
     >
+      {begin.isError ? (
+        <ErrorAlert error={begin.error} title={t("errors.operations.oauth")} />
+      ) : null}
+      {cancel.isError ? (
+        <ErrorAlert error={cancel.error} title={t("errors.operations.oauth")} />
+      ) : null}
+      {send.isError ? <ErrorAlert error={send.error} title={t("errors.operations.oauth")} /> : null}
+      {session.isError ? (
+        <ErrorAlert
+          error={session.error}
+          title={t("errors.query.oauthProgress")}
+          onRetry={() => void session.refetch()}
+          tone={session.data ? "warning" : undefined}
+        />
+      ) : null}
+      {subscriptionError ? (
+        <ErrorAlert
+          error={subscriptionError}
+          title={t("errors.query.liveUpdates")}
+          compact
+          tone="warning"
+        />
+      ) : null}
+      {browserError ? (
+        <ErrorAlert error={browserError} title={t("errors.operations.open")} compact />
+      ) : null}
       {!sessionId ? (
         <>
           <Field
@@ -166,9 +204,9 @@ export function OAuthFlowDialog({
                 <Button
                   variant="secondary"
                   onClick={() =>
-                    command("open_oauth_browser_url", { kind, url: browserUrl }).catch((error) =>
-                      onError(errorMessage(error)),
-                    )
+                    command("open_oauth_browser_url", { kind, url: browserUrl })
+                      .then(() => setBrowserError(undefined))
+                      .catch((error) => setBrowserError(error))
                   }
                 >
                   {t("providers.openBrowser")}

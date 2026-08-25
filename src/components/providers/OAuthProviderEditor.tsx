@@ -2,11 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, LogIn, Save, Trash2, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { command, errorMessage } from "../../shared/ipc";
+import { command } from "../../shared/ipc";
 import { validateEntityName } from "../../shared/names";
 import type { OAuthProviderDetail, PublicProvider } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
-import { Badge, Button, Card, Field, Input, Modal, Textarea } from "../ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Field,
+  Input,
+  Modal,
+  Textarea,
+  type ErrorReporter,
+} from "../ui";
 
 export function OAuthProviderEditor({
   detail,
@@ -20,7 +30,7 @@ export function OAuthProviderEditor({
   publicProvider: PublicProvider;
   providers: PublicProvider[];
   onClose: () => void;
-  onError: (message: string) => void;
+  onError: ErrorReporter;
   onStartFlow: (mode: "login" | "import") => void;
 }) {
   const { t } = useTranslation();
@@ -61,7 +71,7 @@ export function OAuthProviderEditor({
       setDirty(false);
       await refresh();
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "save"),
   });
   useEffect(() => setDirty(dirty), [dirty, setDirty]);
   const saveCurrentRef = useRef<() => Promise<boolean>>(async () => false);
@@ -93,7 +103,7 @@ export function OAuthProviderEditor({
       await queryClient.invalidateQueries({ queryKey: ["providers"] });
       onClose();
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "delete"),
   });
 
   return (
@@ -109,7 +119,11 @@ export function OAuthProviderEditor({
                   ? "warn"
                   : detail.verification.status === "valid"
                     ? "good"
-                    : "neutral"
+                    : detail.verification.status === "invalid"
+                      ? "bad"
+                      : detail.verification.status === "never-tested"
+                        ? "neutral"
+                        : "warn"
               }
             >
               {t(`status.${detail.verification.status}`)}
@@ -171,14 +185,18 @@ export function OAuthProviderEditor({
         />
       </Field>
       {detail.manuallyModified ? (
-        <div className="warning-box">{t("providers.manualWarning")}</div>
+        <Alert tone="warning" title={t("providers.manualWarning")} />
       ) : null}
       <div className="section-actions">
         <Button
           variant="secondary"
           onClick={async () => {
-            await navigator.clipboard.writeText(raw);
-            setCopied(true);
+            try {
+              await navigator.clipboard.writeText(raw);
+              setCopied(true);
+            } catch (error) {
+              onError(error, "copy");
+            }
           }}
         >
           <Copy size={15} /> {copied ? t("common.copied") : t("common.copy")}

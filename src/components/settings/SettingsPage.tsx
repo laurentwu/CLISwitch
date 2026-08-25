@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, FolderOpen, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { command, errorMessage } from "../../shared/ipc";
+import { command } from "../../shared/ipc";
 import type { AppSettings, AppSnapshot, CliId } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
-import { Button, Card, Field, Input, Select } from "../ui";
+import { Alert, Button, Card, Field, Input, Select, type ErrorReporter } from "../ui";
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
@@ -24,7 +24,7 @@ export function SettingsPage({
   onError,
 }: {
   snapshot: AppSnapshot;
-  onError: (message: string) => void;
+  onError: ErrorReporter;
 }) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -43,7 +43,7 @@ export function SettingsPage({
       await i18n.changeLanguage(value.language === "zh-cn" ? "zh-CN" : "en");
       await queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "save"),
   });
   const saveCurrentRef = useRef<() => Promise<boolean>>(async () => false);
   useEffect(() => {
@@ -78,7 +78,7 @@ export function SettingsPage({
         await queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
       }
     } catch (error) {
-      onError(errorMessage(error));
+      onError(error, "selectPath");
     }
   };
   const checkUpdate = async () => {
@@ -88,7 +88,7 @@ export function SettingsPage({
       );
       setUpdateMessage(value.updateAvailable ? `v${value.latestVersion}` : t("settings.upToDate"));
     } catch (error) {
-      onError(errorMessage(error));
+      onError(error, "updateCheck");
     }
   };
   return (
@@ -187,7 +187,7 @@ export function SettingsPage({
           <Button
             variant="secondary"
             onClick={() =>
-              command("open_app_data_directory").catch((error) => onError(errorMessage(error)))
+              command("open_app_data_directory").catch((error) => onError(error, "open"))
             }
           >
             <FolderOpen size={15} /> {t("settings.openDirectory")}
@@ -212,7 +212,7 @@ export function SettingsPage({
             <ExternalLink size={15} /> {t("settings.checkUpdate")}
           </Button>
         </div>
-        {updateMessage ? <div className="notice">{updateMessage}</div> : null}
+        {updateMessage ? <Alert tone="info" title={updateMessage} announce /> : null}
       </Card>
     </div>
   );

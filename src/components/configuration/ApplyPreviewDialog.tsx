@@ -2,19 +2,44 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, Circle, LoaderCircle, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { command, errorMessage, onEvent } from "../../shared/ipc";
+import { command, onEvent } from "../../shared/ipc";
 import type { ApplyPreview, ApplyRunSnapshot, SavedConfiguration } from "../../shared/types";
-import { Badge, Button, Modal, Spinner } from "../ui";
+import { Alert, Badge, Button, ErrorAlert, Modal, Spinner } from "../ui";
 
 function StateIcon({ state }: { state: string }) {
-  if (["success", "success-unverified", "unchanged"].includes(state))
+  if (["success", "unchanged"].includes(state))
     return <CheckCircle2 className="state-good" size={17} />;
-  if (["failed", "conflict", "running-blocked"].includes(state))
-    return <XCircle className="state-bad" size={17} />;
+  if (state === "failed") return <XCircle className="state-bad" size={17} />;
   if (state === "writing") return <LoaderCircle className="spin" size={17} />;
-  if (["not-installed", "incompatible", "cancelled"].includes(state))
+  if (
+    [
+      "success-unverified",
+      "conflict",
+      "running-blocked",
+      "not-installed",
+      "incompatible",
+      "cancelled",
+    ].includes(state)
+  )
     return <AlertTriangle className="state-warn" size={17} />;
   return <Circle size={17} />;
+}
+
+function stateTone(state: string): "neutral" | "good" | "warn" | "bad" {
+  if (["success", "unchanged"].includes(state)) return "good";
+  if (state === "failed") return "bad";
+  if (
+    [
+      "success-unverified",
+      "conflict",
+      "running-blocked",
+      "not-installed",
+      "incompatible",
+      "cancelled",
+    ].includes(state)
+  )
+    return "warn";
+  return "neutral";
 }
 
 export function ApplyPreviewDialog({
@@ -22,18 +47,17 @@ export function ApplyPreviewDialog({
   initialRun,
   open,
   onClose,
-  onError,
 }: {
   configuration: SavedConfiguration;
   initialRun?: ApplyRunSnapshot;
   open: boolean;
   onClose: () => void;
-  onError: (message: string) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [preview, setPreview] = useState<ApplyPreview>();
   const [runId, setRunId] = useState<string | undefined>(initialRun?.id);
+  const [subscriptionError, setSubscriptionError] = useState<unknown>();
   const previewMutation = useMutation({
     mutationFn: () =>
       command<ApplyPreview>("preview_apply", {
@@ -41,27 +65,16 @@ export function ApplyPreviewDialog({
         expectedRevision: configuration.revision,
       }),
     onSuccess: setPreview,
-    onError: (error) => onError(errorMessage(error)),
   });
   useEffect(() => {
     if (open && !preview && !runId && !previewMutation.isPending) previewMutation.mutate();
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-  const close = () => {
-    if (runId && !run.data?.finishedAt) {
-      onClose();
-      return;
-    }
-    setPreview(undefined);
-    setRunId(undefined);
-    onClose();
-  };
   const start = useMutation({
     mutationFn: () => command<ApplyRunSnapshot>("start_apply", { previewId: preview?.id }),
     onSuccess: (run) => {
       setRunId(run.id);
       void queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
     },
-    onError: (error) => onError(errorMessage(error)),
   });
   const run = useQuery({
     queryKey: ["apply-run", runId],
@@ -72,11 +85,26 @@ export function ApplyPreviewDialog({
   });
   useEffect(() => {
     if (!runId) return;
+    let disposed = false;
     let cleanup: (() => void) | undefined;
     void onEvent<{ runId: string }>("cliswitch://apply-progress", (event) => {
       if (event.runId === runId) void run.refetch();
-    }).then((unlisten) => (cleanup = unlisten));
-    return () => cleanup?.();
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+          return;
+        }
+        setSubscriptionError(undefined);
+        cleanup = unlisten;
+      })
+      .catch((error) => {
+        if (!disposed) setSubscriptionError(error);
+      });
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
   }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (run.data?.finishedAt) {
@@ -87,16 +115,29 @@ export function ApplyPreviewDialog({
   }, [run.data?.finishedAt, queryClient]);
   const cancel = useMutation({
     mutationFn: () => command("cancel_apply", { runId }),
-    onError: (error) => onError(errorMessage(error)),
   });
   const retry = useMutation({
     mutationFn: () => command<ApplyPreview>("retry_apply_items", { runId }),
     onSuccess: (value) => {
       setPreview(value);
       setRunId(undefined);
+      setSubscriptionError(undefined);
     },
-    onError: (error) => onError(errorMessage(error)),
   });
+  const close = () => {
+    if (runId && !run.data?.finishedAt) {
+      onClose();
+      return;
+    }
+    setPreview(undefined);
+    setRunId(undefined);
+    setSubscriptionError(undefined);
+    previewMutation.reset();
+    start.reset();
+    cancel.reset();
+    retry.reset();
+    onClose();
+  };
   const items = runId ? run.data?.items : preview?.items;
   return (
     <Modal
@@ -134,6 +175,38 @@ export function ApplyPreviewDialog({
       }
     >
       {previewMutation.isPending || (runId && run.isPending) ? <Spinner /> : null}
+      {previewMutation.isError ? (
+        <ErrorAlert
+          error={previewMutation.error}
+          title={t("errors.query.applyPreview")}
+          onRetry={() => previewMutation.mutate()}
+        />
+      ) : null}
+      {start.isError ? (
+        <ErrorAlert error={start.error} title={t("errors.operations.apply")} />
+      ) : null}
+      {cancel.isError ? (
+        <ErrorAlert error={cancel.error} title={t("errors.operations.apply")} />
+      ) : null}
+      {retry.isError ? (
+        <ErrorAlert error={retry.error} title={t("errors.operations.apply")} />
+      ) : null}
+      {run.isError ? (
+        <ErrorAlert
+          error={run.error}
+          title={t("errors.query.applyProgress")}
+          onRetry={() => void run.refetch()}
+          tone={run.data ? "warning" : undefined}
+        />
+      ) : null}
+      {subscriptionError ? (
+        <ErrorAlert
+          error={subscriptionError}
+          title={t("errors.query.liveUpdates")}
+          compact
+          tone="warning"
+        />
+      ) : null}
       <div className="apply-list">
         {items?.map((item) => (
           <article className="apply-row" key={item.cliId}>
@@ -141,7 +214,7 @@ export function ApplyPreviewDialog({
             <div className="apply-content">
               <div className="card-title-row">
                 <strong>{item.cliId}</strong>
-                <Badge>{t(`status.${item.state}`)}</Badge>
+                <Badge tone={stateTone(item.state)}>{t(`status.${item.state}`)}</Badge>
               </div>
               {"providerName" in item ? (
                 <div>
@@ -160,10 +233,18 @@ export function ApplyPreviewDialog({
                   ))
                 : null}
               {"message" in item && item.message ? (
-                <div className="diagnostic">{item.message}</div>
+                <Alert
+                  compact
+                  tone={item.state === "failed" ? "error" : "warning"}
+                  title={t(`status.${item.state}`)}
+                >
+                  <p>{item.message}</p>
+                </Alert>
               ) : null}
               {"warning" in item && item.warning ? (
-                <div className="diagnostic">{item.warning}</div>
+                <Alert compact tone="warning" title={t(`status.${item.state}`)}>
+                  <p>{item.warning}</p>
+                </Alert>
               ) : null}
             </div>
           </article>

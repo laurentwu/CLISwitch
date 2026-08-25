@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Play, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { command, errorMessage } from "../../shared/ipc";
+import { command } from "../../shared/ipc";
 import { providerSupportsCli } from "../../shared/catalog";
 import { uniqueCopyName, validateEntityName } from "../../shared/names";
 import type {
@@ -16,7 +16,7 @@ import type {
 } from "../../shared/types";
 import { CLI_IDS } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
-import { Badge, Button, Card, Field, Input, Modal, Select } from "../ui";
+import { Badge, Button, Card, Field, Input, Modal, Select, type ErrorReporter } from "../ui";
 import { ApplyPreviewDialog } from "./ApplyPreviewDialog";
 import { CliTargetRow, makeTarget } from "./CliTargetRow";
 
@@ -39,7 +39,7 @@ export function SavedConfigurationTab({
   configurations: SavedConfiguration[];
   scan?: ScanSnapshot;
   onDeleted: () => void;
-  onError: (message: string) => void;
+  onError: ErrorReporter;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -62,22 +62,12 @@ export function SavedConfigurationTab({
       (target.targetType !== "api" || target.connectionId.length > 0),
   );
   const save = useMutation({
-    mutationFn: () => {
-      if (nameIssue || !targetsValid) {
-        return Promise.reject(
-          new Error(
-            nameIssue
-              ? t(nameIssue === "length" ? "validation.nameLength" : "validation.nameDuplicate")
-              : t("config.selectEndpoint"),
-          ),
-        );
-      }
-      return command<SavedConfiguration>("update_configuration", {
+    mutationFn: () =>
+      command<SavedConfiguration>("update_configuration", {
         configurationId: configuration.id,
         expectedRevision: configuration.revision,
         request: { name: name.trim(), targets },
-      });
-    },
+      }),
     onSuccess: (value) => {
       queryClient.setQueryData<SavedConfiguration[]>(["configurations"], (items) =>
         items?.map((item) => (item.id === value.id ? value : item)),
@@ -85,10 +75,22 @@ export function SavedConfigurationTab({
       void queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
       setDirty(false);
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "save"),
   });
   useEffect(() => {
     setSaveCurrent(async () => {
+      if (nameIssue || !targetsValid) {
+        onError(
+          {
+            code: "validation",
+            message: nameIssue
+              ? t(nameIssue === "length" ? "validation.nameLength" : "validation.nameDuplicate")
+              : t("validation.configurationTargets"),
+          },
+          "save",
+        );
+        return false;
+      }
       try {
         await save.mutateAsync();
         return true;
@@ -118,7 +120,7 @@ export function SavedConfigurationTab({
     const provider = providers.find((item) => providerSupportsCli(catalog, cliId, item));
     const target = provider && makeTarget(catalog, cliId, provider);
     if (!target) {
-      onError(t("config.noCompatibleProvider"));
+      onError({ code: "validation", message: t("config.noCompatibleProvider") }, "configure");
       return;
     }
     mark(setTargets, [...targets, target]);
@@ -148,7 +150,7 @@ export function SavedConfigurationTab({
       void queryClient.invalidateQueries({ queryKey: ["configurations"] });
       void queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "duplicate"),
   });
   const remove = useMutation({
     mutationFn: () =>
@@ -162,7 +164,7 @@ export function SavedConfigurationTab({
       void queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
       onDeleted();
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "delete"),
   });
   const sortedTargets = useMemo(
     () => CLI_IDS.map((id) => targets.find((target) => target.cliId === id)),
@@ -184,15 +186,7 @@ export function SavedConfigurationTab({
               <Input value={name} onChange={(event) => mark(setName, event.target.value)} />
             </Field>
             {matchStatus ? (
-              <Badge
-                tone={
-                  matchStatus === "applied"
-                    ? "good"
-                    : matchStatus === "unable-to-verify"
-                      ? "bad"
-                      : "warn"
-                }
-              >
+              <Badge tone={matchStatus === "applied" ? "good" : "warn"}>
                 {t(`status.${matchStatus}`)}
               </Badge>
             ) : null}
@@ -286,7 +280,6 @@ export function SavedConfigurationTab({
         initialRun={resumableApply}
         open={applyOpen}
         onClose={() => setApplyOpen(false)}
-        onError={onError}
       />
       <Modal
         open={duplicateOpen}

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArchiveRestore, RefreshCw, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { command, errorMessage } from "../../shared/ipc";
+import { command } from "../../shared/ipc";
 import { validateEntityName } from "../../shared/names";
 import type {
   AppSettings,
@@ -15,7 +15,17 @@ import type {
   ScanSnapshot,
 } from "../../shared/types";
 import { CLI_IDS } from "../../shared/types";
-import { Badge, Button, Card, Field, Input, Modal, Spinner } from "../ui";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Field,
+  Input,
+  Modal,
+  Spinner,
+  type ErrorReporter,
+} from "../ui";
 import { BackupRestoreDialog } from "./BackupRestoreDialog";
 
 function statusTone(status: DetectedCli["status"]): "neutral" | "good" | "warn" | "bad" {
@@ -36,7 +46,7 @@ export function CurrentConfigurationTab({
   configurations: SavedConfiguration[];
   providers: PublicProvider[];
   catalog: ProviderCatalog;
-  onError: (message: string) => void;
+  onError: ErrorReporter;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -53,7 +63,7 @@ export function CurrentConfigurationTab({
       queryClient.setQueryData(["scan"], value);
       void queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "scan"),
   });
   const saveCandidate = useMutation({
     mutationFn: () =>
@@ -70,7 +80,7 @@ export function CurrentConfigurationTab({
       void queryClient.invalidateQueries({ queryKey: ["providers"] });
       refresh.mutate();
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "save"),
   });
   const saveCurrent = useMutation({
     mutationFn: () =>
@@ -83,7 +93,7 @@ export function CurrentConfigurationTab({
       void queryClient.invalidateQueries({ queryKey: ["configurations"] });
       void queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "save"),
   });
   const chooseConfigDirectory = async (cliId: CliId) => {
     try {
@@ -93,7 +103,7 @@ export function CurrentConfigurationTab({
         refresh.mutate();
       }
     } catch (error) {
-      onError(errorMessage(error));
+      onError(error, "selectPath");
     }
   };
   const candidateNameIssue = validateEntityName(candidateName, providers);
@@ -175,9 +185,14 @@ export function CurrentConfigurationTab({
                 <dd>{item.current?.model ?? "—"}</dd>
               </dl>
               {item.current?.diagnostics.map((message, index) => (
-                <div className="diagnostic" key={index}>
-                  {message}
-                </div>
+                <Alert
+                  key={index}
+                  compact
+                  tone={statusTone(item.status) === "bad" ? "error" : "warning"}
+                  title={t("config.scanDiagnostic")}
+                >
+                  <p>{message}</p>
+                </Alert>
               ))}
               <div className="section-actions">
                 <Button variant="secondary" onClick={() => chooseConfigDirectory(item.cliId)}>
@@ -341,7 +356,6 @@ export function CurrentConfigurationTab({
         open={backupsOpen}
         cliId={backupCli}
         onClose={() => setBackupsOpen(false)}
-        onError={onError}
       />
     </div>
   );

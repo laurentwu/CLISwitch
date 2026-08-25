@@ -2,10 +2,19 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, LogIn, Plus, Trash2, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { command, errorMessage } from "../../shared/ipc";
+import { command } from "../../shared/ipc";
 import type { AppSnapshot, OAuthKind, ProviderDetail, PublicProvider } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
-import { Badge, Button, Card, EmptyState, Modal, Spinner } from "../ui";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  ErrorAlert,
+  Modal,
+  Spinner,
+  type ErrorReporter,
+} from "../ui";
 import { ApiProviderEditor } from "./ApiProviderEditor";
 import { OAuthFlowDialog } from "./OAuthFlowDialog";
 import { OAuthProviderEditor } from "./OAuthProviderEditor";
@@ -24,7 +33,7 @@ export function ProviderPage({
 }: {
   snapshot: AppSnapshot;
   guarded: (action: () => void) => void;
-  onError: (message: string) => void;
+  onError: ErrorReporter;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -68,7 +77,7 @@ export function ProviderPage({
       selectImmediately(undefined);
       await queryClient.invalidateQueries({ queryKey: ["providers"] });
     },
-    onError: (error) => onError(errorMessage(error)),
+    onError: (error) => onError(error, "delete"),
   });
 
   return (
@@ -116,6 +125,14 @@ export function ProviderPage({
           </Button>
         </div>
       </header>
+      {providers.isError ? (
+        <ErrorAlert
+          error={providers.error}
+          title={t("errors.query.providers")}
+          onRetry={() => void providers.refetch()}
+          tone="warning"
+        />
+      ) : null}
       <div className="split-view">
         <aside className="provider-list" aria-label={t("providers.title")}>
           {providers.data.map((provider) => (
@@ -155,12 +172,12 @@ export function ProviderPage({
           {!createApi && selectedId && secret.isPending ? <Spinner /> : null}
           {!createApi && selectedId && secret.isError ? (
             <Card>
-              <div className="global-error" role="alert">
-                {errorMessage(secret.error)}
-              </div>
-              <Button variant="secondary" onClick={() => secret.refetch()}>
-                {t("common.retry")}
-              </Button>
+              <ErrorAlert
+                error={secret.error}
+                title={t("errors.query.providerDetail")}
+                onRetry={() => void secret.refetch()}
+                tone={secret.data ? "warning" : undefined}
+              />
             </Card>
           ) : null}
           {!createApi && selected && secret.data?.profileType === "api" ? (
@@ -235,7 +252,6 @@ export function ProviderPage({
             setFlow(undefined);
             if (id) select(id);
           }}
-          onError={onError}
         />
       ) : null}
       <Modal
