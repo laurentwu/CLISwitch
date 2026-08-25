@@ -143,6 +143,7 @@ export const zhCN = {
       defaultModel: "默认模型",
       authType: "认证类型",
       fetchModels: "获取模型",
+      fetchModelsSucceeded: "获取模型成功",
       test: "测试连接",
       references: "引用配置",
       raw: "OAuth 原始内容（完整明文）",

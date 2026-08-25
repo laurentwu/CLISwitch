@@ -147,6 +147,7 @@ export const en = {
       defaultModel: "Default model",
       authType: "Authentication",
       fetchModels: "Fetch models",
+      fetchModelsSucceeded: "Models fetched successfully",
       test: "Test connection",
       references: "Referenced by",
       raw: "Raw OAuth content (full plaintext)",
