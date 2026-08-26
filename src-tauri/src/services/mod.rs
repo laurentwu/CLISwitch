@@ -3,6 +3,7 @@ pub mod backup;
 pub mod cli_manager;
 pub mod config_writer;
 pub mod discovery;
+pub mod minimax;
 pub mod model_catalog;
 pub mod oauth;
 pub mod redaction;

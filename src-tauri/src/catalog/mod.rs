@@ -208,6 +208,8 @@ pub struct ApiCliProviderRelation {
     pub endpoint_id: String,
     pub auth_option_id: String,
     #[serde(default)]
+    pub base_url: Option<Url>,
+    #[serde(default)]
     pub provider_package: Option<String>,
     #[serde(default)]
     pub default: bool,
@@ -306,6 +308,30 @@ impl ProviderCatalog {
                 }
                 _ => None,
             })
+    }
+
+    pub fn api_relation(
+        &self,
+        cli_id: CliId,
+        template_id: &str,
+        endpoint_id: &str,
+    ) -> Option<&ApiCliProviderRelation> {
+        self.api_relations(cli_id, template_id)
+            .find(|relation| relation.endpoint_id == endpoint_id)
+    }
+
+    pub fn relation_auth_type(
+        &self,
+        relation: &ApiCliProviderRelation,
+    ) -> Option<ConnectionAuthType> {
+        self.api_template(&relation.provider_template_id)?
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.id == relation.endpoint_id)?
+            .auth_options
+            .iter()
+            .find(|option| option.id == relation.auth_option_id)
+            .map(|option| option.auth_type)
     }
 
     pub fn supports_api_endpoint(
@@ -511,6 +537,19 @@ impl ProviderCatalog {
                     {
                         return invalid(format!(
                             "relation {} references a missing auth option",
+                            relation.id
+                        ));
+                    }
+                    if relation.base_url.as_ref().is_some_and(|base_url| {
+                        !matches!(base_url.scheme(), "http" | "https")
+                            || base_url.host_str().is_none()
+                            || !base_url.username().is_empty()
+                            || base_url.password().is_some()
+                            || base_url.query().is_some()
+                            || base_url.fragment().is_some()
+                    }) {
+                        return invalid(format!(
+                            "relation {} has an invalid base URL override",
                             relation.id
                         ));
                     }
@@ -812,6 +851,46 @@ mod tests {
                 .native_api_relation(CliId::Opencode, "openrouter")
                 .and_then(|relation| relation.provider_package.as_deref()),
             Some("@openrouter/ai-sdk-provider")
+        );
+    }
+
+    #[test]
+    fn claude_minimax_relations_separate_api_and_token_plan_transport() {
+        let catalog = ProviderCatalog::load_embedded().unwrap();
+        for (template_id, auth_type, base_url) in [
+            (
+                "minimax-api",
+                ConnectionAuthType::ApiKey,
+                "https://api.minimax.io/anthropic",
+            ),
+            (
+                "minimax-cn-api",
+                ConnectionAuthType::ApiKey,
+                "https://api.minimaxi.com/anthropic",
+            ),
+            (
+                "minimax-coding-plan",
+                ConnectionAuthType::Bearer,
+                "https://api.minimax.io/anthropic",
+            ),
+            (
+                "minimax-cn-coding-plan",
+                ConnectionAuthType::Bearer,
+                "https://api.minimaxi.com/anthropic",
+            ),
+        ] {
+            let relation = catalog
+                .api_relation(CliId::ClaudeCode, template_id, "anthropic")
+                .unwrap();
+            assert_eq!(catalog.relation_auth_type(relation), Some(auth_type));
+            assert_eq!(relation.base_url.as_ref().map(Url::as_str), Some(base_url));
+        }
+
+        assert_eq!(
+            catalog
+                .api_relation(CliId::Opencode, "minimax-coding-plan", "anthropic")
+                .and_then(|relation| relation.base_url.as_ref()),
+            None
         );
     }
 

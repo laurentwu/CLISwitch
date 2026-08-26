@@ -1207,6 +1207,91 @@ mod tests {
             .expect("endpoint identity must allow two connections using one protocol");
     }
 
+    #[tokio::test]
+    async fn minimax_migration_reclassifies_saved_profiles_without_changing_connection_ids() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/0001_initial.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/0002_provider_templates.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let token_provider_id = Uuid::new_v4().to_string();
+        let token_connection_id = Uuid::new_v4().to_string();
+        let api_provider_id = Uuid::new_v4().to_string();
+        let api_connection_id = Uuid::new_v4().to_string();
+        for (provider_id, connection_id, name, normalized_name, api_key) in [
+            (
+                &token_provider_id,
+                &token_connection_id,
+                "MiniMax token",
+                "minimax token",
+                "sk-cp-fixture",
+            ),
+            (
+                &api_provider_id,
+                &api_connection_id,
+                "MiniMax API",
+                "minimax api",
+                "sk-api-fixture",
+            ),
+        ] {
+            sqlx::query("INSERT INTO provider_profiles(id, name, normalized_name, kind, coding_plan, template_id, revision, created_at, updated_at) VALUES(?, ?, ?, 'api', 0, 'minimax-coding-plan', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+                .bind(provider_id)
+                .bind(name)
+                .bind(normalized_name)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO provider_connections(id, provider_id, protocol, endpoint, auth_type, api_key, default_model, verification_status, verified_at, template_endpoint_id, credential_slot_id) VALUES(?, ?, 'anthropic-messages', 'https://api.minimax.io/anthropic/v1', 'api-key', ?, 'MiniMax-M2.7', 'valid', '2026-01-01T00:00:00Z', 'anthropic', 'api-key')")
+                .bind(connection_id)
+                .bind(provider_id)
+                .bind(api_key)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0003_minimax_credential_kinds.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let token = sqlx::query("SELECT p.template_id, p.revision, c.id, c.auth_type, c.verification_status, c.verified_at FROM provider_profiles p JOIN provider_connections c ON c.provider_id = p.id WHERE p.id = ?")
+            .bind(&token_provider_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(token.get::<String, _>("template_id"), "minimax-coding-plan");
+        assert_eq!(token.get::<i64, _>("revision"), 2);
+        assert_eq!(token.get::<String, _>("id"), token_connection_id);
+        assert_eq!(token.get::<String, _>("auth_type"), "bearer");
+        assert_eq!(
+            token.get::<String, _>("verification_status"),
+            "user-modified-unverified"
+        );
+        assert_eq!(token.get::<Option<String>, _>("verified_at"), None);
+
+        let api = sqlx::query("SELECT p.template_id, p.revision, c.id, c.auth_type FROM provider_profiles p JOIN provider_connections c ON c.provider_id = p.id WHERE p.id = ?")
+            .bind(&api_provider_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(api.get::<String, _>("template_id"), "minimax-api");
+        assert_eq!(api.get::<i64, _>("revision"), 2);
+        assert_eq!(api.get::<String, _>("id"), api_connection_id);
+        assert_eq!(api.get::<String, _>("auth_type"), "api-key");
+    }
+
     fn api_provider(name: &str) -> ProviderProfile {
         let now = Utc::now();
         ProviderProfile {

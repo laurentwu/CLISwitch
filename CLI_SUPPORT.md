@@ -18,9 +18,17 @@ Executable discovery uses, in order, a user-approved manual path, the process PA
 - Endpoint: `env.ANTHROPIC_BASE_URL`.
 - X-Api-Key auth: `env.ANTHROPIC_API_KEY`.
 - Bearer auth: `env.ANTHROPIC_AUTH_TOKEN`.
+- MiniMax endpoints are recognized only on the official `api.minimax.io` and `api.minimaxi.com`
+  hosts. A key beginning with `sk-cp-` is imported as the matching Token Plan; other MiniMax keys
+  are imported as the matching pay-as-you-go API profile. Both `/anthropic` and the legacy
+  `/anthropic/v1` stored form are accepted during discovery.
+- Claude writes MiniMax's CLI-specific `https://<host>/anthropic` Base URL. Token Plan keys use
+  `ANTHROPIC_AUTH_TOKEN`; pay-as-you-go keys use `ANTHROPIC_API_KEY`.
 - OAuth: Linux/Windows `.credentials.json`; macOS setup token in `env.CLAUDE_CODE_OAUTH_TOKEN`.
 - API and OAuth fields that conflict with the selected mode are removed; unrelated JSONC fields, comments, ordering, and line endings are retained.
-- Process environment variables with these names are reported as external overrides.
+- Process environment variables with these names are reported as external overrides. If both
+  `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are present in the process environment, scanning
+  refuses to choose between them and reports a credential conflict instead.
 
 ### Codex CLI
 
@@ -78,8 +86,9 @@ Provider/CLI maintenance is split across three bundled, read-only JSONC files:
   packages.
 - `src-tauri/catalog/provider-templates.jsonc` defines API templates (credential slots, endpoints,
   protocols, and suggested models) and auth templates.
-- `src-tauri/catalog/cli-provider-relations.jsonc` joins a CLI to a template endpoint or auth mode
-  and records recognized native provider IDs.
+- `src-tauri/catalog/cli-provider-relations.jsonc` joins a CLI to a template endpoint or auth mode,
+  records recognized native provider IDs, and may override the Base URL required by a particular
+  CLI.
 
 Model lists are suggestions, not allowlists. Users may enter another model ID. Existing database
 providers migrate as custom providers without endpoint inference; existing auth providers receive

@@ -19,6 +19,7 @@ use crate::{
     services::{
         apply_coordinator::ApplyProgressEvent,
         cli_manager::UnmanagedCandidateSaveRequest,
+        minimax::normalize_provider_credential_kind,
         model_catalog::{ReleaseCheck, check_github_release as check_release},
         oauth::{OAuthSessionSnapshot, validate_oauth_browser_url},
     },
@@ -891,7 +892,7 @@ fn provider_from_draft(
     updated_at: chrono::DateTime<Utc>,
     draft: ApiProviderDraft,
 ) -> ProviderProfile {
-    ProviderProfile {
+    let mut provider = ProviderProfile {
         id,
         name: draft.name,
         template_id: draft.template_id,
@@ -915,7 +916,9 @@ fn provider_from_draft(
                 })
                 .collect(),
         }),
-    }
+    };
+    normalize_provider_credential_kind(&mut provider);
+    provider
 }
 
 fn find_connection(
@@ -992,4 +995,79 @@ macro_rules! cliswitch_invoke_handler {
 #[allow(dead_code)]
 fn _event_type_assertion(event: ApplyProgressEvent) -> ApplyProgressEvent {
     event
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimax_draft(
+        template_id: &str,
+        key: &str,
+        auth_type: ConnectionAuthType,
+        connection_id: Uuid,
+    ) -> ApiProviderDraft {
+        ApiProviderDraft {
+            name: "MiniMax fixture".into(),
+            template_id: Some(template_id.into()),
+            connections: vec![ConnectionDraft {
+                id: Some(connection_id),
+                template_endpoint_id: Some("anthropic".into()),
+                credential_slot_id: "api-key".into(),
+                protocol: CliProtocol::AnthropicMessages,
+                endpoint: Url::parse("https://api.minimax.io/anthropic/v1").unwrap(),
+                auth_type,
+                api_key: key.into(),
+                default_model: "MiniMax-M2.7".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn command_provider_drafts_normalize_minimax_kind_before_persistence() {
+        let now = Utc::now();
+        let token_connection_id = Uuid::new_v4();
+        let token_provider = provider_from_draft(
+            Uuid::new_v4(),
+            1,
+            now,
+            now,
+            minimax_draft(
+                "minimax-api",
+                "sk-cp-command-fixture",
+                ConnectionAuthType::ApiKey,
+                token_connection_id,
+            ),
+        );
+        assert_eq!(
+            token_provider.template_id.as_deref(),
+            Some("minimax-coding-plan")
+        );
+        let ProviderData::Api(token_api) = &token_provider.data else {
+            panic!("command draft should produce an API provider");
+        };
+        assert_eq!(token_api.connections[0].id, token_connection_id);
+        assert_eq!(
+            token_api.connections[0].auth_type,
+            ConnectionAuthType::Bearer
+        );
+
+        let api_provider = provider_from_draft(
+            Uuid::new_v4(),
+            2,
+            now,
+            now,
+            minimax_draft(
+                "minimax-coding-plan",
+                "sk-api-command-fixture",
+                ConnectionAuthType::Bearer,
+                Uuid::new_v4(),
+            ),
+        );
+        assert_eq!(api_provider.template_id.as_deref(), Some("minimax-api"));
+        let ProviderData::Api(api) = &api_provider.data else {
+            panic!("command draft should produce an API provider");
+        };
+        assert_eq!(api.connections[0].auth_type, ConnectionAuthType::ApiKey);
+    }
 }
