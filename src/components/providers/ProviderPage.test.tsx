@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type {
@@ -70,13 +70,16 @@ const snapshot: AppSnapshot = {
   appVersion: "0.1.0",
 };
 
-function renderPage(pageSnapshot = snapshot) {
+function renderPage(
+  pageSnapshot = snapshot,
+  guarded: (action: () => void) => void = (action) => action(),
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
   render(
     <QueryClientProvider client={client}>
-      <ProviderPage snapshot={pageSnapshot} guarded={(action) => action()} onError={vi.fn()} />
+      <ProviderPage snapshot={pageSnapshot} guarded={guarded} onError={vi.fn()} />
     </QueryClientProvider>,
   );
 }
@@ -119,6 +122,35 @@ describe("ProviderPage", () => {
     expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveValue("glm-coding-plan");
     expect(screen.getByDisplayValue("https://glm-coding-plan.example.test/v1")).toBeInTheDocument();
     expect(commandMock).not.toHaveBeenCalled();
+  });
+
+  it("defers template replacement while dirty and preserves the current editor when cancelled", () => {
+    let pending: (() => void) | undefined;
+    const guarded = vi.fn((action: () => void) => {
+      if (useUiStore.getState().dirty) pending = action;
+      else action();
+    });
+    renderPage(snapshot, guarded);
+
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.click(screen.getByRole("button", { name: /GLM Coding Plan/ }));
+    expect(screen.getByRole("heading", { name: "GLM Coding Plan", level: 2 })).toBeInTheDocument();
+
+    act(() => useUiStore.setState({ dirty: true }));
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    const picker = screen.getByRole("dialog", { name: "选择供应商模板" });
+    expect(guarded).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(picker).getByRole("button", { name: /OpenAI/ }));
+
+    expect(guarded).toHaveBeenCalledTimes(2);
+    expect(pending).toEqual(expect.any(Function));
+    expect(screen.queryByRole("dialog", { name: "选择供应商模板" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "GLM Coding Plan", level: 2 })).toBeInTheDocument();
+    expect(screen.getByDisplayValue("https://glm-coding-plan.example.test/v1")).toBeInTheDocument();
+
+    pending = undefined;
+    expect(useUiStore.getState().dirty).toBe(true);
+    expect(screen.getByRole("heading", { name: "GLM Coding Plan", level: 2 })).toBeInTheDocument();
   });
 
   it("opens the custom provider defaults and preserves them when template selection is cancelled", () => {
