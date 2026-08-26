@@ -320,6 +320,18 @@ impl OAuthService {
         Ok(provider)
     }
 
+    pub async fn create_from_raw(
+        &self,
+        kind: OAuthKind,
+        name: String,
+        raw_content: String,
+        settings: &AppSettings,
+    ) -> AppResult<ProviderProfile> {
+        require_plaintext_ack(settings)?;
+        self.import_bytes(kind, name, raw_content.into_bytes(), None)
+            .await
+    }
+
     pub async fn save_active_auth_file(
         &self,
         kind: OAuthKind,
@@ -354,7 +366,7 @@ impl OAuthService {
             account_identity: account_id.clone(),
         };
         if let Some(mut provider) = self
-            .find_matching_oauth_provider(kind, &digest, account_id.as_deref())
+            .find_matching_oauth_provider(kind, &digest, account_id.as_deref(), None)
             .await?
         {
             let expected_revision = provider.revision;
@@ -402,23 +414,77 @@ impl OAuthService {
         expected_revision: i64,
         raw_content: String,
     ) -> AppResult<ProviderProfile> {
-        if raw_content.len() as u64 > MAX_AUTH_BYTES {
-            return Err(AppError::Validation("OAuth content exceeds 1 MiB".into()));
-        }
+        let name = self.repository.get_provider(provider_id).await?.name;
+        self.update_provider(provider_id, expected_revision, name, raw_content)
+            .await
+    }
+
+    pub async fn update_provider(
+        &self,
+        provider_id: Uuid,
+        expected_revision: i64,
+        name: String,
+        raw_content: String,
+    ) -> AppResult<ProviderProfile> {
         let mut provider = self.repository.get_provider(provider_id).await?;
         if provider.revision != expected_revision {
             return Err(AppError::Conflict("OAuth provider was changed".into()));
         }
-        let oauth = match &mut provider.data {
-            ProviderData::Oauth(oauth) => oauth,
+        let (kind, previous_account_id, previous_raw_content) = match &provider.data {
+            ProviderData::Oauth(oauth) => (
+                oauth.oauth_kind,
+                oauth.account_id.clone(),
+                oauth.raw_content.clone(),
+            ),
             _ => return Err(AppError::Validation("provider is not OAuth".into())),
         };
+        let normalized_name = name.trim().to_string();
+        if raw_content == previous_raw_content {
+            if normalized_name == provider.name.trim() {
+                return Ok(provider);
+            }
+            provider.name = normalized_name;
+            provider.updated_at = Utc::now();
+            let relative = oauth_relative_path(provider.id);
+            self.repository
+                .update_provider(&provider, expected_revision, Some(&relative))
+                .await?;
+            provider.revision += 1;
+            return Ok(provider);
+        }
+        if raw_content.len() as u64 > MAX_AUTH_BYTES {
+            return Err(AppError::Validation("OAuth content exceeds 1 MiB".into()));
+        }
+        let account_id = self
+            .registry
+            .get(kind.target_cli())
+            .validate_imported_auth(raw_content.as_bytes())?;
+        let digest = bytes_digest(raw_content.as_bytes());
+        if let Some(existing) = self
+            .find_matching_oauth_provider(kind, &digest, account_id.as_deref(), Some(provider_id))
+            .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "OAuth credentials already exist as provider '{}'; update that provider instead",
+                existing.name
+            )));
+        }
         self.redactor.register(&raw_content);
+        provider.name = normalized_name;
+        provider.updated_at = Utc::now();
+        let oauth = match &mut provider.data {
+            ProviderData::Oauth(oauth) => oauth,
+            _ => unreachable!("OAuth provider changed kind while being updated"),
+        };
         oauth.raw_content = raw_content;
-        oauth.digest = bytes_digest(oauth.raw_content.as_bytes());
-        oauth.manually_modified = true;
+        oauth.digest = digest;
+        if previous_account_id != account_id {
+            oauth.account_label = None;
+        }
+        oauth.account_id = account_id;
+        oauth.manually_modified = false;
         oauth.verification = VerificationInfo {
-            status: VerificationStatus::UserModifiedUnverified,
+            status: VerificationStatus::NotOnlineVerified,
             verified_at: None,
             error: None,
         };
@@ -426,7 +492,6 @@ impl OAuthService {
         self.write_and_update_provider(&provider, expected_revision, &relative)
             .await?;
         provider.revision += 1;
-        provider.updated_at = Utc::now();
         Ok(provider)
     }
 
@@ -810,10 +875,9 @@ impl OAuthService {
         self.redactor.register(&raw_content);
         let now = Utc::now();
         let digest = bytes_digest(raw_content.as_bytes());
-        if replace_provider_id.is_none()
-            && let Some(existing) = self
-                .find_matching_oauth_provider(kind, &digest, account_id.as_deref())
-                .await?
+        if let Some(existing) = self
+            .find_matching_oauth_provider(kind, &digest, account_id.as_deref(), replace_provider_id)
+            .await?
         {
             return Err(AppError::Conflict(format!(
                 "OAuth credentials already exist as provider '{}'; update that provider instead",
@@ -895,9 +959,10 @@ impl OAuthService {
         kind: OAuthKind,
         digest: &str,
         account_id: Option<&str>,
+        exclude_provider_id: Option<Uuid>,
     ) -> AppResult<Option<ProviderProfile>> {
         for existing in self.repository.list_providers().await? {
-            if existing.oauth_kind != Some(kind) {
+            if Some(existing.id) == exclude_provider_id || existing.oauth_kind != Some(kind) {
                 continue;
             }
             let profile = self.repository.get_provider(existing.id).await?;
@@ -1251,6 +1316,18 @@ mod tests {
                 .await,
             Err(AppError::Conflict(_))
         ));
+        assert!(matches!(
+            service
+                .import_bytes(
+                    OAuthKind::Codex,
+                    "Same account".into(),
+                    br#"{"tokens":{"account_id":"account-a","access_token":"different-token"}}"#
+                        .to_vec(),
+                    None,
+                )
+                .await,
+            Err(AppError::Conflict(_))
+        ));
     }
 
     #[tokio::test]
@@ -1381,7 +1458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replacement_revision_and_manual_raw_content_round_trip_exactly() {
+    async fn replacement_and_strict_editor_update_exclude_the_current_profile() {
         let temp = tempfile::tempdir().unwrap();
         let paths = PrivatePaths::from_root(temp.path().join("data"));
         paths.ensure().await.unwrap();
@@ -1415,22 +1492,253 @@ mod tests {
             .unwrap();
         assert_eq!(replaced.revision, 2);
 
-        let raw = "not json\nmanual-secret-value\n";
+        let raw = r#"{"tokens":{"account_id":"account-a","access_token":"editor-token"}}"#;
         let edited = service
-            .update_raw_content(first.id, replaced.revision, raw.into())
+            .update_provider(first.id, replaced.revision, "Renamed".into(), raw.into())
             .await
             .unwrap();
         assert_eq!(edited.revision, 3);
+        assert_eq!(edited.name, "Renamed");
         let reloaded = repository.get_provider(first.id).await.unwrap();
         let ProviderData::Oauth(oauth) = reloaded.data else {
             unreachable!();
         };
         assert_eq!(oauth.raw_content, raw);
-        assert!(oauth.manually_modified);
+        assert!(!oauth.manually_modified);
         assert_eq!(
             oauth.verification.status,
+            VerificationStatus::NotOnlineVerified
+        );
+        assert!(!redactor.sanitize(raw).contains("editor-token"));
+    }
+
+    #[tokio::test]
+    async fn direct_raw_creation_requires_ack_and_validates_before_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = PrivatePaths::from_root(temp.path().join("data"));
+        paths.ensure().await.unwrap();
+        let redactor = Redactor::default();
+        let repository = Repository::open(&paths.database, redactor.clone())
+            .await
+            .unwrap();
+        let service = OAuthService::new(
+            repository.clone(),
+            paths.clone(),
+            AdapterRegistry::default(),
+            redactor,
+        );
+        let raw = r#"{"tokens":{"account_id":"account-a","access_token":"fixture-token"}}"#;
+
+        assert!(matches!(
+            service
+                .create_from_raw(
+                    OAuthKind::Codex,
+                    "Blocked".into(),
+                    raw.into(),
+                    &AppSettings::default(),
+                )
+                .await,
+            Err(AppError::Blocked(_))
+        ));
+        let accepted = AppSettings {
+            plaintext_risk_accepted: true,
+            ..AppSettings::default()
+        };
+        assert!(matches!(
+            service
+                .create_from_raw(
+                    OAuthKind::Codex,
+                    "Invalid".into(),
+                    "not-json".into(),
+                    &accepted,
+                )
+                .await,
+            Err(AppError::Validation(_))
+        ));
+        assert!(repository.list_providers().await.unwrap().is_empty());
+        assert!(
+            tokio::fs::read_dir(&paths.auth)
+                .await
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let created = service
+            .create_from_raw(OAuthKind::Codex, "Created".into(), raw.into(), &accepted)
+            .await
+            .unwrap();
+        assert_eq!(created.name, "Created");
+        assert_eq!(repository.list_providers().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_duplicate_or_name_conflicting_update_keeps_file_and_profile_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = PrivatePaths::from_root(temp.path().join("data"));
+        paths.ensure().await.unwrap();
+        let redactor = Redactor::default();
+        let repository = Repository::open(&paths.database, redactor.clone())
+            .await
+            .unwrap();
+        let service = OAuthService::new(
+            repository.clone(),
+            paths.clone(),
+            AdapterRegistry::default(),
+            redactor,
+        );
+        let first_raw = r#"{"tokens":{"account_id":"account-a","access_token":"first-token"}}"#;
+        let second_raw = r#"{"tokens":{"account_id":"account-b","access_token":"second-token"}}"#;
+        let first = service
+            .import_bytes(
+                OAuthKind::Codex,
+                "First".into(),
+                first_raw.as_bytes().to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        let second = service
+            .import_bytes(
+                OAuthKind::Codex,
+                "Second".into(),
+                second_raw.as_bytes().to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        let second_path = paths.auth.join(second.id.to_string()).join("auth.txt");
+        let original_file = tokio::fs::read(&second_path).await.unwrap();
+
+        assert!(matches!(
+            service
+                .update_provider(
+                    second.id,
+                    second.revision,
+                    "Invalid".into(),
+                    "not-json".into()
+                )
+                .await,
+            Err(AppError::Validation(_))
+        ));
+        assert!(matches!(
+            service
+                .update_provider(
+                    second.id,
+                    second.revision,
+                    "Duplicate".into(),
+                    first_raw.into(),
+                )
+                .await,
+            Err(AppError::Conflict(_))
+        ));
+        let changed_second_raw =
+            r#"{"tokens":{"account_id":"account-b","access_token":"changed-token"}}"#;
+        assert!(matches!(
+            service
+                .update_provider(
+                    second.id,
+                    second.revision,
+                    first.name.clone(),
+                    changed_second_raw.into(),
+                )
+                .await,
+            Err(AppError::Conflict(_))
+        ));
+
+        assert_eq!(tokio::fs::read(&second_path).await.unwrap(), original_file);
+        let unchanged = repository.get_provider(second.id).await.unwrap();
+        assert_eq!(unchanged.name, "Second");
+        assert_eq!(unchanged.revision, second.revision);
+        let ProviderData::Oauth(oauth) = unchanged.data else {
+            unreachable!();
+        };
+        assert_eq!(oauth.raw_content, second_raw);
+    }
+
+    #[tokio::test]
+    async fn renaming_legacy_unvalidated_oauth_keeps_content_and_verification_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = PrivatePaths::from_root(temp.path().join("data"));
+        paths.ensure().await.unwrap();
+        let redactor = Redactor::default();
+        let repository = Repository::open(&paths.database, redactor.clone())
+            .await
+            .unwrap();
+        let service = OAuthService::new(
+            repository.clone(),
+            paths.clone(),
+            AdapterRegistry::default(),
+            redactor,
+        );
+        let legacy_raw = "legacy UTF-8 content\nnot a recognized auth document";
+        let legacy_id = Uuid::new_v4();
+        let now = Utc::now();
+        let legacy = ProviderProfile {
+            id: legacy_id,
+            name: "Legacy OAuth".into(),
+            template_id: Some("codex-auth".into()),
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            data: ProviderData::Oauth(OAuthProviderData {
+                oauth_kind: OAuthKind::Codex,
+                account_id: None,
+                account_label: None,
+                digest: bytes_digest(legacy_raw.as_bytes()),
+                raw_content: legacy_raw.into(),
+                manually_modified: true,
+                verification: VerificationInfo {
+                    status: VerificationStatus::UserModifiedUnverified,
+                    verified_at: None,
+                    error: None,
+                },
+            }),
+        };
+        let relative = oauth_relative_path(legacy_id);
+        let auth_path = paths.root.join(&relative);
+        tokio::fs::create_dir_all(auth_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&auth_path, legacy_raw).await.unwrap();
+        repository
+            .insert_provider(&legacy, Some(&relative))
+            .await
+            .unwrap();
+        let original_file = tokio::fs::read(&auth_path).await.unwrap();
+
+        let renamed = service
+            .update_provider(
+                legacy_id,
+                1,
+                "Renamed legacy OAuth".into(),
+                legacy_raw.into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed.revision, 2);
+        assert_eq!(renamed.name, "Renamed legacy OAuth");
+        let ProviderData::Oauth(renamed_oauth) = renamed.data else {
+            unreachable!();
+        };
+        assert!(renamed_oauth.manually_modified);
+        assert_eq!(
+            renamed_oauth.verification.status,
             VerificationStatus::UserModifiedUnverified
         );
-        assert!(!redactor.sanitize(raw).contains("manual-secret-value"));
+        assert_eq!(tokio::fs::read(&auth_path).await.unwrap(), original_file);
+
+        let unchanged = service
+            .update_provider(
+                legacy_id,
+                2,
+                "Renamed legacy OAuth".into(),
+                legacy_raw.into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unchanged.revision, 2);
     }
 }
