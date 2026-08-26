@@ -373,6 +373,22 @@ impl ProviderProfile {
                                 "endpoint {endpoint_id} does not match template {template_id}"
                             )));
                         }
+                        if template.model_routing {
+                            let model = connection.default_model.trim();
+                            let routed_endpoint = catalog
+                                .model_routed_endpoint(template_id, model)
+                                .ok_or_else(|| {
+                                    AppError::Validation(format!(
+                                        "model {model} has no route in provider template {template_id}"
+                                    ))
+                                })?;
+                            if routed_endpoint.id != endpoint_id {
+                                return Err(AppError::Validation(format!(
+                                    "model {model} routes to endpoint {}, not {endpoint_id}",
+                                    routed_endpoint.id
+                                )));
+                            }
+                        }
                     }
                 } else if api
                     .connections
@@ -665,6 +681,8 @@ pub enum UnmanagedCandidateData {
         template_id: Option<String>,
         connection: Box<ProviderConnection>,
         available_models: Vec<String>,
+        default_model: Option<String>,
+        model_routed: bool,
     },
     Oauth {
         kind: OAuthKind,
@@ -1097,6 +1115,27 @@ mod tests {
         };
         api.connections[0].auth_type = ConnectionAuthType::Bearer;
         assert_validation_contains(&wrong_auth, "does not match template");
+    }
+
+    #[test]
+    fn model_routed_template_validation_rejects_wrong_or_unknown_default_models() {
+        let mut wrong_route = api_provider_from_template("opencode-zen");
+        let ProviderData::Api(api) = &mut wrong_route.data else {
+            unreachable!()
+        };
+        api.connections
+            .iter_mut()
+            .find(|connection| connection.template_endpoint_id.as_deref() == Some("responses"))
+            .unwrap()
+            .default_model = "glm-5".into();
+        assert_validation_contains(&wrong_route, "routes to endpoint chat, not responses");
+
+        let mut unknown_model = api_provider_from_template("opencode-zen");
+        let ProviderData::Api(api) = &mut unknown_model.data else {
+            unreachable!()
+        };
+        api.connections[0].default_model = "outside-catalog-model".into();
+        assert_validation_contains(&unknown_model, "has no route in provider template");
     }
 
     #[test]

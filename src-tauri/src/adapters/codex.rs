@@ -138,7 +138,9 @@ impl CliAdapter for CodexAdapter {
                 suggested_name: provider_id.clone(),
                 template_id: None,
                 available_models: vec![connection.default_model.clone()],
+                default_model: Some(connection.default_model.clone()),
                 is_current: true,
+                model_routed: false,
                 connection,
             })
             .collect();

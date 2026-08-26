@@ -193,6 +193,7 @@ export const zhCN = {
     validation: {
       nameLength: "名称去除首尾空格后必须包含 1～64 个字符。",
       nameDuplicate: "名称与已有项目重复（不区分大小写）。",
+      candidateModelRequired: "保存此供应商前请选择一个模型。",
       configurationTargets: "每个已纳入的 CLI 都必须填写模型，且每个 API 目标都必须选择端点。",
     },
     startup: {

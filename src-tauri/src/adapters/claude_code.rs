@@ -148,7 +148,9 @@ impl CliAdapter for ClaudeCodeAdapter {
                         suggested_name: template.name.clone(),
                         template_id: Some(template_id.into()),
                         available_models: vec![model.clone()],
+                        default_model: Some(model.clone()),
                         is_current: true,
+                        model_routed: false,
                         connection: ProviderConnection {
                             id: Uuid::new_v4(),
                             template_endpoint_id: Some(ANTHROPIC_ENDPOINT_ID.into()),
@@ -167,7 +169,9 @@ impl CliAdapter for ClaudeCodeAdapter {
                         suggested_name: "Claude Code API".into(),
                         template_id: None,
                         available_models: vec![model.clone()],
+                        default_model: Some(model.clone()),
                         is_current: true,
+                        model_routed: false,
                         connection: ProviderConnection {
                             id: Uuid::new_v4(),
                             template_endpoint_id: None,

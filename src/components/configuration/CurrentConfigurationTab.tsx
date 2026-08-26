@@ -107,6 +107,8 @@ export function CurrentConfigurationTab({
     }
   };
   const candidateNameIssue = validateEntityName(candidateName, providers);
+  const candidateModelRequired = Boolean(candidate?.availableModels.length);
+  const candidateModelIssue = candidateModelRequired && !candidateModel.trim();
   const configurationNameIssue = validateEntityName(configurationName, configurations);
   const candidateTemplateName = candidate?.templateId
     ? (catalog.providerTemplates.find((template) => template.id === candidate.templateId)?.name ??
@@ -217,11 +219,7 @@ export function CurrentConfigurationTab({
                       onClick={() => {
                         setCandidate(providerCandidate);
                         setCandidateName(providerCandidate.suggestedName);
-                        setCandidateModel(
-                          providerCandidate.defaultModel ??
-                            providerCandidate.availableModels[0] ??
-                            "",
-                        );
+                        setCandidateModel(providerCandidate.defaultModel ?? "");
                       }}
                     >
                       {t("config.manageCandidateNamed", {
@@ -260,7 +258,9 @@ export function CurrentConfigurationTab({
               {t("common.cancel")}
             </Button>
             <Button
-              disabled={Boolean(candidateNameIssue) || saveCandidate.isPending}
+              disabled={
+                Boolean(candidateNameIssue) || candidateModelIssue || saveCandidate.isPending
+              }
               onClick={() => saveCandidate.mutate()}
             >
               {t("common.save")}
@@ -287,10 +287,18 @@ export function CurrentConfigurationTab({
           />
         </Field>
         {candidate ? (
-          <Field label={t("providers.defaultModel")} hint={t("providers.modelHint")}>
+          <Field
+            label={t("providers.defaultModel")}
+            hint={
+              candidateModelIssue
+                ? t("validation.candidateModelRequired")
+                : t("providers.modelHint")
+            }
+          >
             <Input
               list="candidate-models"
               value={candidateModel}
+              aria-invalid={candidateModelIssue}
               onChange={(event) => setCandidateModel(event.target.value)}
             />
             <datalist id="candidate-models">

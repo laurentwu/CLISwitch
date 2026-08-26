@@ -5,7 +5,10 @@ application and exposed read-only to the frontend; user-edited provider instance
 
 - `clis.jsonc`: CLI protocol capabilities, auth modes, and protocol adapter packages.
 - `provider-templates.jsonc`: API templates and auth templates. An API template owns credential
-  slots; endpoints reference a slot and contain suggested (not exclusive) models.
+  slots; endpoints reference a slot and normally contain suggested (not exclusive) models. For
+  templates with `modelRouting: true`, those model entries form the routing table and each model
+  must select exactly one endpoint; `unsupportedModels` records models whose official SDK package
+  is outside the CLI catalog.
 - `cli-provider-relations.jsonc`: explicit CLI-to-endpoint/auth-mode joins, including native
   provider aliases and any relation-specific package or Base URL override.
 

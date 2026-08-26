@@ -485,6 +485,213 @@ async fn opencode_materializes_the_explicitly_selected_glm_endpoint() {
 }
 
 #[tokio::test]
+async fn opencode_zen_and_go_use_the_selected_model_to_route_transport() {
+    for (
+        provider_id,
+        model_id,
+        expected_protocol,
+        expected_endpoint,
+        expected_package,
+        wrong_route_model,
+    ) in [
+        (
+            "opencode",
+            "gpt-5.6-sol",
+            CliProtocol::OpenaiResponses,
+            "https://opencode.ai/zen/v1",
+            "@ai-sdk/openai",
+            "glm-5",
+        ),
+        (
+            "opencode-go",
+            "glm-5.3",
+            CliProtocol::OpenaiChat,
+            "https://opencode.ai/zen/go/v1",
+            "@ai-sdk/openai-compatible",
+            "gpt-5.6-luna",
+        ),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = OpenCodeAdapter;
+        let host = environment(temp.path());
+        let paths = adapter.resolve_paths(&host, None);
+        write_fixture(
+            &paths.config_file,
+            &format!(
+                r#"{{
+                  "model": "{provider_id}/{model_id}"
+                }}"#
+            ),
+        )
+        .await;
+        write_fixture(
+            paths.auth_file.as_ref().unwrap(),
+            &format!(
+                r#"{{ "{provider_id}": {{ "type": "api", "key": "fixture-opencode-key" }} }}"#
+            ),
+        )
+        .await;
+
+        let current = adapter.read_current(&paths, &host).await.unwrap();
+        assert!(current.current.diagnostics.iter().all(|message| {
+            !message.contains("cannot be saved without")
+                && !message.contains("no supported model route")
+        }));
+        assert_eq!(current.current.protocol, Some(expected_protocol));
+        let candidate = &current.unmanaged_api_candidates[0];
+        assert_eq!(
+            candidate.template_id.as_deref(),
+            Some(if provider_id == "opencode" {
+                "opencode-zen"
+            } else {
+                "opencode-go"
+            })
+        );
+        assert!(candidate.model_routed);
+        assert_eq!(candidate.default_model.as_deref(), Some(model_id));
+        assert_eq!(candidate.connection.protocol, expected_protocol);
+        assert_eq!(candidate.connection.endpoint.as_str(), expected_endpoint);
+        assert!(
+            candidate
+                .available_models
+                .iter()
+                .any(|model| model == model_id)
+        );
+
+        let provider = ProviderProfile {
+            id: Uuid::new_v4(),
+            name: "OpenCode routed fixture".into(),
+            template_id: candidate.template_id.clone(),
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            data: ProviderData::Api(ApiProviderData {
+                connections: vec![candidate.connection.clone()],
+            }),
+        };
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::Opencode,
+            provider_id: provider.id,
+            connection_id: candidate.connection.id,
+            model: model_id.into(),
+        };
+        let plan = adapter
+            .plan_write(&paths, &target, &provider)
+            .await
+            .unwrap();
+        let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
+        assert!(config.contains(expected_package));
+        assert!(config.contains(expected_endpoint));
+
+        let wrong_route_target = ConfigurationTarget::Api {
+            cli_id: CliId::Opencode,
+            provider_id: provider.id,
+            connection_id: candidate.connection.id,
+            model: wrong_route_model.into(),
+        };
+        let error = adapter
+            .plan_write(&paths, &wrong_route_target, &provider)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("routes to endpoint"));
+    }
+}
+
+#[tokio::test]
+async fn opencode_model_routed_credentials_without_a_current_model_need_selection() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(&paths.config_file, "{}\n").await;
+    write_fixture(
+        paths.auth_file.as_ref().unwrap(),
+        r#"{
+          "opencode": { "type": "api", "key": "fixture-zen-key" },
+          "opencode-go": { "type": "api", "key": "fixture-go-key" }
+        }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+    assert_eq!(current.current.model, None);
+    assert_eq!(current.unmanaged_api_candidates.len(), 2);
+    for candidate in &current.unmanaged_api_candidates {
+        assert!(candidate.model_routed);
+        assert_eq!(candidate.default_model, None);
+        assert!(!candidate.available_models.is_empty());
+        assert!(candidate.connection.default_model.is_empty());
+    }
+    assert!(current.current.diagnostics.iter().all(|message| {
+        !message.contains("cannot be saved without")
+            && !message.contains("a configured or current model")
+    }));
+}
+
+#[tokio::test]
+async fn opencode_zen_google_models_are_reported_as_unsupported() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{ "model": "opencode/gemini-3.7-flash" }"#,
+    )
+    .await;
+    write_fixture(
+        paths.auth_file.as_ref().unwrap(),
+        r#"{ "opencode": { "type": "api", "key": "fixture-zen-key" } }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+    assert!(current.current.diagnostics.iter().any(|message| {
+        message.contains("gemini-3.7-flash") && message.contains("@ai-sdk/google")
+    }));
+    let candidate = &current.unmanaged_api_candidates[0];
+    assert!(candidate.model_routed);
+    assert_eq!(candidate.default_model, None);
+}
+
+#[tokio::test]
+async fn opencode_zen_base_url_override_keeps_model_selected_transport() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "model": "opencode/gpt-5.6-sol",
+          "provider": {
+            "opencode": {
+              "options": { "baseURL": "https://proxy.invalid/zen/v1" }
+            }
+          }
+        }"#,
+    )
+    .await;
+    write_fixture(
+        paths.auth_file.as_ref().unwrap(),
+        r#"{ "opencode": { "type": "api", "key": "fixture-zen-key" } }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+    assert_eq!(current.current.protocol, Some(CliProtocol::OpenaiResponses));
+    let candidate = &current.unmanaged_api_candidates[0];
+    assert_eq!(candidate.template_id, None);
+    assert!(!candidate.model_routed);
+    assert_eq!(candidate.connection.protocol, CliProtocol::OpenaiResponses);
+    assert_eq!(
+        candidate.connection.endpoint.as_str(),
+        "https://proxy.invalid/zen/v1"
+    );
+    assert_eq!(candidate.default_model.as_deref(), Some("gpt-5.6-sol"));
+}
+
+#[tokio::test]
 async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
     let temp = TempDir::new().unwrap();
     let adapter = OpenCodeAdapter;
