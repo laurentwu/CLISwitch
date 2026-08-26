@@ -131,8 +131,6 @@ export const zhCN = {
         api: "官方 API",
       },
       openBrowser: "打开已验证的登录页",
-      typeApi: "端点 + Key",
-      typeOauth: "OAuth",
       name: "名称",
       template: "Provider 模板",
       chooseTemplate: "请选择模板",
