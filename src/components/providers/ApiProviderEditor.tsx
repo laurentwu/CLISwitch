@@ -7,11 +7,12 @@ import { Copy, Files, Plus, Save, Trash2, Wifi } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { apiTemplate } from "../../shared/catalog";
 import { command } from "../../shared/ipc";
-import { uniqueCopyName, validateEntityName } from "../../shared/names";
+import { validateEntityName } from "../../shared/names";
 import type {
   ApiProviderDetail,
   ApiProviderDraft,
   ApiProviderTemplate,
+  AuthProviderTemplate,
   ProviderCatalog,
   ProviderEndpointTemplate,
   PublicProvider,
@@ -19,6 +20,7 @@ import type {
 import { useNotificationStore } from "../../stores/notifications";
 import { useUiStore } from "../../stores/ui";
 import { Alert, Badge, Button, Card, Field, Input, Select, type ErrorReporter } from "../ui";
+import { CUSTOM_PROVIDER_TEMPLATE, ProviderTemplateSelect } from "./ProviderTemplateSelect";
 
 type EditorNotice = {
   tone: "success" | "info" | "warning";
@@ -150,17 +152,31 @@ function normalizeDraft(value: ApiProviderDraft): ApiProviderDraft {
 export function ApiProviderEditor({
   detail,
   initialTemplateId,
+  initialDraft,
+  initialName,
+  requireTemplateSelection = false,
   providers,
   catalog,
   onClose,
   onError,
+  onChooseOAuthTemplate,
+  onDuplicate,
+  onDelete,
+  deleteDisabled = false,
 }: {
   detail?: ApiProviderDetail;
   initialTemplateId?: string;
+  initialDraft?: ApiProviderDraft;
+  initialName?: string;
+  requireTemplateSelection?: boolean;
   providers: PublicProvider[];
   catalog: ProviderCatalog;
   onClose: () => void;
   onError: ErrorReporter;
+  onChooseOAuthTemplate?: (template: AuthProviderTemplate, currentName: string) => void;
+  onDuplicate?: (draft: ApiProviderDraft) => void;
+  onDelete?: () => void;
+  deleteDisabled?: boolean;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -176,7 +192,13 @@ export function ApiProviderEditor({
       ),
     [catalog],
   );
-  const initialTemplate = detail ? undefined : apiTemplate(catalog, initialTemplateId);
+  const creationTemplatePicker = !detail && Boolean(onChooseOAuthTemplate);
+  const initialTemplate = detail
+    ? undefined
+    : apiTemplate(catalog, initialDraft?.templateId ?? initialTemplateId);
+  const startsCustom =
+    initialTemplateId === CUSTOM_PROVIDER_TEMPLATE ||
+    Boolean(initialDraft && !initialDraft.templateId);
   const detailConnections = detail?.connections.map((connection) => ({
     id: connection.id,
     templateEndpointId: connection.templateEndpointId ?? undefined,
@@ -199,22 +221,30 @@ export function ApiProviderEditor({
               ? reconcileTemplateConnections(detailTemplate, detailConnections)
               : detailConnections,
         }
-      : {
-          name: initialTemplate?.name ?? "",
-          templateId: initialTemplate?.id ?? "",
-          connections: initialTemplate
-            ? templateConnections(initialTemplate, [])
-            : [
-                {
-                  credentialSlotId: "custom-api-key-1",
-                  protocol: "openai-responses",
-                  endpoint: "https://api.example.com/v1",
-                  authType: "bearer",
-                  apiKey: "",
-                  defaultModel: "",
-                },
-              ],
-        },
+      : initialDraft
+        ? {
+            ...initialDraft,
+            templateId: initialDraft.templateId ?? "",
+            connections: initialDraft.connections.map((connection) => ({ ...connection })),
+          }
+        : {
+            name: initialName ?? initialTemplate?.name ?? "",
+            templateId: initialTemplate?.id ?? "",
+            connections: initialTemplate
+              ? templateConnections(initialTemplate, [])
+              : startsCustom || !requireTemplateSelection
+                ? [
+                    {
+                      credentialSlotId: "custom-api-key-1",
+                      protocol: "openai-responses",
+                      endpoint: "https://api.example.com/v1",
+                      authType: "bearer",
+                      apiKey: "",
+                      defaultModel: "",
+                    },
+                  ]
+                : [],
+          },
   });
   const fields = useFieldArray({ control: form.control, name: "connections" });
   const templateId = useWatch({ control: form.control, name: "templateId" });
@@ -268,49 +298,63 @@ export function ApiProviderEditor({
     return () => setSaveCurrent(undefined);
   }, [setSaveCurrent]);
 
-  const duplicate = useMutation({
-    mutationFn: () => {
-      const value = normalizeDraft(form.getValues());
-      return command<PublicProvider>("create_provider", {
-        draft: {
-          ...value,
-          name: uniqueCopyName(value.name, t("common.duplicate"), providers),
-          connections: value.connections.map((connection) => {
-            const clone = { ...connection };
-            delete clone.id;
-            return clone;
-          }),
-        },
-      });
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["providers"] });
-      setNotice({ tone: "success", message: t("providers.duplicateSucceeded") });
-    },
-    onError: (error) => onError(error, "duplicate"),
-  });
-
   const chooseTemplate = (nextTemplateId: string) => {
+    const templateChoice = catalog.providerTemplates.find(
+      (template) => template.id === nextTemplateId,
+    );
+    if (templateChoice?.mode === "auth" && onChooseOAuthTemplate) {
+      const currentName = form.getValues("name");
+      onChooseOAuthTemplate(
+        templateChoice,
+        !currentName.trim() || currentName === selectedTemplate?.name
+          ? templateChoice.name
+          : currentName,
+      );
+      return;
+    }
+    const chooseCustom =
+      nextTemplateId === CUSTOM_PROVIDER_TEMPLATE || (!creationTemplatePicker && !nextTemplateId);
+    if (chooseCustom) {
+      form.setValue("templateId", "", { shouldDirty: true });
+      const current = form.getValues("connections");
+      fields.replace(
+        current.length
+          ? current.map((connection, index) => ({
+              ...connection,
+              templateEndpointId: undefined,
+              credentialSlotId: connection.credentialSlotId || `custom-api-key-${index + 1}`,
+            }))
+          : [
+              {
+                credentialSlotId: "custom-api-key-1",
+                protocol: "openai-responses",
+                endpoint: "https://api.example.com/v1",
+                authType: "bearer",
+                apiKey: "",
+                defaultModel: "",
+              },
+            ],
+      );
+      return;
+    }
     if (!nextTemplateId) {
       form.setValue("templateId", "", { shouldDirty: true });
-      fields.replace(
-        form.getValues("connections").map((connection, index) => ({
-          ...connection,
-          templateEndpointId: undefined,
-          credentialSlotId: connection.credentialSlotId || `custom-api-key-${index + 1}`,
-        })),
-      );
+      fields.replace([]);
       return;
     }
     const template = apiTemplate(catalog, nextTemplateId);
     if (!template) return;
+    const currentName = form.getValues("name");
     form.setValue("templateId", nextTemplateId, { shouldDirty: true });
     fields.replace(templateConnections(template, form.getValues("connections")));
-    if (!form.getValues("name").trim()) {
+    if (!currentName.trim() || currentName === selectedTemplate?.name) {
       form.setValue("name", template.name, { shouldDirty: true });
     }
     setModelOptions({});
   };
+
+  const creationTemplateValue =
+    selectedTemplate?.id ?? (connections.length ? CUSTOM_PROVIDER_TEMPLATE : "");
 
   const test = async (connectionId?: string) => {
     if (!detail || !connectionId) {
@@ -359,14 +403,26 @@ export function ApiProviderEditor({
       })}
     >
       <header className="editor-header">
-        <h2>{detail ? detail.name : (selectedTemplate?.name ?? t("providers.addApi"))}</h2>
+        <h2>
+          {detail
+            ? detail.name
+            : (selectedTemplate?.name ??
+              (creationTemplateValue === CUSTOM_PROVIDER_TEMPLATE
+                ? t("providers.customTemplate")
+                : t("providers.addProvider")))}
+        </h2>
         <div className="section-actions">
-          {detail ? (
+          {detail && onDelete ? (
+            <Button variant="danger" type="button" disabled={deleteDisabled} onClick={onDelete}>
+              <Trash2 size={16} /> {t("common.delete")}
+            </Button>
+          ) : null}
+          {detail && onDuplicate ? (
             <Button
               variant="secondary"
               type="button"
-              disabled={duplicate.isPending}
-              onClick={() => duplicate.mutate()}
+              disabled={Boolean(nameIssue)}
+              onClick={() => onDuplicate(normalizeDraft(form.getValues()))}
             >
               <Files size={16} /> {t("common.duplicate")}
             </Button>
@@ -374,7 +430,10 @@ export function ApiProviderEditor({
           <Button variant="ghost" type="button" onClick={onClose}>
             {t("common.cancel")}
           </Button>
-          <Button type="submit" disabled={save.isPending || Boolean(nameIssue)}>
+          <Button
+            type="submit"
+            disabled={save.isPending || Boolean(nameIssue) || connections.length === 0}
+          >
             <Save size={16} /> {t("common.save")}
           </Button>
         </div>
@@ -391,14 +450,25 @@ export function ApiProviderEditor({
           <Input {...form.register("name")} aria-invalid={Boolean(form.formState.errors.name)} />
         </Field>
         <Field label={t("providers.template")} hint={t("providers.templateHint")}>
-          <Select value={templateId ?? ""} onChange={(event) => chooseTemplate(event.target.value)}>
-            <option value="">{t("providers.customTemplate")}</option>
-            {templates.map((template) => (
-              <option key={template.id} value={template.id}>
-                {template.name}
-              </option>
-            ))}
-          </Select>
+          {creationTemplatePicker ? (
+            <ProviderTemplateSelect
+              catalog={catalog}
+              value={creationTemplateValue}
+              onChange={chooseTemplate}
+            />
+          ) : (
+            <Select
+              value={templateId ?? ""}
+              onChange={(event) => chooseTemplate(event.target.value)}
+            >
+              <option value="">{t("providers.customTemplate")}</option>
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </Select>
+          )}
         </Field>
       </div>
       <div className="connection-list">
@@ -585,7 +655,7 @@ export function ApiProviderEditor({
           );
         })}
       </div>
-      {!selectedTemplate ? (
+      {!selectedTemplate && connections.length ? (
         <Button
           type="button"
           variant="secondary"

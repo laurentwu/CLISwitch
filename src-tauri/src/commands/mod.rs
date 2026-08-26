@@ -280,6 +280,22 @@ pub async fn create_provider(
 }
 
 #[tauri::command]
+pub async fn create_oauth_provider(
+    state: State<'_, AppState>,
+    kind: OAuthKind,
+    name: String,
+    raw_content: String,
+) -> AppResult<PublicProvider> {
+    let _mutation_guard = state.apply.try_mutation_guard()?;
+    let settings = state.repository.get_settings().await?;
+    let provider = state
+        .oauth
+        .create_from_raw(kind, name, raw_content, &settings)
+        .await?;
+    Ok(provider.public(Vec::new()))
+}
+
+#[tauri::command]
 pub async fn update_provider(
     state: State<'_, AppState>,
     provider_id: Uuid,
@@ -330,6 +346,22 @@ pub async fn update_provider(
     let mut public = provider.public(Vec::new());
     public.revision = expected_revision + 1;
     Ok(public)
+}
+
+#[tauri::command]
+pub async fn update_oauth_provider(
+    state: State<'_, AppState>,
+    provider_id: Uuid,
+    expected_revision: i64,
+    name: String,
+    raw_content: String,
+) -> AppResult<PublicProvider> {
+    let _mutation_guard = state.apply.try_mutation_guard()?;
+    let provider = state
+        .oauth
+        .update_provider(provider_id, expected_revision, name, raw_content)
+        .await?;
+    Ok(provider.public(Vec::new()))
 }
 
 #[tauri::command]
@@ -917,7 +949,9 @@ macro_rules! cliswitch_invoke_handler {
             $crate::commands::get_provider,
             $crate::commands::get_provider_secret_detail,
             $crate::commands::create_provider,
+            $crate::commands::create_oauth_provider,
             $crate::commands::update_provider,
+            $crate::commands::update_oauth_provider,
             $crate::commands::rename_oauth_provider,
             $crate::commands::update_oauth_raw_content,
             $crate::commands::delete_provider,

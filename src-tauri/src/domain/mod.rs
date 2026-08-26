@@ -384,9 +384,8 @@ impl ProviderProfile {
                     ));
                 }
             }
-            // Imported/login-created payloads are validated at their respective boundaries. Once
-            // saved, the raw editor intentionally accepts any UTF-8 content (including empty or
-            // malformed content) and marks it as user-modified/unverified.
+            // OAuth payloads are validated by OAuthService at every write boundary. Domain
+            // validation also keeps a saved template and OAuth kind from drifting apart.
             ProviderData::Oauth(oauth) => {
                 if let Some(template_id) = self.template_id.as_deref() {
                     let template = crate::catalog::embedded_catalog()?

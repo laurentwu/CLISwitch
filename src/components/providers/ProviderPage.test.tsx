@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type {
@@ -10,6 +10,7 @@ import type {
 } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { ProviderPage } from "./ProviderPage";
+import { CUSTOM_PROVIDER_TEMPLATE } from "./ProviderTemplateSelect";
 
 const commandMock = vi.hoisted(() => vi.fn());
 vi.mock("../../shared/ipc", () => ({
@@ -70,13 +71,16 @@ const snapshot: AppSnapshot = {
   appVersion: "0.1.0",
 };
 
-function renderPage(pageSnapshot = snapshot) {
+function renderPage(
+  pageSnapshot = snapshot,
+  guarded: (action: () => void) => void = (action) => action(),
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   });
   render(
     <QueryClientProvider client={client}>
-      <ProviderPage snapshot={pageSnapshot} guarded={(action) => action()} onError={vi.fn()} />
+      <ProviderPage snapshot={pageSnapshot} guarded={guarded} onError={vi.fn()} />
     </QueryClientProvider>,
   );
 }
@@ -87,61 +91,153 @@ describe("ProviderPage", () => {
     useUiStore.setState({ dirty: false, saveCurrent: undefined });
   });
 
-  it("shows one add action and one import action, then groups add templates", () => {
+  it("opens an inline add editor with OAuth and API template groups", () => {
     renderPage();
 
-    const header = screen.getByRole("heading", { name: "供应商", level: 1 }).closest("header");
-    expect(header).not.toBeNull();
-    const headerButtons = within(header!).getAllByRole("button");
-    expect(headerButtons).toHaveLength(2);
-    expect(headerButtons[0]).toHaveAccessibleName("添加");
-    expect(headerButtons[1]).toHaveAccessibleName("导入");
+    const pageHeader = screen.getByRole("heading", { name: "供应商", level: 1 }).closest("header");
+    expect(pageHeader).not.toBeNull();
+    expect(within(pageHeader!).getAllByRole("button")).toHaveLength(1);
+    fireEvent.click(within(pageHeader!).getByRole("button", { name: "添加" }));
 
-    fireEvent.click(headerButtons[0]);
-    const dialog = screen.getByRole("dialog", { name: "选择供应商模板" });
-    expect(within(dialog).getByRole("heading", { name: "OAuth" })).toBeInTheDocument();
-    expect(within(dialog).getByRole("heading", { name: "官方 API" })).toBeInTheDocument();
-    expect(within(dialog).getByRole("heading", { name: "Coding Plan" })).toBeInTheDocument();
-    expect(within(dialog).getByRole("heading", { name: "其他 / 自定义" })).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: /自定义供应商/ })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "添加供应商", level: 2 })).toBeInTheDocument();
+    const template = screen.getByRole("combobox", { name: /Provider 模板/ });
+    expect(template).toHaveValue("");
+    expect(screen.getByRole("group", { name: "OAuth" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "官方 API" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Codex Account" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "GLM Coding Plan" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "自定义供应商" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /OAuth 原始内容/ })).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("https://api.example.com/v1")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "添加接入方式" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
     expect(commandMock).not.toHaveBeenCalled();
   });
 
-  it("starts an API provider with the selected template and its default name", () => {
+  it("shows API fields and defaults after an API template is selected", () => {
     renderPage();
-
     fireEvent.click(screen.getByRole("button", { name: "添加" }));
-    fireEvent.click(screen.getByRole("button", { name: /GLM Coding Plan/ }));
 
-    expect(screen.queryByRole("dialog", { name: "选择供应商模板" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
+      target: { value: "glm-coding-plan" },
+    });
+
     expect(screen.getByRole("heading", { name: "GLM Coding Plan", level: 2 })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "名称" })).toHaveValue("GLM Coding Plan");
+    expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("GLM Coding Plan");
     expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveValue("glm-coding-plan");
     expect(screen.getByDisplayValue("https://glm-coding-plan.example.test/v1")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /OAuth 原始内容/ })).not.toBeInTheDocument();
     expect(commandMock).not.toHaveBeenCalled();
   });
 
-  it("opens the custom provider defaults and preserves them when template selection is cancelled", () => {
+  it("shows custom API defaults when the custom option is selected", () => {
     renderPage();
-
     fireEvent.click(screen.getByRole("button", { name: "添加" }));
-    fireEvent.click(screen.getByRole("button", { name: /自定义供应商/ }));
 
-    expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("");
-    expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveValue("");
-    expect(screen.getByDisplayValue("https://api.example.com/v1")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
+      target: { value: CUSTOM_PROVIDER_TEMPLATE },
+    });
 
-    fireEvent.click(screen.getByRole("button", { name: "添加" }));
-    const picker = screen.getByRole("dialog", { name: "选择供应商模板" });
-    fireEvent.click(within(picker).getByRole("button", { name: "取消" }));
-
-    expect(screen.queryByRole("dialog", { name: "选择供应商模板" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "自定义供应商", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("");
     expect(screen.getByDisplayValue("https://api.example.com/v1")).toBeInTheDocument();
-    expect(commandMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "添加接入方式" })).toBeInTheDocument();
   });
 
-  it("keeps the selected provider visible when template selection is cancelled", async () => {
+  it("creates an API provider from the inline editor", async () => {
+    const created = {
+      id: "created-api",
+      name: "OpenAI",
+      kind: "api",
+      connections: [],
+      referencedBy: [],
+      revision: 1,
+      updatedAt: "2026-08-25T00:00:00Z",
+    } satisfies PublicProvider;
+    commandMock.mockImplementation(async (name: string) => {
+      if (name === "create_provider") return created;
+      return undefined;
+    });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
+      target: { value: "openai-api" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
+      target: { value: "api-secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith(
+        "create_provider",
+        expect.objectContaining({
+          draft: expect.objectContaining({
+            name: "OpenAI",
+            templateId: "openai-api",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("guards a dirty inline editor before switching provider modes", () => {
+    const guarded = vi.fn((action: () => void) => action());
+    renderPage(snapshot, guarded);
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    guarded.mockClear();
+    guarded.mockImplementation(() => {});
+    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
+      target: { value: "openai-api" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
+      target: { value: "unsaved-secret" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
+      target: { value: "codex-auth" },
+    });
+
+    expect(guarded).toHaveBeenCalledOnce();
+    expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveValue("openai-api");
+    expect(screen.getByDisplayValue("unsaved-secret")).toBeInTheDocument();
+  });
+
+  it("switches to OAuth fields and starts official login from the editor", () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
+      target: { value: "codex-auth" },
+    });
+
+    expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("Codex Account");
+    expect(screen.getByRole("textbox", { name: /OAuth 原始内容/ })).toHaveValue("");
+    expect(screen.getByRole("button", { name: "导入 auth" })).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("https://api.example.com/v1")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "官方登录" }));
+    const dialog = screen.getByRole("dialog", { name: "官方登录" });
+    expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue("Codex Account");
+    expect(
+      within(dialog).getByRole("checkbox", { name: "使用官方设备授权流程" }),
+    ).toBeInTheDocument();
+  });
+
+  it("routes the OAuth editor import-auth button to the import flow", () => {
+    renderPage();
+    expect(screen.queryByRole("button", { name: "导入" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
+      target: { value: "anthropic-auth" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "导入 auth" }));
+    const dialog = screen.getByRole("dialog", { name: "导入 auth" });
+    expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue("Anthropic Account");
+    expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("opens API duplicate as a prefilled unsaved add editor", async () => {
     const provider: PublicProvider = {
       id: "existing-provider",
       name: "Existing Provider",
@@ -181,54 +277,26 @@ describe("ProviderPage", () => {
     };
     commandMock.mockImplementation(async (name: string) => {
       if (name === "get_provider_secret_detail") return detail;
-      return [provider];
+      return undefined;
     });
     renderPage({ ...snapshot, providers: [provider] });
 
     fireEvent.click(screen.getByRole("button", { name: /Existing Provider/ }));
+    const heading = await screen.findByRole("heading", { name: "Existing Provider", level: 2 });
+    const editorHeader = heading.closest("header");
+    expect(editorHeader).not.toBeNull();
     expect(
-      await screen.findByRole("heading", { name: "Existing Provider", level: 2 }),
-    ).toBeInTheDocument();
+      within(editorHeader!)
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim()),
+    ).toEqual(["删除", "复制", "取消", "保存"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "添加" }));
-    const picker = screen.getByRole("dialog", { name: "选择供应商模板" });
-    fireEvent.click(within(picker).getByRole("button", { name: "取消" }));
+    commandMock.mockClear();
+    fireEvent.click(within(editorHeader!).getByRole("button", { name: "复制" }));
 
-    expect(screen.queryByRole("dialog", { name: "选择供应商模板" })).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Existing Provider", level: 2 }),
-    ).toBeInTheDocument();
-  });
-
-  it("routes OAuth add to official login with the template name", () => {
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: "添加" }));
-    fireEvent.click(screen.getByRole("button", { name: /Codex Account/ }));
-
-    const dialog = screen.getByRole("dialog", { name: "官方登录" });
-    expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue("Codex Account");
-    expect(
-      within(dialog).getByRole("checkbox", { name: "使用官方设备授权流程" }),
-    ).toBeInTheDocument();
-  });
-
-  it("limits import choices to OAuth templates and routes to auth import", () => {
-    renderPage();
-
-    fireEvent.click(screen.getByRole("button", { name: "导入" }));
-    const picker = screen.getByRole("dialog", { name: "选择要导入的 OAuth 模板" });
-    expect(within(picker).getByRole("button", { name: /Anthropic Account/ })).toBeInTheDocument();
-    expect(within(picker).getByRole("button", { name: /Codex Account/ })).toBeInTheDocument();
-    expect(within(picker).queryByText("OpenAI")).not.toBeInTheDocument();
-    expect(within(picker).queryByText("GLM Coding Plan")).not.toBeInTheDocument();
-    expect(within(picker).queryByText("自定义供应商")).not.toBeInTheDocument();
-
-    fireEvent.click(within(picker).getByRole("button", { name: /Anthropic Account/ }));
-    const importDialog = screen.getByRole("dialog", { name: "导入 auth" });
-    expect(within(importDialog).getByRole("textbox", { name: "名称" })).toHaveValue(
-      "Anthropic Account",
-    );
-    expect(within(importDialog).queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("Existing Provider 复制");
+    expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveValue("openai-api");
+    expect(screen.getByDisplayValue("test-secret")).toBeInTheDocument();
+    expect(commandMock).not.toHaveBeenCalled();
   });
 });

@@ -1,13 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, LogIn, Plus, Trash2, Upload } from "lucide-react";
+import { KeyRound, LogIn, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
+import { uniqueCopyName } from "../../shared/names";
 import type {
+  ApiProviderDraft,
   AppSnapshot,
   OAuthKind,
   ProviderDetail,
-  ProviderTemplate,
   PublicProvider,
 } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
@@ -23,8 +24,7 @@ import {
 } from "../ui";
 import { ApiProviderEditor } from "./ApiProviderEditor";
 import { OAuthFlowDialog } from "./OAuthFlowDialog";
-import { OAuthProviderEditor } from "./OAuthProviderEditor";
-import { ProviderTemplateDialog, type ProviderTemplateIntent } from "./ProviderTemplateDialog";
+import { OAuthProviderEditor, type OAuthProviderDraft } from "./OAuthProviderEditor";
 
 type Flow = {
   kind: OAuthKind;
@@ -32,6 +32,26 @@ type Flow = {
   replaceProviderId?: string;
   name?: string;
 };
+
+type ProviderCreation =
+  | {
+      key: number;
+      mode: "api";
+      initialTemplateId?: string;
+      initialDraft?: ApiProviderDraft;
+      initialName?: string;
+      requireTemplateSelection: boolean;
+    }
+  | {
+      key: number;
+      mode: "oauth";
+      templateId: string;
+      initialName: string;
+      initialRaw: string;
+    };
+
+type WithoutKey<Creation> = Creation extends unknown ? Omit<Creation, "key"> : never;
+type ProviderCreationInput = WithoutKey<ProviderCreation>;
 
 export function ProviderPage({
   snapshot,
@@ -45,9 +65,9 @@ export function ProviderPage({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const setDirty = useUiStore((state) => state.setDirty);
+  const creationSequence = useRef(0);
   const [selectedId, setSelectedId] = useState<string>();
-  const [apiCreation, setApiCreation] = useState<{ templateId?: string }>();
-  const [templateIntent, setTemplateIntent] = useState<ProviderTemplateIntent>();
+  const [creation, setCreation] = useState<ProviderCreation>();
   const [flow, setFlow] = useState<Flow>();
   const [deleteProvider, setDeleteProvider] = useState<PublicProvider>();
   const providers = useQuery({
@@ -72,24 +92,54 @@ export function ProviderPage({
 
   const selectImmediately = (id?: string) => {
     if (selectedId) queryClient.removeQueries({ queryKey: ["provider-secret", selectedId] });
-    setApiCreation(undefined);
+    setCreation(undefined);
     setSelectedId(id);
   };
   const select = (id?: string) => guarded(() => selectImmediately(id));
-  const openTemplatePicker = (intent: ProviderTemplateIntent) => setTemplateIntent(intent);
-  const selectTemplate = (template?: ProviderTemplate) => {
-    const intent = templateIntent;
-    setTemplateIntent(undefined);
+  const nextCreationKey = () => {
+    creationSequence.current += 1;
+    return creationSequence.current;
+  };
+  const startCreation = (next: ProviderCreationInput) => {
+    if (selectedId) queryClient.removeQueries({ queryKey: ["provider-secret", selectedId] });
+    setSelectedId(undefined);
+    setCreation({ ...next, key: nextCreationKey() } as ProviderCreation);
+  };
+  const startAdd = () =>
+    guarded(() =>
+      startCreation({
+        mode: "api",
+        initialTemplateId: "",
+        requireTemplateSelection: true,
+      }),
+    );
+  const duplicateApi = (draft: ApiProviderDraft) => {
+    const connections = draft.connections.map((connection) => {
+      const clone = { ...connection };
+      delete clone.id;
+      return clone;
+    });
     guarded(() => {
-      selectImmediately(undefined);
-      if (!template || template.mode === "api") {
-        if (intent === "add") setApiCreation({ templateId: template?.id });
-        return;
-      }
-      setFlow({
-        kind: template.authKind,
-        mode: intent === "import" ? "import" : "login",
-        name: template.name,
+      setDirty(false);
+      startCreation({
+        mode: "api",
+        initialDraft: {
+          ...draft,
+          name: uniqueCopyName(draft.name, t("common.duplicate"), providers.data),
+          connections,
+        },
+        requireTemplateSelection: true,
+      });
+    });
+  };
+  const duplicateOAuth = (draft: OAuthProviderDraft) => {
+    guarded(() => {
+      setDirty(false);
+      startCreation({
+        mode: "oauth",
+        templateId: draft.templateId,
+        initialName: uniqueCopyName(draft.name, t("common.duplicate"), providers.data),
+        initialRaw: draft.rawContent,
       });
     });
   };
@@ -113,11 +163,8 @@ export function ProviderPage({
           <p>{t("settings.riskText")}</p>
         </div>
         <div className="section-actions">
-          <Button variant="secondary" onClick={() => openTemplatePicker("add")}>
+          <Button variant="secondary" onClick={startAdd}>
             <Plus size={16} /> {t("providers.add")}
-          </Button>
-          <Button variant="secondary" onClick={() => openTemplatePicker("import")}>
-            <Upload size={16} /> {t("providers.importProvider")}
           </Button>
         </div>
       </header>
@@ -157,18 +204,60 @@ export function ProviderPage({
           {!providers.data.length ? <EmptyState>{t("common.none")}</EmptyState> : null}
         </aside>
         <section className="detail-pane">
-          {apiCreation ? (
+          {creation?.mode === "api" ? (
             <ApiProviderEditor
-              key={`create:${apiCreation.templateId ?? "custom"}`}
-              initialTemplateId={apiCreation.templateId}
+              key={`create-api:${creation.key}`}
+              initialTemplateId={creation.initialTemplateId}
+              initialDraft={creation.initialDraft}
+              initialName={creation.initialName}
+              requireTemplateSelection={creation.requireTemplateSelection}
               providers={providers.data}
               catalog={snapshot.catalog}
               onClose={() => select(undefined)}
               onError={onError}
+              onChooseOAuthTemplate={(template, currentName) => {
+                guarded(() => {
+                  setDirty(false);
+                  startCreation({
+                    mode: "oauth",
+                    templateId: template.id,
+                    initialName: currentName.trim() || template.name,
+                    initialRaw: "",
+                  });
+                });
+              }}
             />
           ) : null}
-          {!apiCreation && selectedId && secret.isPending ? <Spinner /> : null}
-          {!apiCreation && selectedId && secret.isError ? (
+          {creation?.mode === "oauth" ? (
+            <OAuthProviderEditor
+              key={`create-oauth:${creation.key}`}
+              catalog={snapshot.catalog}
+              initialTemplateId={creation.templateId}
+              initialName={creation.initialName}
+              initialRaw={creation.initialRaw}
+              providers={providers.data}
+              onClose={() => select(undefined)}
+              onError={onError}
+              onStartFlow={(kind, mode, name) => setFlow({ kind, mode, name })}
+              onChooseApiTemplate={(templateId, currentName) => {
+                const template = snapshot.catalog.providerTemplates.find(
+                  (candidate) => candidate.id === templateId && candidate.mode === "api",
+                );
+                guarded(() => {
+                  setDirty(false);
+                  startCreation({
+                    mode: "api",
+                    initialTemplateId: templateId,
+                    initialName: currentName.trim() || template?.name || "",
+                    requireTemplateSelection: true,
+                  });
+                });
+              }}
+              onCreated={(id) => selectImmediately(id)}
+            />
+          ) : null}
+          {!creation && selectedId && secret.isPending ? <Spinner /> : null}
+          {!creation && selectedId && secret.isError ? (
             <Card>
               <ErrorAlert
                 error={secret.error}
@@ -178,7 +267,7 @@ export function ProviderPage({
               />
             </Card>
           ) : null}
-          {!apiCreation && selected && secret.data?.profileType === "api" ? (
+          {!creation && selected && secret.data?.profileType === "api" ? (
             <ApiProviderEditor
               key={`${secret.data.id}:${secret.data.revision}`}
               detail={secret.data}
@@ -186,29 +275,29 @@ export function ProviderPage({
               catalog={snapshot.catalog}
               onClose={() => select(undefined)}
               onError={onError}
+              onDuplicate={duplicateApi}
+              onDelete={() => setDeleteProvider(selected)}
+              deleteDisabled={selected.referencedBy.length > 0}
             />
           ) : null}
-          {!apiCreation && selected && secret.data?.profileType === "oauth" ? (
+          {!creation && selected && secret.data?.profileType === "oauth" ? (
             <OAuthProviderEditor
               key={`${secret.data.id}:${secret.data.revision}`}
               detail={secret.data}
               publicProvider={selected}
+              catalog={snapshot.catalog}
               providers={providers.data}
               onClose={() => select(undefined)}
               onError={onError}
-              onStartFlow={(mode) =>
-                guarded(() =>
-                  setFlow({
-                    kind: selected.oauthKind!,
-                    mode,
-                    replaceProviderId: selected.id,
-                    name: selected.name,
-                  }),
-                )
+              onStartFlow={(kind, mode, name, replaceProviderId) =>
+                guarded(() => setFlow({ kind, mode, replaceProviderId, name }))
               }
+              onDuplicate={duplicateOAuth}
+              onDelete={() => setDeleteProvider(selected)}
+              deleteDisabled={selected.referencedBy.length > 0}
             />
           ) : null}
-          {!apiCreation && selected && secret.data?.profileType === "api" ? (
+          {!creation && selected && secret.data?.profileType === "api" ? (
             <Card>
               <h3>{t("providers.references")}</h3>
               {selected.referencedBy.length ? (
@@ -222,32 +311,11 @@ export function ProviderPage({
               )}
             </Card>
           ) : null}
-          {!apiCreation && !selectedId ? (
+          {!creation && !selectedId ? (
             <EmptyState>{t("providers.emptySelection")}</EmptyState>
-          ) : null}
-          {!apiCreation &&
-          selected &&
-          secret.data?.profileType === "api" &&
-          selected.referencedBy.length === 0 ? (
-            <Button
-              className="floating-delete"
-              variant="danger"
-              onClick={() => setDeleteProvider(selected)}
-            >
-              <Trash2 size={15} /> {t("common.delete")}
-            </Button>
           ) : null}
         </section>
       </div>
-      {templateIntent ? (
-        <ProviderTemplateDialog
-          open
-          intent={templateIntent}
-          templates={snapshot.catalog.providerTemplates}
-          onClose={() => setTemplateIntent(undefined)}
-          onSelect={selectTemplate}
-        />
-      ) : null}
       {flow ? (
         <OAuthFlowDialog
           open
@@ -259,7 +327,8 @@ export function ProviderPage({
           onClose={() => setFlow(undefined)}
           onCompleted={(id) => {
             setFlow(undefined);
-            if (id) select(id);
+            setDirty(false);
+            if (id) selectImmediately(id);
           }}
         />
       ) : null}
