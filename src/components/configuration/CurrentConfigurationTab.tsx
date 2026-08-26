@@ -5,7 +5,6 @@ import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
 import { validateEntityName } from "../../shared/names";
 import type {
-  AppSettings,
   CliId,
   DetectedCli,
   DetectedProviderCandidate,
@@ -95,17 +94,6 @@ export function CurrentConfigurationTab({
     },
     onError: (error) => onError(error, "save"),
   });
-  const chooseConfigDirectory = async (cliId: CliId) => {
-    try {
-      const selected = await command<AppSettings | null>("select_cli_config_directory", { cliId });
-      if (selected) {
-        await queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
-        refresh.mutate();
-      }
-    } catch (error) {
-      onError(error, "selectPath");
-    }
-  };
   const candidateNameIssue = validateEntityName(candidateName, providers);
   const candidateModelRequired = Boolean(candidate?.availableModels.length);
   const candidateModelIssue = candidateModelRequired && !candidateModel.trim();
@@ -152,11 +140,6 @@ export function CurrentConfigurationTab({
                   <h3>{label}</h3>
                   <Badge>{t("config.notScanned")}</Badge>
                 </header>
-                <div className="section-actions">
-                  <Button variant="secondary" onClick={() => chooseConfigDirectory(cliId)}>
-                    {t("settings.chooseDirectory")}
-                  </Button>
-                </div>
               </Card>
             );
           }
@@ -197,9 +180,6 @@ export function CurrentConfigurationTab({
                 </Alert>
               ))}
               <div className="section-actions">
-                <Button variant="secondary" onClick={() => chooseConfigDirectory(item.cliId)}>
-                  {t("settings.chooseDirectory")}
-                </Button>
                 <Button
                   variant="secondary"
                   onClick={() => {
