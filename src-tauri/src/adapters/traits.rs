@@ -112,7 +112,9 @@ pub struct AdapterApiCandidate {
     pub template_id: Option<String>,
     pub connection: ProviderConnection,
     pub available_models: Vec<String>,
+    pub default_model: Option<String>,
     pub is_current: bool,
+    pub model_routed: bool,
 }
 
 #[derive(Debug, Clone)]

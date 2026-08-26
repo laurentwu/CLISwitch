@@ -200,6 +200,7 @@ export const en = {
     validation: {
       nameLength: "After trimming, a name must contain between 1 and 64 characters.",
       nameDuplicate: "The name duplicates an existing item (case-insensitive).",
+      candidateModelRequired: "Choose a model before saving this provider.",
       configurationTargets:
         "Every included CLI must have a model, and every API target must have an endpoint.",
     },

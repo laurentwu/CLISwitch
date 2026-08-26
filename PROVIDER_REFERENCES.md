@@ -18,6 +18,26 @@ https://platform.claude.com/docs/en/about-claude/pricing
 https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion
 https://openrouter.ai/pricing
 
+## OpenCode Zen
+
+https://opencode.ai/docs/zen/
+https://opencode.ai/docs/providers/
+https://opencode.ai/zen/v1/models
+
+OpenCode's `opencode/<model-id>` models use the shared Zen base URL. Responses models use
+`@ai-sdk/openai`, Chat Completions models use `@ai-sdk/openai-compatible`, and Anthropic Messages
+models use `@ai-sdk/anthropic`. The Google-backed models use `@ai-sdk/google`, which is recorded as
+unsupported in CLISwitch because that adapter is not part of the OpenCode baseline.
+
+## OpenCode Go
+
+https://opencode.ai/docs/go/
+https://opencode.ai/zen/go/v1/models
+
+OpenCode Go uses the `opencode-go/<model-id>` prefix and the same three protocol families under the
+Go base URL. The available model list and endpoint assignments are upstream-managed; CLISwitch
+keeps the documented list as catalog suggestions and selects the endpoint from the chosen model.
+
 ## GLM Coding Plan（中国站）
 
 https://docs.bigmodel.cn/cn/coding-plan/overview

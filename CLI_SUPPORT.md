@@ -1,6 +1,6 @@
 # CLI support baseline
 
-This matrix is the compatibility contract for CLISwitch 0.1, last reviewed 2026-08-23 against stable public CLI documentation. CLISwitch fingerprints the supported shape and refuses known incompatible shapes rather than replacing an entire file. Re-test these mappings before each release because upstream CLIs can change independently.
+This matrix is the compatibility contract for CLISwitch 0.1, last reviewed 2026-08-25 against stable public CLI documentation. CLISwitch fingerprints the supported shape and refuses known incompatible shapes rather than replacing an entire file. Re-test these mappings before each release because upstream CLIs can change independently.
 
 | CLI         | Discovery and user files                                                                                                                                                                     | API protocols                                     | OAuth                                                                             | 0.1 schema fingerprint                                                         |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -57,28 +57,42 @@ Executable discovery uses, in order, a user-approved manual path, the process PA
 - Self-described custom providers need no template entry when they declare a supported `npm`,
   `options.baseURL`, and at least one model. Built-in providers may use this declarative fallback
   relation catalog. Explicit user configuration overrides every fallback value.
+- OpenCode Zen (`opencode/<model>`) and OpenCode Go (`opencode-go/<model>`) are model-routed
+  templates. Their endpoint is selected from the model ID, so credentials without an inferable
+  current model are presented with a model picker instead of an invented transport. Models that
+  OpenCode documents with `@ai-sdk/google` remain unsupported because that package is not an
+  adapter in this CLI baseline.
 
-| OpenCode provider ID     | CLISwitch name                    | CLISwitch protocol | Auth    | Default endpoint                                |
-| ------------------------ | --------------------------------- | ------------------ | ------- | ----------------------------------------------- |
-| `openai`                 | OpenAI                            | OpenAI Responses   | Bearer  | `https://api.openai.com/v1`                     |
-| `anthropic`              | Anthropic                         | Anthropic Messages | API key | `https://api.anthropic.com`                     |
-| `openrouter`             | OpenRouter                        | OpenAI Chat        | Bearer  | `https://openrouter.ai/api/v1`                  |
-| `zhipuai-coding-plan`    | GLM Coding Plan                   | OpenAI Chat        | Bearer  | `https://open.bigmodel.cn/api/coding/paas/v4`   |
-| `zai-coding-plan`        | Z.AI Coding Plan                  | OpenAI Chat        | Bearer  | `https://api.z.ai/api/coding/paas/v4`           |
-| `minimax-coding-plan`    | MiniMax Token Plan (minimax.io)   | Anthropic Messages | API key | `https://api.minimax.io/anthropic/v1`           |
-| `minimax-cn-coding-plan` | MiniMax Token Plan (minimaxi.com) | Anthropic Messages | API key | `https://api.minimaxi.com/anthropic/v1`         |
-| `alibaba-coding-plan`    | Alibaba Coding Plan               | OpenAI Chat        | Bearer  | `https://coding-intl.dashscope.aliyuncs.com/v1` |
-| `alibaba-coding-plan-cn` | Alibaba Coding Plan (China)       | OpenAI Chat        | Bearer  | `https://coding.dashscope.aliyuncs.com/v1`      |
-| `tencent-coding-plan`    | Tencent Coding Plan (China)       | OpenAI Chat        | Bearer  | `https://api.lkeap.cloud.tencent.com/coding/v3` |
-| `kimi-for-coding`        | Kimi For Coding                   | Anthropic Messages | API key | `https://api.kimi.com/coding/v1`                |
-| `umans-ai-coding-plan`   | Umans AI Coding Plan              | OpenAI Chat        | Bearer  | `https://api.code.umans.ai/v1`                  |
-| `kuae-cloud-coding-plan` | KUAE Cloud Coding Plan            | OpenAI Chat        | Bearer  | `https://coding-plan-endpoint.kuaecloud.net/v1` |
+| OpenCode provider ID     | CLISwitch name                    | CLISwitch protocol | Auth             | Default endpoint                                |
+| ------------------------ | --------------------------------- | ------------------ | ---------------- | ----------------------------------------------- |
+| `openai`                 | OpenAI                            | OpenAI Responses   | Bearer           | `https://api.openai.com/v1`                     |
+| `anthropic`              | Anthropic                         | Anthropic Messages | API key          | `https://api.anthropic.com`                     |
+| `openrouter`             | OpenRouter                        | OpenAI Chat        | Bearer           | `https://openrouter.ai/api/v1`                  |
+| `opencode`               | OpenCode Zen                      | Model-routed       | Bearer / API key | `https://opencode.ai/zen/v1`                    |
+| `opencode-go`            | OpenCode Go                       | Model-routed       | Bearer / API key | `https://opencode.ai/zen/go/v1`                 |
+| `zhipuai-coding-plan`    | GLM Coding Plan                   | OpenAI Chat        | Bearer           | `https://open.bigmodel.cn/api/coding/paas/v4`   |
+| `zai-coding-plan`        | Z.AI Coding Plan                  | OpenAI Chat        | Bearer           | `https://api.z.ai/api/coding/paas/v4`           |
+| `minimax-coding-plan`    | MiniMax Token Plan (minimax.io)   | Anthropic Messages | API key          | `https://api.minimax.io/anthropic/v1`           |
+| `minimax-cn-coding-plan` | MiniMax Token Plan (minimaxi.com) | Anthropic Messages | API key          | `https://api.minimaxi.com/anthropic/v1`         |
+| `alibaba-coding-plan`    | Alibaba Coding Plan               | OpenAI Chat        | Bearer           | `https://coding-intl.dashscope.aliyuncs.com/v1` |
+| `alibaba-coding-plan-cn` | Alibaba Coding Plan (China)       | OpenAI Chat        | Bearer           | `https://coding.dashscope.aliyuncs.com/v1`      |
+| `tencent-coding-plan`    | Tencent Coding Plan (China)       | OpenAI Chat        | Bearer           | `https://api.lkeap.cloud.tencent.com/coding/v3` |
+| `kimi-for-coding`        | Kimi For Coding                   | Anthropic Messages | API key          | `https://api.kimi.com/coding/v1`                |
+| `umans-ai-coding-plan`   | Umans AI Coding Plan              | OpenAI Chat        | Bearer           | `https://api.code.umans.ai/v1`                  |
+| `kuae-cloud-coding-plan` | KUAE Cloud Coding Plan            | OpenAI Chat        | Bearer           | `https://coding-plan-endpoint.kuaecloud.net/v1` |
 
 The GLM Coding Plan template is one provider with one shared credential slot and three endpoint
 identities: Anthropic Messages at `https://open.bigmodel.cn/api/anthropic`, OpenAI Chat at
 `https://open.bigmodel.cn/api/coding/paas/v4`, and OpenAI Responses at
 `https://open.bigmodel.cn/api/v1`. OpenCode has a relation to all three. None is marked as the
 OpenCode default, so a saved configuration must explicitly select one endpoint.
+
+OpenCode Zen and OpenCode Go likewise use one shared API-key slot and three transport endpoints
+(Responses, Chat Completions, and Anthropic Messages). Each catalog model belongs to exactly one
+endpoint. Saving an imported provider requires choosing a model when the current OpenCode model
+cannot be inferred; that choice determines the endpoint and SDK package written back to OpenCode.
+Responses and Chat Completions use Bearer authentication, while Anthropic Messages uses an API-key
+header.
 
 Provider/CLI maintenance is split across three bundled, read-only JSONC files:
 
@@ -90,7 +104,9 @@ Provider/CLI maintenance is split across three bundled, read-only JSONC files:
   records recognized native provider IDs, and may override the Base URL required by a particular
   CLI.
 
-Model lists are suggestions, not allowlists. Users may enter another model ID. Existing database
+Model lists are suggestions, not allowlists, except in a `modelRouting` template where the model ID
+is also the endpoint-routing key. Users may enter another model ID on ordinary or custom providers;
+Zen/Go imports require a catalog model so CLISwitch does not guess a transport. Existing database
 providers migrate as custom providers without endpoint inference; existing auth providers receive
 their exact auth-template identity.
 

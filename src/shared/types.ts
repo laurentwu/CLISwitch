@@ -363,8 +363,16 @@ export interface ApiProviderTemplate {
   id: string;
   name: string;
   category: string;
+  modelRouting?: boolean;
   credentialSlots: Array<{ id: string; name: string }>;
   endpoints: ProviderEndpointTemplate[];
+  unsupportedModels?: UnsupportedProviderModelTemplate[];
+}
+
+export interface UnsupportedProviderModelTemplate {
+  id: string;
+  name: string;
+  providerPackage: string;
 }
 
 export interface AuthProviderTemplate {

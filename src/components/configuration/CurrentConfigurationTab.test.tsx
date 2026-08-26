@@ -206,4 +206,76 @@ describe("CurrentConfigurationTab", () => {
     expect(within(dialog).getByText("GLM Coding Plan")).toBeInTheDocument();
     expect(within(dialog).queryByText("glm-coding-plan")).not.toBeInTheDocument();
   });
+
+  it("requires a model for a model-routed provider when the scan could not infer one", () => {
+    const client = new QueryClient();
+    const scan: ScanSnapshot = {
+      ...codexOAuthScan,
+      items: [
+        {
+          ...codexOAuthScan.items[0],
+          cliId: "opencode",
+          label: "OpenCode",
+          status: "unmanaged",
+          executablePath: "/fixture/bin/opencode",
+          configDirectory: "/fixture/.config/opencode",
+          current: {
+            ...codexOAuthScan.items[0].current!,
+            providerName: null,
+            protocol: null,
+            authKind: null,
+            model: null,
+          },
+          providerCandidates: [
+            {
+              id: "00000000-0000-4000-8000-000000000020",
+              sourceProviderId: "opencode",
+              suggestedName: "OpenCode Zen",
+              templateId: "opencode-zen",
+              protocol: null,
+              endpoint: null,
+              authType: null,
+              availableModels: ["gpt-5.6-sol"],
+              defaultModel: null,
+            },
+          ],
+        },
+      ],
+    };
+    render(
+      <QueryClientProvider client={client}>
+        <CurrentConfigurationTab
+          scan={scan}
+          configurations={[]}
+          providers={[]}
+          catalog={{
+            ...catalog,
+            providerTemplates: [
+              ...catalog.providerTemplates,
+              {
+                mode: "api",
+                id: "opencode-zen",
+                name: "OpenCode Zen",
+                category: "api",
+                modelRouting: true,
+                credentialSlots: [],
+                endpoints: [],
+              },
+            ],
+          }}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "将 OpenCode Zen 保存为供应商" }));
+    const dialog = screen.getByRole("dialog", { name: "保存未纳管供应商" });
+    const model = within(dialog).getByRole("combobox", { name: /默认模型/ });
+    expect(model).toHaveValue("");
+    expect(within(dialog).getByText("保存此供应商前请选择一个模型。")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "保存" })).toBeDisabled();
+
+    fireEvent.change(model, { target: { value: "gpt-5.6-sol" } });
+    expect(within(dialog).getByRole("button", { name: "保存" })).not.toBeDisabled();
+  });
 });

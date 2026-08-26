@@ -938,7 +938,7 @@ async fn validate_targets(
                 cli_id,
                 provider_id,
                 connection_id,
-                ..
+                model,
             } => {
                 let row = sqlx::query(
                     "SELECT p.kind AS provider_kind, p.template_id AS template_id, c.protocol AS protocol, c.template_endpoint_id AS template_endpoint_id FROM provider_profiles p LEFT JOIN provider_connections c ON c.provider_id = p.id AND c.id = ? WHERE p.id = ?",
@@ -959,18 +959,39 @@ async fn validate_targets(
                 let protocol = CliProtocol::from_str(&protocol)?;
                 let template_id: Option<String> = row.try_get("template_id")?;
                 let template_endpoint_id: Option<String> = row.try_get("template_endpoint_id")?;
+                let catalog = crate::catalog::embedded_catalog()?;
                 let supported = match (template_id.as_deref(), template_endpoint_id.as_deref()) {
-                    (Some(template_id), Some(endpoint_id)) => crate::catalog::embedded_catalog()?
-                        .supports_api_endpoint(*cli_id, template_id, endpoint_id),
-                    (None, None) => {
-                        crate::catalog::embedded_catalog()?.supports_protocol(*cli_id, protocol)
+                    (Some(template_id), Some(endpoint_id)) => {
+                        catalog.supports_api_endpoint(*cli_id, template_id, endpoint_id)
                     }
+                    (None, None) => catalog.supports_protocol(*cli_id, protocol),
                     _ => false,
                 };
                 if !supported {
                     return Err(AppError::Validation(format!(
                         "{cli_id} does not support this provider endpoint"
                     )));
+                }
+                if let (Some(template_id), Some(endpoint_id)) =
+                    (template_id.as_deref(), template_endpoint_id.as_deref())
+                    && catalog
+                        .api_template(template_id)
+                        .is_some_and(|template| template.model_routing)
+                {
+                    let model = model.trim();
+                    let routed_endpoint = catalog
+                        .model_routed_endpoint(template_id, model)
+                        .ok_or_else(|| {
+                            AppError::Validation(format!(
+                                "model {model} has no route in provider template {template_id}"
+                            ))
+                        })?;
+                    if routed_endpoint.id != endpoint_id {
+                        return Err(AppError::Validation(format!(
+                            "model {model} routes to endpoint {}, not {endpoint_id}",
+                            routed_endpoint.id
+                        )));
+                    }
                 }
             }
             ConfigurationTarget::Oauth {
@@ -1317,11 +1338,11 @@ mod tests {
         }
     }
 
-    fn glm_provider(name: &str) -> ProviderProfile {
+    fn templated_provider(name: &str, template_id: &str) -> ProviderProfile {
         let now = Utc::now();
         let template = crate::catalog::embedded_catalog()
             .unwrap()
-            .api_template("glm-coding-plan")
+            .api_template(template_id)
             .unwrap();
         ProviderProfile {
             id: Uuid::new_v4(),
@@ -1457,7 +1478,7 @@ mod tests {
     #[tokio::test]
     async fn api_targets_follow_catalog_endpoint_relations_and_reject_mixed_identity() {
         let (_temp, _paths, repository) = repository().await;
-        let provider = glm_provider("GLM Coding Plan");
+        let provider = templated_provider("GLM Coding Plan", "glm-coding-plan");
         let ProviderData::Api(api) = &provider.data else {
             unreachable!()
         };
@@ -1520,6 +1541,71 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(mixed_identity, AppError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn model_routed_api_targets_require_the_connection_for_the_selected_model() {
+        let (_temp, _paths, repository) = repository().await;
+        let provider = templated_provider("OpenCode Zen", "opencode-zen");
+        let ProviderData::Api(api) = &provider.data else {
+            unreachable!()
+        };
+        let responses_connection = api
+            .connections
+            .iter()
+            .find(|connection| connection.template_endpoint_id.as_deref() == Some("responses"))
+            .unwrap()
+            .id;
+        repository.insert_provider(&provider, None).await.unwrap();
+
+        repository
+            .insert_configuration(&configuration(
+                "OpenCode Zen Responses",
+                vec![ConfigurationTarget::Api {
+                    cli_id: CliId::Opencode,
+                    provider_id: provider.id,
+                    connection_id: responses_connection,
+                    model: "gpt-5.6-sol".into(),
+                }],
+            ))
+            .await
+            .unwrap();
+
+        let wrong_route = repository
+            .insert_configuration(&configuration(
+                "OpenCode Zen wrong route",
+                vec![ConfigurationTarget::Api {
+                    cli_id: CliId::Opencode,
+                    provider_id: provider.id,
+                    connection_id: responses_connection,
+                    model: "glm-5".into(),
+                }],
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            wrong_route
+                .to_string()
+                .contains("routes to endpoint chat, not responses")
+        );
+
+        let unknown_model = repository
+            .insert_configuration(&configuration(
+                "OpenCode Zen unknown route",
+                vec![ConfigurationTarget::Api {
+                    cli_id: CliId::Opencode,
+                    provider_id: provider.id,
+                    connection_id: responses_connection,
+                    model: "outside-catalog-model".into(),
+                }],
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            unknown_model
+                .to_string()
+                .contains("has no route in provider template opencode-zen")
+        );
     }
 
     #[tokio::test]

@@ -213,9 +213,20 @@ impl CliManager {
                     let mut oauth_unmanaged = false;
                     let mut unmatched_api_candidates = Vec::new();
                     for candidate in std::mem::take(&mut read.unmanaged_api_candidates) {
-                        if let Some(provider_id) =
-                            self.match_saved_connection(&candidate.connection).await
-                        {
+                        let matched_provider =
+                            if candidate.model_routed && candidate.default_model.is_none() {
+                                // A model-routed provider without a selected model uses a
+                                // placeholder transport. Reconcile it by stable template and
+                                // credential identity instead of that placeholder.
+                                self.match_saved_model_routed_credential(
+                                    candidate.template_id.as_deref(),
+                                    &candidate.connection,
+                                )
+                                .await
+                            } else {
+                                self.match_saved_connection(&candidate.connection).await
+                            };
+                        if let Some(provider_id) = matched_provider {
                             if candidate.is_current {
                                 read.current.managed_provider_id = Some(provider_id);
                                 read.current.provider_name = self
@@ -341,6 +352,8 @@ impl CliManager {
                                     template_id: candidate.template_id,
                                     connection: Box::new(candidate.connection),
                                     available_models: candidate.available_models,
+                                    default_model: candidate.default_model,
+                                    model_routed: candidate.model_routed,
                                 },
                             )
                         })
@@ -358,14 +371,19 @@ impl CliManager {
                                 UnmanagedCandidateData::Api {
                                     connection,
                                     available_models,
+                                    default_model,
+                                    model_routed,
                                     ..
-                                } => (
-                                    Some(connection.protocol),
-                                    Some(connection.endpoint.clone()),
-                                    Some(connection.auth_type),
-                                    available_models.clone(),
-                                    Some(connection.default_model.clone()),
-                                ),
+                                } => {
+                                    let route_known = !*model_routed || default_model.is_some();
+                                    (
+                                        route_known.then_some(connection.protocol),
+                                        route_known.then(|| connection.endpoint.clone()),
+                                        route_known.then_some(connection.auth_type),
+                                        available_models.clone(),
+                                        default_model.clone(),
+                                    )
+                                }
                                 UnmanagedCandidateData::Oauth { .. } => {
                                     (None, None, None, Vec::new(), None)
                                 }
@@ -512,7 +530,9 @@ impl CliManager {
             UnmanagedCandidateData::Api {
                 template_id,
                 connection,
+                model_routed,
                 available_models: _,
+                default_model: _,
             } => {
                 let selected_model = default_model
                     .as_deref()
@@ -521,12 +541,25 @@ impl CliManager {
                 if selected_model.is_empty() {
                     return Err(AppError::Validation("selected model is required".into()));
                 }
+                let detected = if *model_routed {
+                    route_model_routed_connection(
+                        template_id.as_deref().ok_or_else(|| {
+                            AppError::Validation(
+                                "model-routed candidate has no provider template".into(),
+                            )
+                        })?,
+                        connection,
+                        selected_model,
+                    )?
+                } else {
+                    connection.as_ref().clone()
+                };
                 let connections = match template_id.as_deref() {
                     Some(template_id) => {
-                        materialize_template_connections(template_id, connection, selected_model)?
+                        materialize_template_connections(template_id, &detected, selected_model)?
                     }
                     None => {
-                        let mut connection = connection.as_ref().clone();
+                        let mut connection = detected;
                         connection.template_endpoint_id = None;
                         connection.default_model = selected_model.to_string();
                         vec![connection]
@@ -586,6 +619,71 @@ impl CliManager {
         }
         None
     }
+
+    async fn match_saved_model_routed_credential(
+        &self,
+        template_id: Option<&str>,
+        candidate: &crate::domain::ProviderConnection,
+    ) -> Option<Uuid> {
+        let template_id = template_id?;
+        for public in self.repository.list_providers().await.ok()? {
+            let provider = self.repository.get_provider(public.id).await.ok()?;
+            if provider.template_id.as_deref() != Some(template_id) {
+                continue;
+            }
+            if let ProviderData::Api(api) = &provider.data
+                && api.connections.iter().any(|connection| {
+                    connection.credential_slot_id == candidate.credential_slot_id
+                        && connection.api_key == candidate.api_key
+                })
+            {
+                return Some(provider.id);
+            }
+        }
+        None
+    }
+}
+
+fn route_model_routed_connection(
+    template_id: &str,
+    detected: &crate::domain::ProviderConnection,
+    selected_model: &str,
+) -> AppResult<crate::domain::ProviderConnection> {
+    let catalog = embedded_catalog()?;
+    let template = catalog
+        .api_template(template_id)
+        .ok_or_else(|| AppError::Validation(format!("unknown provider template {template_id}")))?;
+    if !template.model_routing {
+        return Err(AppError::Validation(format!(
+            "provider template {template_id} does not support model routing"
+        )));
+    }
+    if let Some(unsupported) = catalog.unsupported_model(template_id, selected_model) {
+        return Err(AppError::Unsupported(format!(
+            "model {selected_model} requires unsupported OpenCode provider package {}",
+            unsupported.provider_package
+        )));
+    }
+    let endpoint = catalog
+        .model_routed_endpoint(template_id, selected_model)
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "model {selected_model} has no unambiguous endpoint in provider template {template_id}"
+            ))
+        })?;
+    let auth_type = endpoint.default_auth_type().ok_or_else(|| {
+        AppError::Validation(format!(
+            "template endpoint {} has no default auth mode",
+            endpoint.id
+        ))
+    })?;
+    let mut connection = detected.clone();
+    connection.template_endpoint_id = Some(endpoint.id.clone());
+    connection.protocol = endpoint.protocol;
+    connection.endpoint = endpoint.base_url.clone();
+    connection.auth_type = auth_type;
+    connection.default_model = selected_model.to_string();
+    Ok(connection)
 }
 
 fn materialize_template_connections(
@@ -1180,6 +1278,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn opencode_model_routed_candidate_requires_and_persists_the_selected_model() {
+        let fixture = opencode_scan_fixture().await;
+        write_json_fixture(&fixture.config_file, &serde_json::json!({})).await;
+        write_json_fixture(
+            &fixture.auth_file,
+            &serde_json::json!({
+                "opencode": { "type": "api", "key": "fixture-zen-key" }
+            }),
+        )
+        .await;
+
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&scan);
+        let candidate = item
+            .provider_candidates
+            .iter()
+            .find(|candidate| candidate.source_provider_id == "opencode")
+            .unwrap();
+        assert_eq!(candidate.template_id.as_deref(), Some("opencode-zen"));
+        assert_eq!(candidate.protocol, None);
+        assert_eq!(candidate.endpoint, None);
+        assert_eq!(candidate.default_model, None);
+        let saved = fixture
+            .manager
+            .save_unmanaged_candidate(
+                &fixture.oauth,
+                &fixture.settings,
+                UnmanagedCandidateSaveRequest {
+                    snapshot_id: scan.id,
+                    candidate_id: candidate.id,
+                    name: "OpenCode Zen fixture".into(),
+                    default_model: Some("glm-5".into()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.template_id.as_deref(), Some("opencode-zen"));
+        let saved_id = saved.id;
+        let ProviderData::Api(api) = &saved.data else {
+            panic!("model-routed OpenCode candidate should save as an API provider");
+        };
+        assert_eq!(api.connections.len(), 3);
+        let chat = api
+            .connections
+            .iter()
+            .find(|connection| connection.template_endpoint_id.as_deref() == Some("chat"))
+            .unwrap();
+        assert_eq!(chat.protocol, CliProtocol::OpenaiChat);
+        assert_eq!(chat.default_model, "glm-5");
+        assert_eq!(chat.endpoint.as_str(), "https://opencode.ai/zen/v1");
+
+        let namespaced_provider_id = format!("cliswitch_{saved_id}");
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({
+                "model": format!("{namespaced_provider_id}/glm-5"),
+                "provider": {
+                    namespaced_provider_id.clone(): {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "name": "OpenCode Zen fixture",
+                        "options": { "baseURL": "https://opencode.ai/zen/v1" },
+                        "models": { "glm-5": {} }
+                    }
+                }
+            }),
+        )
+        .await;
+        write_json_fixture(
+            &fixture.auth_file,
+            &serde_json::json!({
+                "opencode": { "type": "api", "key": "fixture-zen-key" },
+                namespaced_provider_id: { "type": "api", "key": "fixture-zen-key" }
+            }),
+        )
+        .await;
+
+        let reconciled_scan = fixture.manager.scan(&fixture.settings).await;
+        let reconciled = opencode_item(&reconciled_scan);
+        assert_eq!(reconciled.status, ScanStatus::Detected);
+        assert!(reconciled.provider_candidates.is_empty());
+        assert_eq!(
+            reconciled
+                .current
+                .as_ref()
+                .and_then(|current| current.managed_provider_id),
+            Some(saved_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_model_routed_candidate_rejects_unsupported_and_unknown_models() {
+        let fixture = opencode_scan_fixture().await;
+        write_json_fixture(&fixture.config_file, &serde_json::json!({})).await;
+        write_json_fixture(
+            &fixture.auth_file,
+            &serde_json::json!({
+                "opencode": { "type": "api", "key": "fixture-zen-key" }
+            }),
+        )
+        .await;
+
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let candidate_id = opencode_item(&scan)
+            .provider_candidates
+            .iter()
+            .find(|candidate| candidate.source_provider_id == "opencode")
+            .unwrap()
+            .id;
+        let unsupported = fixture
+            .manager
+            .save_unmanaged_candidate(
+                &fixture.oauth,
+                &fixture.settings,
+                UnmanagedCandidateSaveRequest {
+                    snapshot_id: scan.id,
+                    candidate_id,
+                    name: "Unsupported OpenCode Zen model".into(),
+                    default_model: Some("gemini-3.7-flash".into()),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(unsupported, AppError::Unsupported(_)));
+
+        let unknown = fixture
+            .manager
+            .save_unmanaged_candidate(
+                &fixture.oauth,
+                &fixture.settings,
+                UnmanagedCandidateSaveRequest {
+                    snapshot_id: scan.id,
+                    candidate_id,
+                    name: "Unknown OpenCode Zen model".into(),
+                    default_model: Some("outside-catalog-model".into()),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(unknown, AppError::Validation(_)));
+    }
+
+    #[tokio::test]
     async fn opencode_minimax_token_plan_save_and_apply_reconcile_on_rescan() {
         let fixture = opencode_scan_fixture().await;
         write_json_fixture(
@@ -1466,6 +1706,8 @@ mod tests {
                             verification: VerificationInfo::default(),
                         }),
                         available_models: vec!["model-a".into(), "model-b".into()],
+                        default_model: Some("model-a".into()),
+                        model_routed: false,
                     },
                 },
                 created_at: std::time::Instant::now(),

@@ -169,6 +169,8 @@ struct ResolvedProviderMetadata {
     auth_type: Option<ConnectionAuthType>,
     endpoint: Option<String>,
     explicit_npm: Option<String>,
+    model_routed: bool,
+    unsupported_model_package: Option<String>,
 }
 
 fn configured_provider<'a>(
@@ -184,9 +186,63 @@ fn configured_provider<'a>(
 fn resolve_provider_metadata(
     provider_id: &str,
     provider: Option<&serde_json::Map<String, Value>>,
+    model_id: Option<&str>,
 ) -> AppResult<ResolvedProviderMetadata> {
     let catalog = embedded_catalog()?;
-    let relation = catalog.native_api_relation(CliId::Opencode, provider_id);
+    let native_relation = catalog.native_api_relation(CliId::Opencode, provider_id);
+    let template_id = native_relation.map(|relation| relation.provider_template_id.as_str());
+    let template = template_id.and_then(|id| catalog.api_template(id));
+    let explicit_npm = provider
+        .and_then(|provider| provider.get("npm"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let explicit_base_url = provider
+        .and_then(|provider| provider.get("options"))
+        .and_then(Value::as_object)
+        .and_then(|options| options.get("baseURL"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty());
+
+    let model_route = template
+        .filter(|template| template.model_routing)
+        .and_then(|template| {
+            model_id.and_then(|id| catalog.model_routed_endpoint(&template.id, id))
+        })
+        .and_then(|endpoint| {
+            template_id.and_then(|id| catalog.api_relation(CliId::Opencode, id, &endpoint.id))
+        });
+    let package_relation = explicit_npm.as_deref().and_then(|package| {
+        template_id.and_then(|id| {
+            let package_protocol = catalog.package_protocol(CliId::Opencode, package);
+            catalog.api_relations(CliId::Opencode, id).find(|relation| {
+                if relation.provider_package.as_deref() == Some(package) {
+                    return true;
+                }
+                package_protocol.is_some_and(|protocol| {
+                    catalog
+                        .api_template(&relation.provider_template_id)
+                        .and_then(|template| {
+                            template
+                                .endpoints
+                                .iter()
+                                .find(|endpoint| endpoint.id == relation.endpoint_id)
+                        })
+                        .is_some_and(|endpoint| endpoint.protocol == protocol)
+                })
+            })
+        })
+    });
+    let is_model_routed_template = template.is_some_and(|template| template.model_routing);
+    let relation = if explicit_npm.is_some() {
+        package_relation
+    } else if is_model_routed_template {
+        // A Base URL override changes only the destination. Zen and Go still
+        // derive their protocol/package from the selected model.
+        model_route
+    } else {
+        native_relation
+    };
     let relation_endpoint = relation.and_then(|relation| {
         catalog
             .api_template(&relation.provider_template_id)?
@@ -194,46 +250,27 @@ fn resolve_provider_metadata(
             .iter()
             .find(|endpoint| endpoint.id == relation.endpoint_id)
     });
-    let explicit_npm = provider
-        .and_then(|provider| provider.get("npm"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let protocol = match explicit_npm.as_deref() {
-        Some(npm_package) => catalog
-            .package_protocol(CliId::Opencode, npm_package)
-            .or_else(|| {
-                relation
-                    .filter(|relation| relation.provider_package.as_deref() == Some(npm_package))
-                    .and(relation_endpoint)
-                    .map(|endpoint| endpoint.protocol)
-            }),
-        None => relation_endpoint.map(|endpoint| endpoint.protocol),
-    };
-    let template_match = relation
-        .zip(relation_endpoint)
-        .filter(|(_, endpoint)| protocol == Some(endpoint.protocol));
-    let endpoint = provider
-        .and_then(|provider| provider.get("options"))
-        .and_then(Value::as_object)
-        .and_then(|options| options.get("baseURL"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| template_match.map(|(_, endpoint)| endpoint.base_url.to_string()));
+    let protocol = explicit_npm
+        .as_deref()
+        .and_then(|package| catalog.package_protocol(CliId::Opencode, package))
+        .or_else(|| relation_endpoint.map(|endpoint| endpoint.protocol));
+    let endpoint = explicit_base_url
+        .clone()
+        .or_else(|| relation_endpoint.map(|endpoint| endpoint.base_url.to_string()));
     let display_name = provider
         .and_then(|provider| provider.get("name"))
         .and_then(Value::as_str)
         .filter(|name| !name.trim().is_empty())
         .map(str::to_string)
         .or_else(|| {
-            template_match.and_then(|(relation, _)| {
-                catalog
-                    .api_template(&relation.provider_template_id)
-                    .map(|template| template.name.clone())
-            })
+            template_id
+                .and_then(|id| catalog.api_template(id))
+                .map(|template| template.name.clone())
         })
         .unwrap_or_else(|| provider_id.to_string());
     let auth_type = protocol.map(|protocol| {
-        template_match
+        relation
+            .zip(relation_endpoint)
             .and_then(|(relation, endpoint)| {
                 endpoint
                     .auth_options
@@ -243,15 +280,65 @@ fn resolve_provider_metadata(
             })
             .unwrap_or_else(|| default_auth_type(protocol))
     });
+    // An explicit npm package on a conventional (single-endpoint) native
+    // provider only keeps the template identity when it still selects that
+    // provider's native endpoint. A different package is a custom provider,
+    // even when the package happens to be known elsewhere in the catalog.
+    let resolved_template_id =
+        if is_model_routed_template && (explicit_npm.is_some() || explicit_base_url.is_some()) {
+            None
+        } else if explicit_npm.is_some()
+            && !is_model_routed_template
+            && relation.is_some_and(|relation| {
+                native_relation.is_some_and(|native| {
+                    native.provider_template_id == relation.provider_template_id
+                        && native.endpoint_id == relation.endpoint_id
+                })
+            })
+        {
+            template_id.map(str::to_string)
+        } else if explicit_npm.is_some() && !is_model_routed_template {
+            None
+        } else {
+            template_id.map(str::to_string)
+        };
+    let resolved_template = resolved_template_id
+        .as_deref()
+        .and_then(|id| catalog.api_template(id));
+    let model_routed = template.is_some_and(|template| template.model_routing)
+        && explicit_npm.is_none()
+        && explicit_base_url.is_none();
     Ok(ResolvedProviderMetadata {
         display_name,
-        template_id: template_match.map(|(relation, _)| relation.provider_template_id.clone()),
-        template_endpoint_id: template_match.map(|(relation, _)| relation.endpoint_id.clone()),
-        credential_slot_id: template_match.map(|(_, endpoint)| endpoint.credential_slot_id.clone()),
+        template_id: resolved_template_id.clone(),
+        template_endpoint_id: resolved_template_id
+            .as_ref()
+            .and_then(|_| relation.map(|relation| relation.endpoint_id.clone())),
+        credential_slot_id: resolved_template_id
+            .as_ref()
+            .and_then(|_| relation_endpoint.map(|endpoint| endpoint.credential_slot_id.clone()))
+            .or_else(|| {
+                resolved_template
+                    .and_then(|template| template.endpoints.first())
+                    .map(|endpoint| endpoint.credential_slot_id.clone())
+            }),
         protocol,
         auth_type,
         endpoint,
         explicit_npm,
+        model_routed,
+        unsupported_model_package: model_routed
+            .then_some(template)
+            .flatten()
+            .and_then(|template| {
+                model_id.and_then(|id| {
+                    template
+                        .unsupported_models
+                        .iter()
+                        .find(|model| model.id == id)
+                })
+            })
+            .map(|model| model.provider_package.clone()),
     })
 }
 
@@ -329,6 +416,13 @@ fn provider_models(
         }
     }
     models
+}
+
+fn model_routed_model_is_supported(template_id: &str, model_id: &str) -> AppResult<bool> {
+    let catalog = embedded_catalog()?;
+    Ok(catalog
+        .model_routed_endpoint(template_id, model_id)
+        .is_some())
 }
 
 #[async_trait]
@@ -458,8 +552,22 @@ impl CliAdapter for OpenCodeAdapter {
             .and_then(|id| configured_provider(root, id));
         let current_metadata = provider_id
             .as_deref()
-            .map(|id| resolve_provider_metadata(id, provider))
+            .map(|id| resolve_provider_metadata(id, provider, model.as_deref()))
             .transpose()?;
+        if let Some(metadata) = &current_metadata
+            && let Some(model) = model.as_deref()
+        {
+            let diagnostic_provider_id = provider_id.as_deref().unwrap_or("unknown");
+            if let Some(package) = metadata.unsupported_model_package.as_deref() {
+                diagnostics.push(format!(
+                    "OpenCode provider {diagnostic_provider_id} model {model} requires unsupported provider package {package}; choose a model supported by CLISwitch"
+                ));
+            } else if metadata.model_routed && metadata.protocol.is_none() {
+                diagnostics.push(format!(
+                    "OpenCode provider {diagnostic_provider_id} model {model} has no supported model route; choose a model from the provider catalog"
+                ));
+            }
+        }
         if let (Some(provider_id), Some(metadata)) = (&provider_id, &current_metadata)
             && provider_id.starts_with("cliswitch_")
             && metadata.explicit_npm.is_some()
@@ -541,21 +649,44 @@ impl CliAdapter for OpenCodeAdapter {
                 continue;
             };
             let configured = configured_provider(root, auth_provider_id);
-            let metadata = resolve_provider_metadata(auth_provider_id, configured)?;
+            let metadata = resolve_provider_metadata(
+                auth_provider_id,
+                configured,
+                selection
+                    .as_ref()
+                    .filter(|selection| selection.provider_id == *auth_provider_id)
+                    .map(|selection| selection.model_id.as_str()),
+            )?;
             let mut models = provider_models(configured, selection.as_ref(), auth_provider_id);
-            if let Some((template_id, endpoint_id)) = metadata
+            let catalog = embedded_catalog()?;
+            let routed_template = metadata
+                .template_id
+                .as_deref()
+                .and_then(|id| catalog.api_template(id))
+                .filter(|template| template.model_routing && metadata.model_routed);
+            if let Some(template) = routed_template {
+                // A model-routed provider may use a different transport for every model.
+                // Keep only catalog models here; unknown IDs cannot be assigned safely.
+                models.retain(|model| catalog.model_routed_endpoint(&template.id, model).is_some());
+                for model in template
+                    .endpoints
+                    .iter()
+                    .flat_map(|endpoint| endpoint.models.iter())
+                {
+                    if !models.contains(&model.id) {
+                        models.push(model.id.clone());
+                    }
+                }
+            } else if let Some((template_id, endpoint_id)) = metadata
                 .template_id
                 .as_deref()
                 .zip(metadata.template_endpoint_id.as_deref())
-                && let Some(endpoint) =
-                    embedded_catalog()?
-                        .api_template(template_id)
-                        .and_then(|template| {
-                            template
-                                .endpoints
-                                .iter()
-                                .find(|endpoint| endpoint.id == endpoint_id)
-                        })
+                && let Some(endpoint) = catalog.api_template(template_id).and_then(|template| {
+                    template
+                        .endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.id == endpoint_id)
+                })
             {
                 for model in &endpoint.models {
                     if !models.contains(&model.id) {
@@ -564,10 +695,10 @@ impl CliAdapter for OpenCodeAdapter {
                 }
             }
             let mut missing = Vec::new();
-            if metadata.protocol.is_none() {
+            if metadata.protocol.is_none() && !metadata.model_routed {
                 missing.push("a supported npm package or provider relation");
             }
-            if metadata.endpoint.is_none() {
+            if metadata.endpoint.is_none() && !metadata.model_routed {
                 missing.push("options.baseURL or a default endpoint relation");
             }
             if models.is_empty() {
@@ -580,8 +711,34 @@ impl CliAdapter for OpenCodeAdapter {
                 ));
                 continue;
             }
-            let protocol = metadata.protocol.expect("checked above");
-            let endpoint = match Url::parse(metadata.endpoint.as_deref().expect("checked above")) {
+            let fallback_endpoint = metadata
+                .template_id
+                .as_deref()
+                .and_then(|id| catalog.api_template(id))
+                .and_then(|template| template.endpoints.first());
+            let protocol = metadata
+                .protocol
+                .or_else(|| fallback_endpoint.map(|endpoint| endpoint.protocol));
+            let endpoint_url = metadata
+                .endpoint
+                .clone()
+                .or_else(|| fallback_endpoint.map(|endpoint| endpoint.base_url.to_string()));
+            let auth_type = metadata
+                .auth_type
+                .or_else(|| fallback_endpoint.and_then(|endpoint| endpoint.default_auth_type()));
+            let Some(protocol) = protocol else {
+                diagnostics.push(format!(
+                    "OpenCode provider {auth_provider_id} has no supported protocol; choose a supported model or configure npm explicitly"
+                ));
+                continue;
+            };
+            let Some(endpoint_url) = endpoint_url else {
+                diagnostics.push(format!(
+                    "OpenCode provider {auth_provider_id} has no endpoint; configure options.baseURL"
+                ));
+                continue;
+            };
+            let endpoint = match Url::parse(&endpoint_url) {
                 Ok(endpoint) => endpoint,
                 Err(error) => {
                     diagnostics.push(format!(
@@ -592,11 +749,34 @@ impl CliAdapter for OpenCodeAdapter {
             };
             let auth_type = recognize_anthropic_endpoint(&endpoint)
                 .map(|_| classify_credential(key).auth_type())
-                .or(metadata.auth_type)
+                .or(auth_type)
                 .unwrap_or_else(|| default_auth_type(protocol));
+            let selected_model = selection
+                .as_ref()
+                .filter(|selection| selection.provider_id == *auth_provider_id)
+                .map(|selection| selection.model_id.as_str());
+            let selected_model_is_supported = metadata
+                .template_id
+                .as_deref()
+                .zip(selected_model)
+                .map(|(template_id, model)| {
+                    model_routed_model_is_supported(template_id, model).unwrap_or(false)
+                })
+                .unwrap_or(false);
+            let default_model = if metadata.model_routed {
+                selected_model
+                    .filter(|_| selected_model_is_supported)
+                    .map(str::to_string)
+            } else {
+                models.first().cloned()
+            };
             let connection = ProviderConnection {
                 id: Uuid::new_v4(),
-                template_endpoint_id: metadata.template_endpoint_id.clone(),
+                template_endpoint_id: if metadata.model_routed && !selected_model_is_supported {
+                    None
+                } else {
+                    metadata.template_endpoint_id.clone()
+                },
                 credential_slot_id: metadata
                     .credential_slot_id
                     .clone()
@@ -605,10 +785,12 @@ impl CliAdapter for OpenCodeAdapter {
                 endpoint,
                 auth_type,
                 api_key: key.to_string(),
-                default_model: models[0].clone(),
+                default_model: default_model.clone().unwrap_or_default(),
                 verification: VerificationInfo::default(),
             };
-            if let Err(error) = connection.validate() {
+            if !metadata.model_routed
+                && let Err(error) = connection.validate()
+            {
                 diagnostics.push(format!(
                     "OpenCode provider {auth_provider_id} cannot be saved: {error}"
                 ));
@@ -620,7 +802,9 @@ impl CliAdapter for OpenCodeAdapter {
                 template_id: metadata.template_id,
                 connection,
                 available_models: models,
+                default_model,
                 is_current: provider_id.as_deref() == Some(auth_provider_id),
+                model_routed: metadata.model_routed,
             });
         }
         let mut sources = vec![
@@ -679,6 +863,28 @@ impl CliAdapter for OpenCodeAdapter {
             .find(|connection| connection.id == connection_id)
             .ok_or_else(|| AppError::Validation("connection does not exist".into()))?;
         let catalog = embedded_catalog()?;
+        if let (Some(template_id), Some(endpoint_id)) = (
+            provider.template_id.as_deref(),
+            connection.template_endpoint_id.as_deref(),
+        ) && catalog
+            .api_template(template_id)
+            .is_some_and(|template| template.model_routing)
+        {
+            let model = target.model().trim();
+            let routed_endpoint = catalog
+                .model_routed_endpoint(template_id, model)
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "model {model} has no route in provider template {template_id}"
+                    ))
+                })?;
+            if routed_endpoint.id != endpoint_id {
+                return Err(AppError::Validation(format!(
+                    "model {model} routes to endpoint {}, not {endpoint_id}",
+                    routed_endpoint.id
+                )));
+            }
+        }
         let relation_package = provider
             .template_id
             .as_deref()

@@ -102,8 +102,12 @@ pub struct ApiProviderTemplate {
     pub id: String,
     pub name: String,
     pub category: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub model_routing: bool,
     pub credential_slots: Vec<CredentialSlotTemplate>,
     pub endpoints: Vec<ProviderEndpointTemplate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unsupported_models: Vec<UnsupportedProviderModelTemplate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +171,14 @@ pub struct ProviderModelTemplate {
     pub default: bool,
     pub context: Option<u64>,
     pub output: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsupportedProviderModelTemplate {
+    pub id: String,
+    pub name: String,
+    pub provider_package: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,6 +384,38 @@ impl ProviderCatalog {
             }
             _ => None,
         })
+    }
+
+    pub fn model_routed_endpoint(
+        &self,
+        template_id: &str,
+        model_id: &str,
+    ) -> Option<&ProviderEndpointTemplate> {
+        let template = self.api_template(template_id)?;
+        if !template.model_routing {
+            return None;
+        }
+        let mut matches = template
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.models.iter().any(|model| model.id == model_id));
+        let endpoint = matches.next()?;
+        if matches.next().is_some() {
+            None
+        } else {
+            Some(endpoint)
+        }
+    }
+
+    pub fn unsupported_model(
+        &self,
+        template_id: &str,
+        model_id: &str,
+    ) -> Option<&UnsupportedProviderModelTemplate> {
+        self.api_template(template_id)?
+            .unsupported_models
+            .iter()
+            .find(|model| model.id == model_id)
     }
 
     pub fn protocol_package(&self, cli_id: CliId, protocol: CliProtocol) -> Option<&str> {
@@ -645,6 +689,7 @@ fn validate_api_template(template: &ApiProviderTemplate) -> AppResult<()> {
         .map(|slot| slot.id.as_str())
         .collect::<HashSet<_>>();
     let mut endpoint_ids = HashSet::new();
+    let mut supported_model_ids = HashSet::new();
     for endpoint in &template.endpoints {
         ensure_identifier("endpoint", &endpoint.id)?;
         ensure_nonempty("endpoint name", &endpoint.name)?;
@@ -702,7 +747,42 @@ fn validate_api_template(template: &ApiProviderTemplate) -> AppResult<()> {
                     template.id, endpoint.id
                 ));
             }
+            if template.model_routing && !supported_model_ids.insert(model.id.as_str()) {
+                return invalid(format!(
+                    "model-routed template {} repeats model {} across endpoints",
+                    template.id, model.id
+                ));
+            }
         }
+    }
+    let mut unsupported_model_ids = HashSet::new();
+    for model in &template.unsupported_models {
+        ensure_nonempty("unsupported model ID", &model.id)?;
+        ensure_nonempty("unsupported model name", &model.name)?;
+        ensure_nonempty("unsupported model package", &model.provider_package)?;
+        if !unsupported_model_ids.insert(model.id.as_str()) {
+            return invalid(format!(
+                "template {} repeats unsupported model {}",
+                template.id, model.id
+            ));
+        }
+        if supported_model_ids.contains(model.id.as_str()) {
+            return invalid(format!(
+                "template {} marks supported model {} as unsupported",
+                template.id, model.id
+            ));
+        }
+    }
+    if template.model_routing
+        && template
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.models.is_empty())
+    {
+        return invalid(format!(
+            "model-routed template {} has an endpoint without model routes",
+            template.id
+        ));
     }
     Ok(())
 }
@@ -754,6 +834,10 @@ fn ensure_nonempty(kind: &str, value: &str) -> AppResult<()> {
         return invalid(format!("{kind} must not be empty"));
     }
     Ok(())
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn invalid<T>(message: String) -> AppResult<T> {
@@ -855,6 +939,66 @@ mod tests {
     }
 
     #[test]
+    fn opencode_zen_and_go_route_models_to_documented_transports() {
+        let catalog = ProviderCatalog::load_embedded().unwrap();
+        for (template_id, native_id, base_url) in [
+            ("opencode-zen", "opencode", "https://opencode.ai/zen/v1"),
+            (
+                "opencode-go",
+                "opencode-go",
+                "https://opencode.ai/zen/go/v1",
+            ),
+        ] {
+            let template = catalog.api_template(template_id).unwrap();
+            assert!(template.model_routing);
+            assert_eq!(template.credential_slots.len(), 1);
+            assert_eq!(template.endpoints.len(), 3);
+            assert!(
+                template
+                    .endpoints
+                    .iter()
+                    .all(|endpoint| endpoint.base_url.as_str() == base_url)
+            );
+            assert!(
+                catalog
+                    .native_api_relation(CliId::Opencode, native_id)
+                    .is_some()
+            );
+            assert_eq!(
+                catalog
+                    .native_api_relation(CliId::Opencode, native_id)
+                    .map(|relation| relation.endpoint_id.as_str()),
+                Some("chat")
+            );
+        }
+
+        assert_eq!(
+            catalog
+                .model_routed_endpoint("opencode-zen", "gpt-5.6-sol")
+                .map(|endpoint| endpoint.protocol),
+            Some(CliProtocol::OpenaiResponses)
+        );
+        assert_eq!(
+            catalog
+                .model_routed_endpoint("opencode-zen", "claude-opus-4-6")
+                .map(|endpoint| endpoint.protocol),
+            Some(CliProtocol::AnthropicMessages)
+        );
+        assert_eq!(
+            catalog
+                .model_routed_endpoint("opencode-go", "glm-5.3")
+                .map(|endpoint| endpoint.protocol),
+            Some(CliProtocol::OpenaiChat)
+        );
+        assert_eq!(
+            catalog
+                .unsupported_model("opencode-zen", "gemini-3.7-flash")
+                .map(|model| model.provider_package.as_str()),
+            Some("@ai-sdk/google")
+        );
+    }
+
+    #[test]
     fn claude_minimax_relations_separate_api_and_token_plan_transport() {
         let catalog = ProviderCatalog::load_embedded().unwrap();
         for (template_id, auth_type, base_url) in [
@@ -901,6 +1045,8 @@ mod tests {
             "openai",
             "anthropic",
             "openrouter",
+            "opencode",
+            "opencode-go",
             "zhipuai-coding-plan",
             "zai-coding-plan",
             "minimax-coding-plan",
