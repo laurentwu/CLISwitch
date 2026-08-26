@@ -383,6 +383,7 @@ export interface ApiCliProviderRelation {
   providerTemplateId: string;
   endpointId: string;
   authOptionId: string;
+  baseUrl?: string | null;
   providerPackage?: string | null;
   default: boolean;
   nativeProviderIds: string[];

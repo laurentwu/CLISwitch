@@ -7,7 +7,7 @@ application and exposed read-only to the frontend; user-edited provider instance
 - `provider-templates.jsonc`: API templates and auth templates. An API template owns credential
   slots; endpoints reference a slot and contain suggested (not exclusive) models.
 - `cli-provider-relations.jsonc`: explicit CLI-to-endpoint/auth-mode joins, including native
-  provider aliases and any relation-specific package.
+  provider aliases and any relation-specific package or Base URL override.
 
 Keep persisted IDs stable. To add a template, add its relations in the same change. A
 multi-endpoint relation may omit `default` on every endpoint when the user must choose explicitly;

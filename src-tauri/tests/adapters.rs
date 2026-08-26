@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use chrono::Utc;
 use cliswitch_lib::{
     adapters::{ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter},
+    catalog::embedded_catalog,
     domain::{
         ApiProviderData, CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType,
         ProviderConnection, ProviderData, ProviderProfile, VerificationInfo,
@@ -46,6 +47,48 @@ fn provider(protocol: CliProtocol) -> (ProviderProfile, Uuid) {
                     },
                     api_key: "fixture-new-key-not-real".into(),
                     default_model: "fixture-model".into(),
+                    verification: VerificationInfo::default(),
+                }],
+            }),
+        },
+        connection_id,
+    )
+}
+
+fn templated_provider(
+    template_id: &str,
+    api_key: &str,
+    auth_type: ConnectionAuthType,
+) -> (ProviderProfile, Uuid) {
+    let now = Utc::now();
+    let template = embedded_catalog()
+        .unwrap()
+        .api_template(template_id)
+        .unwrap();
+    let endpoint = template
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.id == "anthropic")
+        .unwrap();
+    let connection_id = Uuid::new_v4();
+    (
+        ProviderProfile {
+            id: Uuid::new_v4(),
+            name: template.name.clone(),
+            template_id: Some(template.id.clone()),
+            revision: 1,
+            created_at: now,
+            updated_at: now,
+            data: ProviderData::Api(ApiProviderData {
+                connections: vec![ProviderConnection {
+                    id: connection_id,
+                    template_endpoint_id: Some(endpoint.id.clone()),
+                    credential_slot_id: endpoint.credential_slot_id.clone(),
+                    protocol: endpoint.protocol,
+                    endpoint: endpoint.base_url.clone(),
+                    auth_type,
+                    api_key: api_key.into(),
+                    default_model: "MiniMax-M2.7".into(),
                     verification: VerificationInfo::default(),
                 }],
             }),
@@ -110,6 +153,190 @@ async fn claude_explicit_api_settings_take_priority_over_a_stale_oauth_file() {
         current.current.protocol,
         Some(CliProtocol::AnthropicMessages)
     );
+}
+
+#[tokio::test]
+async fn claude_recognizes_minimax_region_and_credential_kind_from_endpoint_and_key() {
+    for (base_url, key_field, key, template_id, expected_auth_type, canonical_url) in [
+        (
+            "https://api.minimax.io/anthropic",
+            "ANTHROPIC_API_KEY",
+            "sk-cp-global-fixture",
+            "minimax-coding-plan",
+            ConnectionAuthType::Bearer,
+            "https://api.minimax.io/anthropic/v1",
+        ),
+        (
+            "https://api.minimaxi.com/anthropic/v1/",
+            "ANTHROPIC_AUTH_TOKEN",
+            "sk-api-china-fixture",
+            "minimax-cn-api",
+            ConnectionAuthType::ApiKey,
+            "https://api.minimaxi.com/anthropic/v1",
+        ),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = ClaudeCodeAdapter;
+        let host = environment(temp.path());
+        let paths = adapter.resolve_paths(&host, None);
+        write_fixture(
+            &paths.config_file,
+            &format!(
+                r#"{{
+                  "env": {{
+                    "ANTHROPIC_BASE_URL": "{base_url}",
+                    "{key_field}": "{key}"
+                  }},
+                  "model": "MiniMax-M2.7"
+                }}"#,
+            ),
+        )
+        .await;
+
+        let current = adapter.read_current(&paths, &host).await.unwrap();
+        assert_eq!(current.unmanaged_api_candidates.len(), 1);
+        let candidate = &current.unmanaged_api_candidates[0];
+        assert_eq!(candidate.template_id.as_deref(), Some(template_id));
+        assert_eq!(
+            candidate.connection.template_endpoint_id.as_deref(),
+            Some("anthropic")
+        );
+        assert_eq!(candidate.connection.auth_type, expected_auth_type);
+        assert_eq!(candidate.connection.endpoint.as_str(), canonical_url);
+        assert_eq!(
+            current.current.provider_name.as_deref(),
+            embedded_catalog()
+                .unwrap()
+                .api_template(template_id)
+                .map(|template| template.name.as_str())
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_rejects_ambiguous_api_key_and_auth_token_settings() {
+    let temp = TempDir::new().unwrap();
+    let adapter = ClaudeCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "env": {
+            "ANTHROPIC_BASE_URL": "https://api.minimax.io/anthropic",
+            "ANTHROPIC_API_KEY": "sk-api-fixture",
+            "ANTHROPIC_AUTH_TOKEN": "sk-cp-fixture"
+          },
+          "model": "MiniMax-M2.7"
+        }"#,
+    )
+    .await;
+
+    let error = adapter.read_current(&paths, &host).await.unwrap_err();
+    assert!(matches!(
+        error,
+        cliswitch_lib::error::AppError::Unsupported(_)
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("both ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN")
+    );
+}
+
+#[tokio::test]
+async fn claude_rejects_ambiguous_process_credential_overrides() {
+    let temp = TempDir::new().unwrap();
+    let adapter = ClaudeCodeAdapter;
+    let mut host = environment(temp.path());
+    host.present_variables.insert("ANTHROPIC_API_KEY".into());
+    host.present_variables.insert("ANTHROPIC_AUTH_TOKEN".into());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(&paths.config_file, "{}\n").await;
+
+    let error = adapter.read_current(&paths, &host).await.unwrap_err();
+    assert!(matches!(
+        error,
+        cliswitch_lib::error::AppError::Unsupported(_)
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("process environment contains both")
+    );
+}
+
+#[tokio::test]
+async fn claude_uses_relation_specific_minimax_base_url_and_auth_variable() {
+    for (template_id, key, stored_auth_type, expected_base_url, expected_field, removed_field) in [
+        (
+            "minimax-coding-plan",
+            "sk-cp-fixture",
+            ConnectionAuthType::ApiKey,
+            "https://api.minimax.io/anthropic",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+        ),
+        (
+            "minimax-api",
+            "sk-api-fixture",
+            ConnectionAuthType::Bearer,
+            "https://api.minimax.io/anthropic",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+        ),
+        (
+            "minimax-cn-coding-plan",
+            "sk-cp-china-fixture",
+            ConnectionAuthType::ApiKey,
+            "https://api.minimaxi.com/anthropic",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+        ),
+        (
+            "minimax-cn-api",
+            "sk-api-china-fixture",
+            ConnectionAuthType::Bearer,
+            "https://api.minimaxi.com/anthropic",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+        ),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = ClaudeCodeAdapter;
+        let paths = adapter.resolve_paths(&environment(temp.path()), None);
+        write_fixture(
+            &paths.config_file,
+            r#"{
+              "env": {
+                "ANTHROPIC_BASE_URL": "https://stale.invalid/v1",
+                "ANTHROPIC_API_KEY": "stale-api-key",
+                "ANTHROPIC_AUTH_TOKEN": "stale-auth-token",
+                "KEEP_ME": "yes"
+              },
+              "model": "stale-model"
+            }"#,
+        )
+        .await;
+        let (provider, connection_id) = templated_provider(template_id, key, stored_auth_type);
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::ClaudeCode,
+            provider_id: provider.id,
+            connection_id,
+            model: "MiniMax-M2.7".into(),
+        };
+
+        let plan = adapter
+            .plan_write(&paths, &target, &provider)
+            .await
+            .unwrap();
+        let output = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
+        assert!(output.contains(expected_base_url));
+        assert!(!output.contains(&format!("{expected_base_url}/v1")));
+        assert!(output.contains(&format!(r#""{expected_field}": "{key}""#)));
+        assert!(!output.contains(&format!(r#""{removed_field}""#)));
+        assert!(output.contains(r#""KEEP_ME": "yes""#));
+    }
 }
 
 #[tokio::test]
