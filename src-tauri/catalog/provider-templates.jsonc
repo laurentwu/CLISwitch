@@ -135,9 +135,9 @@
     },
     {
       "mode": "api",
-      "id": "minimax-coding-plan",
-      "name": "MiniMax Token Plan (minimax.io)",
-      "category": "coding-plan",
+      "id": "minimax-api",
+      "name": "MiniMax API (minimax.io)",
+      "category": "api",
       "credentialSlots": [{ "id": "api-key", "name": "API Key" }],
       "endpoints": [
         {
@@ -154,9 +154,9 @@
     },
     {
       "mode": "api",
-      "id": "minimax-cn-coding-plan",
-      "name": "MiniMax Token Plan (minimaxi.com)",
-      "category": "coding-plan",
+      "id": "minimax-cn-api",
+      "name": "MiniMax API (minimaxi.com)",
+      "category": "api",
       "credentialSlots": [{ "id": "api-key", "name": "API Key" }],
       "endpoints": [
         {
@@ -167,6 +167,50 @@
           "credentialSlotId": "api-key",
           "authOptions": [{ "id": "api-key", "authType": "api-key" }],
           "defaultAuthOptionId": "api-key",
+          "models": [],
+        },
+      ],
+    },
+    {
+      "mode": "api",
+      "id": "minimax-coding-plan",
+      "name": "MiniMax Token Plan (minimax.io)",
+      "category": "coding-plan",
+      "credentialSlots": [{ "id": "api-key", "name": "Token Plan Key" }],
+      "endpoints": [
+        {
+          "id": "anthropic",
+          "name": "Anthropic Messages",
+          "protocol": "anthropic-messages",
+          "baseUrl": "https://api.minimax.io/anthropic/v1",
+          "credentialSlotId": "api-key",
+          "authOptions": [
+            { "id": "api-key", "authType": "api-key" },
+            { "id": "bearer", "authType": "bearer" },
+          ],
+          "defaultAuthOptionId": "bearer",
+          "models": [],
+        },
+      ],
+    },
+    {
+      "mode": "api",
+      "id": "minimax-cn-coding-plan",
+      "name": "MiniMax Token Plan (minimaxi.com)",
+      "category": "coding-plan",
+      "credentialSlots": [{ "id": "api-key", "name": "Token Plan Key" }],
+      "endpoints": [
+        {
+          "id": "anthropic",
+          "name": "Anthropic Messages",
+          "protocol": "anthropic-messages",
+          "baseUrl": "https://api.minimaxi.com/anthropic/v1",
+          "credentialSlotId": "api-key",
+          "authOptions": [
+            { "id": "api-key", "authType": "api-key" },
+            { "id": "bearer", "authType": "bearer" },
+          ],
+          "defaultAuthOptionId": "bearer",
           "models": [],
         },
       ],

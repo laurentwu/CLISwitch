@@ -18,6 +18,7 @@ use crate::{
     persistence::repository::Repository,
     services::{
         discovery::discover_executable,
+        minimax::normalize_provider_credential_kind,
         oauth::{OAuthService, read_oauth_auth_file},
         redaction::Redactor,
     },
@@ -532,7 +533,7 @@ impl CliManager {
                     }
                 };
                 let now = Utc::now();
-                let provider = ProviderProfile {
+                let mut provider = ProviderProfile {
                     id: Uuid::new_v4(),
                     name,
                     template_id: template_id.clone(),
@@ -541,6 +542,7 @@ impl CliManager {
                     updated_at: now,
                     data: ProviderData::Api(ApiProviderData { connections }),
                 };
+                normalize_provider_credential_kind(&mut provider);
                 self.repository.insert_provider(&provider, None).await?;
                 provider
             }
@@ -1174,6 +1176,108 @@ mod tests {
                 .iter()
                 .any(|message| message
                     .contains("OAuth providers are recognized but cannot be saved"))
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_minimax_token_plan_save_and_apply_reconcile_on_rescan() {
+        let fixture = opencode_scan_fixture().await;
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({
+                "model": "minimax-coding-plan/MiniMax-M2.7",
+                "provider": {
+                    "minimax-coding-plan": {
+                        "npm": "@ai-sdk/anthropic",
+                        "name": "MiniMax Token Plan",
+                        "options": { "baseURL": "https://api.minimax.io/anthropic/v1" },
+                        "models": { "MiniMax-M2.7": {} }
+                    }
+                }
+            }),
+        )
+        .await;
+        write_json_fixture(
+            &fixture.auth_file,
+            &serde_json::json!({
+                "minimax-coding-plan": {
+                    "type": "api",
+                    "key": "sk-cp-opencode-fixture"
+                }
+            }),
+        )
+        .await;
+
+        let imported_scan = fixture.manager.scan(&fixture.settings).await;
+        let imported = opencode_item(&imported_scan);
+        assert_eq!(imported.status, ScanStatus::Unmanaged);
+        assert_eq!(imported.provider_candidates.len(), 1);
+        let candidate = &imported.provider_candidates[0];
+        assert_eq!(
+            candidate.template_id.as_deref(),
+            Some("minimax-coding-plan")
+        );
+        assert_eq!(candidate.auth_type, Some(ConnectionAuthType::Bearer));
+
+        let saved = fixture
+            .manager
+            .save_unmanaged_candidate(
+                &fixture.oauth,
+                &fixture.settings,
+                UnmanagedCandidateSaveRequest {
+                    snapshot_id: imported_scan.id,
+                    candidate_id: candidate.id,
+                    name: "Saved MiniMax Token Plan".into(),
+                    default_model: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.template_id.as_deref(), Some("minimax-coding-plan"));
+        let ProviderData::Api(saved_api) = &saved.data else {
+            panic!("MiniMax candidate should save as an API provider");
+        };
+        assert_eq!(
+            saved_api.connections[0].auth_type,
+            ConnectionAuthType::Bearer
+        );
+
+        let namespaced_id = format!("cliswitch_{}", saved.id);
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({
+                "model": format!("{namespaced_id}/MiniMax-M2.7"),
+                "provider": {
+                    (namespaced_id.clone()): {
+                        "npm": "@ai-sdk/anthropic",
+                        "name": "Saved MiniMax Token Plan",
+                        "options": { "baseURL": "https://api.minimax.io/anthropic/v1" },
+                        "models": { "MiniMax-M2.7": {} }
+                    }
+                }
+            }),
+        )
+        .await;
+        write_json_fixture(
+            &fixture.auth_file,
+            &serde_json::json!({
+                (namespaced_id): {
+                    "type": "api",
+                    "key": "sk-cp-opencode-fixture"
+                }
+            }),
+        )
+        .await;
+
+        let applied_scan = fixture.manager.scan(&fixture.settings).await;
+        let applied = opencode_item(&applied_scan);
+        assert_eq!(applied.status, ScanStatus::Detected);
+        assert!(applied.provider_candidates.is_empty());
+        let current = applied.current.as_ref().unwrap();
+        assert_eq!(current.managed_provider_id, Some(saved.id));
+        assert_eq!(
+            current.provider_name.as_deref(),
+            Some("Saved MiniMax Token Plan")
         );
     }
 

@@ -19,7 +19,10 @@ use crate::{
     },
     error::{AppError, AppResult},
     filesystem::digest::{bytes_digest, file_digest},
-    services::config_writer::{JsonPatch, parse_jsonc_value, patch_jsonc},
+    services::{
+        config_writer::{JsonPatch, parse_jsonc_value, patch_jsonc},
+        minimax::{classify_credential, recognize_anthropic_endpoint},
+    },
 };
 
 #[derive(Debug, Default)]
@@ -587,6 +590,10 @@ impl CliAdapter for OpenCodeAdapter {
                     continue;
                 }
             };
+            let auth_type = recognize_anthropic_endpoint(&endpoint)
+                .map(|_| classify_credential(key).auth_type())
+                .or(metadata.auth_type)
+                .unwrap_or_else(|| default_auth_type(protocol));
             let connection = ProviderConnection {
                 id: Uuid::new_v4(),
                 template_endpoint_id: metadata.template_endpoint_id.clone(),
@@ -596,9 +603,7 @@ impl CliAdapter for OpenCodeAdapter {
                     .unwrap_or_else(|| "api-key".into()),
                 protocol,
                 endpoint,
-                auth_type: metadata
-                    .auth_type
-                    .unwrap_or_else(|| default_auth_type(protocol)),
+                auth_type,
                 api_key: key.to_string(),
                 default_model: models[0].clone(),
                 verification: VerificationInfo::default(),

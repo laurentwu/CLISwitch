@@ -10,6 +10,7 @@ use crate::{
         AdapterApiCandidate, AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan,
         CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, read_optional,
     },
+    catalog::embedded_catalog,
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
         OAuthKind, ProviderConnection, ProviderData, ProviderProfile, SourceFileSnapshot,
@@ -17,7 +18,12 @@ use crate::{
     },
     error::{AppError, AppResult},
     filesystem::digest::{bytes_digest, file_digest},
-    services::config_writer::{JsonPatch, parse_jsonc_value, patch_jsonc},
+    services::{
+        config_writer::{JsonPatch, parse_jsonc_value, patch_jsonc},
+        minimax::{
+            ANTHROPIC_ENDPOINT_ID, classify_credential, recognize_anthropic_endpoint, template_id,
+        },
+    },
 };
 
 #[derive(Debug, Default)]
@@ -76,11 +82,27 @@ impl CliAdapter for ClaudeCodeAdapter {
             .map(str::to_string);
         let api_key = env
             .and_then(|env| env.get("ANTHROPIC_API_KEY")?.as_str())
-            .map(|value| (ConnectionAuthType::ApiKey, value.to_string()))
-            .or_else(|| {
-                env.and_then(|env| env.get("ANTHROPIC_AUTH_TOKEN")?.as_str())
-                    .map(|value| (ConnectionAuthType::Bearer, value.to_string()))
-            });
+            .map(str::to_string);
+        let auth_token = env
+            .and_then(|env| env.get("ANTHROPIC_AUTH_TOKEN")?.as_str())
+            .map(str::to_string);
+        if api_key.is_some() && auth_token.is_some() {
+            return Err(AppError::Unsupported(
+                "Claude settings contain both ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN; remove one credential before importing"
+                    .into(),
+            ));
+        }
+        if environment.is_present("ANTHROPIC_API_KEY")
+            && environment.is_present("ANTHROPIC_AUTH_TOKEN")
+        {
+            return Err(AppError::Unsupported(
+                "The process environment contains both ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN; remove one credential override before scanning"
+                    .into(),
+            ));
+        }
+        let credential = api_key
+            .map(|value| (ConnectionAuthType::ApiKey, value))
+            .or_else(|| auth_token.map(|value| (ConnectionAuthType::Bearer, value)));
         let oauth_token = env
             .and_then(|env| env.get("CLAUDE_CODE_OAUTH_TOKEN")?.as_str())
             .map(str::to_string);
@@ -98,23 +120,73 @@ impl CliAdapter for ClaudeCodeAdapter {
         ]
         .iter()
         .any(|key| environment.is_present(key));
-        let candidate = match (&endpoint, &api_key, &model) {
-            (Some(endpoint), Some((auth_type, key)), Some(model)) => Some(ProviderConnection {
-                id: Uuid::new_v4(),
-                template_endpoint_id: None,
-                credential_slot_id: "api-key".into(),
-                protocol: CliProtocol::AnthropicMessages,
-                endpoint: Url::parse(endpoint)?,
-                auth_type: *auth_type,
-                api_key: key.clone(),
-                default_model: model.clone(),
-                verification: VerificationInfo::default(),
-            }),
+        let mut recognized_provider_name = None;
+        let candidate = match (&endpoint, &credential, &model) {
+            (Some(endpoint), Some((configured_auth_type, key)), Some(model)) => {
+                let parsed_endpoint = Url::parse(endpoint)?;
+                if let Some(region) = recognize_anthropic_endpoint(&parsed_endpoint) {
+                    let credential_kind = classify_credential(key);
+                    let template_id = template_id(region, credential_kind);
+                    let catalog = embedded_catalog()?;
+                    let template = catalog.api_template(template_id).ok_or_else(|| {
+                        AppError::Serialization(format!(
+                            "MiniMax provider template {template_id} is unavailable"
+                        ))
+                    })?;
+                    let template_endpoint = template
+                        .endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.id == ANTHROPIC_ENDPOINT_ID)
+                        .ok_or_else(|| {
+                            AppError::Serialization(format!(
+                                "MiniMax provider template {template_id} has no Anthropic endpoint"
+                            ))
+                        })?;
+                    recognized_provider_name = Some(template.name.clone());
+                    Some(AdapterApiCandidate {
+                        source_provider_id: template_id.into(),
+                        suggested_name: template.name.clone(),
+                        template_id: Some(template_id.into()),
+                        available_models: vec![model.clone()],
+                        is_current: true,
+                        connection: ProviderConnection {
+                            id: Uuid::new_v4(),
+                            template_endpoint_id: Some(ANTHROPIC_ENDPOINT_ID.into()),
+                            credential_slot_id: template_endpoint.credential_slot_id.clone(),
+                            protocol: CliProtocol::AnthropicMessages,
+                            endpoint: template_endpoint.base_url.clone(),
+                            auth_type: credential_kind.auth_type(),
+                            api_key: key.clone(),
+                            default_model: model.clone(),
+                            verification: VerificationInfo::default(),
+                        },
+                    })
+                } else {
+                    Some(AdapterApiCandidate {
+                        source_provider_id: "claude-code".into(),
+                        suggested_name: "Claude Code API".into(),
+                        template_id: None,
+                        available_models: vec![model.clone()],
+                        is_current: true,
+                        connection: ProviderConnection {
+                            id: Uuid::new_v4(),
+                            template_endpoint_id: None,
+                            credential_slot_id: "api-key".into(),
+                            protocol: CliProtocol::AnthropicMessages,
+                            endpoint: parsed_endpoint,
+                            auth_type: *configured_auth_type,
+                            api_key: key.clone(),
+                            default_model: model.clone(),
+                            verification: VerificationInfo::default(),
+                        },
+                    })
+                }
+            }
             _ => None,
         };
         let auth_kind = if oauth_token.is_some() {
             Some("oauth".into())
-        } else if api_key.is_some() {
+        } else if credential.is_some() {
             Some("api".into())
         } else if auth_file_exists {
             Some("oauth".into())
@@ -135,20 +207,10 @@ impl CliAdapter for ClaudeCodeAdapter {
                 digest: file_digest(auth_file).await?,
             });
         }
-        let unmanaged_api_candidates = candidate
-            .into_iter()
-            .map(|connection| AdapterApiCandidate {
-                source_provider_id: "claude-code".into(),
-                suggested_name: "Claude Code API".into(),
-                template_id: None,
-                available_models: vec![connection.default_model.clone()],
-                is_current: true,
-                connection,
-            })
-            .collect();
+        let unmanaged_api_candidates = candidate.into_iter().collect();
         Ok(AdapterReadResult {
             current: CurrentCliConfiguration {
-                provider_name: endpoint.clone(),
+                provider_name: recognized_provider_name.or_else(|| endpoint.clone()),
                 protocol: endpoint.as_ref().map(|_| CliProtocol::AnthropicMessages),
                 auth_kind,
                 model,
@@ -191,10 +253,41 @@ impl CliAdapter for ClaudeCodeAdapter {
                         "Claude Code only accepts Anthropic Messages".into(),
                     ));
                 }
+                let (effective_endpoint, effective_auth_type) = match (
+                    provider.template_id.as_deref(),
+                    connection.template_endpoint_id.as_deref(),
+                ) {
+                    (Some(template_id), Some(endpoint_id)) => {
+                        let catalog = embedded_catalog()?;
+                        let relation = catalog
+                            .api_relation(CliId::ClaudeCode, template_id, endpoint_id)
+                            .ok_or_else(|| {
+                                AppError::Validation(format!(
+                                    "Claude Code has no relation for template {template_id} endpoint {endpoint_id}"
+                                ))
+                            })?;
+                        let auth_type = catalog.relation_auth_type(relation).ok_or_else(|| {
+                            AppError::Serialization(format!(
+                                "Claude Code relation {} has no valid auth option",
+                                relation.id
+                            ))
+                        })?;
+                        (
+                            relation.base_url.as_ref().unwrap_or(&connection.endpoint),
+                            auth_type,
+                        )
+                    }
+                    (None, None) => (&connection.endpoint, connection.auth_type),
+                    _ => {
+                        return Err(AppError::Validation(
+                            "Claude provider template identity is incomplete".into(),
+                        ));
+                    }
+                };
                 patches.extend([
                     JsonPatch::SetString {
                         path: vec!["env".into(), "ANTHROPIC_BASE_URL".into()],
-                        value: connection.endpoint.to_string(),
+                        value: effective_endpoint.to_string(),
                     },
                     JsonPatch::Remove {
                         path: vec!["env".into(), "ANTHROPIC_MODEL".into()],
@@ -203,7 +296,7 @@ impl CliAdapter for ClaudeCodeAdapter {
                         path: vec!["env".into(), "CLAUDE_CODE_OAUTH_TOKEN".into()],
                     },
                 ]);
-                match connection.auth_type {
+                match effective_auth_type {
                     ConnectionAuthType::ApiKey => {
                         patches.push(JsonPatch::SetString {
                             path: vec!["env".into(), "ANTHROPIC_API_KEY".into()],
