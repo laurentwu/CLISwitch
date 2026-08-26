@@ -134,8 +134,6 @@ export const en = {
         api: "Official APIs",
       },
       openBrowser: "Open verified login page",
-      typeApi: "Endpoint + key",
-      typeOauth: "OAuth",
       name: "Name",
       template: "Provider template",
       chooseTemplate: "Choose a template",

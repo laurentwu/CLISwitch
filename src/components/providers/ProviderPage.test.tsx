@@ -91,6 +91,61 @@ describe("ProviderPage", () => {
     useUiStore.setState({ dirty: false, saveCurrent: undefined });
   });
 
+  it("shows template names as subtitles while retaining icons and reference counts", () => {
+    const providers: PublicProvider[] = [
+      {
+        id: "api-provider",
+        name: "OpenAI account",
+        kind: "api",
+        templateName: "OpenAI",
+        connections: [],
+        referencedBy: ["Work", "Review"],
+        revision: 1,
+        updatedAt: "2026-08-25T00:00:00Z",
+      },
+      {
+        id: "oauth-provider",
+        name: "Claude login",
+        kind: "oauth",
+        templateName: "Anthropic Account",
+        connections: [],
+        referencedBy: ["Personal"],
+        revision: 1,
+        updatedAt: "2026-08-25T00:00:00Z",
+      },
+      {
+        id: "custom-provider",
+        name: "Local gateway",
+        kind: "api",
+        templateName: null,
+        connections: [],
+        referencedBy: [],
+        revision: 1,
+        updatedAt: "2026-08-25T00:00:00Z",
+      },
+    ];
+    renderPage({ ...snapshot, providers });
+
+    const list = screen.getByRole("complementary", { name: "供应商" });
+    const rows = within(list).getAllByRole("button");
+
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.querySelector("small")?.textContent)).toEqual([
+      "OpenAI",
+      "Anthropic Account",
+      "自定义供应商",
+    ]);
+    expect(rows.map((row) => row.querySelector(".badge")?.textContent)).toEqual(["2", "1", "0"]);
+    expect(rows.map((row) => row.querySelectorAll(".badge").length)).toEqual([1, 1, 1]);
+    expect(rows.map((row) => Boolean(row.querySelector(".provider-icon")))).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(list).not.toHaveTextContent("端点 + Key");
+    expect(list).not.toHaveTextContent("OAuth");
+  });
+
   it("opens an inline add editor with OAuth and API template groups", () => {
     renderPage();
 

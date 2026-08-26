@@ -191,11 +191,8 @@ export function ProviderPage({
               </span>
               <span className="provider-summary">
                 <strong>{provider.name}</strong>
-                <small>
-                  {provider.kind === "api" ? t("providers.typeApi") : t("providers.typeOauth")}
-                </small>
+                <small>{provider.templateName || t("providers.customTemplate")}</small>
               </span>
-              {provider.templateName ? <Badge>{provider.templateName}</Badge> : null}
               <Badge tone={provider.referencedBy.length ? "neutral" : "good"}>
                 {provider.referencedBy.length}
               </Badge>
