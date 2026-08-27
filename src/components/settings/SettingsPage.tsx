@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, FolderOpen, Save } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Database, ExternalLink, FolderOpen, RefreshCw, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
-import type { AppSettings, AppSnapshot, CliId } from "../../shared/types";
+import type { AppSettings, AppSnapshot, CatalogStatus, CliId } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { Alert, Button, Card, Field, Input, Select, type ErrorReporter } from "../ui";
 
@@ -31,7 +31,26 @@ export function SettingsPage({
   const setDirty = useUiStore((state) => state.setDirty);
   const setSaveCurrent = useUiStore((state) => state.setSaveCurrent);
   const [settings, setSettings] = useState(snapshot.settings);
-  const [updateMessage, setUpdateMessage] = useState<string>();
+  const [catalogMessage, setCatalogMessage] = useState<string>();
+  const [releaseMessage, setReleaseMessage] = useState<string>();
+  const catalogStatus = useQuery({
+    queryKey: ["catalog-status"],
+    queryFn: () => command<CatalogStatus>("get_catalog_status"),
+    retry: false,
+  });
+  const updateCatalog = useMutation({
+    mutationFn: () => command<CatalogStatus>("update_catalog"),
+    onSuccess: async (value) => {
+      setCatalogMessage(t("settings.catalogUpdated"));
+      queryClient.setQueryData(["catalog-status"], value);
+      await queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
+      await queryClient.invalidateQueries({ queryKey: ["providers"] });
+    },
+    onError: async (error) => {
+      onError(error, "catalogUpdate");
+      await catalogStatus.refetch();
+    },
+  });
   const save = useMutation({
     mutationFn: () =>
       command<AppSettings>("update_settings", { settings, expectedRevision: settings.revision }),
@@ -86,7 +105,7 @@ export function SettingsPage({
       const value = await command<{ updateAvailable: boolean; latestVersion: string }>(
         "check_github_release",
       );
-      setUpdateMessage(value.updateAvailable ? `v${value.latestVersion}` : t("settings.upToDate"));
+      setReleaseMessage(value.updateAvailable ? `v${value.latestVersion}` : t("settings.upToDate"));
     } catch (error) {
       onError(error, "updateCheck");
     }
@@ -201,6 +220,50 @@ export function SettingsPage({
         <div className="card-title-row">
           <div>
             <h2>
+              <Database size={18} /> {t("settings.catalogTitle")}
+            </h2>
+            <p>{t("settings.catalogHint")}</p>
+          </div>
+          <Button
+            variant="secondary"
+            disabled={updateCatalog.isPending}
+            onClick={() => updateCatalog.mutate()}
+          >
+            <RefreshCw size={15} />
+            {updateCatalog.isPending ? t("settings.catalogUpdating") : t("settings.catalogUpdate")}
+          </Button>
+        </div>
+        {catalogStatus.isPending ? <p>{t("common.loading")}</p> : null}
+        {catalogStatus.isError ? (
+          <Alert tone="warning" title={t("settings.catalogStatusUnavailable")} />
+        ) : null}
+        {catalogStatus.data ? (
+          <div className="catalog-status-grid">
+            <span>
+              {t("settings.catalogSource")}:{" "}
+              {t(`settings.catalogSource_${catalogStatus.data.source}`)}
+            </span>
+            <span>
+              {t("settings.catalogCounts", {
+                providers: catalogStatus.data.providerCount,
+                models: catalogStatus.data.modelCount,
+              })}
+            </span>
+            <span>
+              {t("settings.catalogUpdatedAt")}: {catalogStatus.data.fetchedAt ?? t("common.none")}
+            </span>
+            <span className="path-text">{catalogStatus.data.cachePath}</span>
+          </div>
+        ) : null}
+        {catalogStatus.data?.lastError ? (
+          <Alert tone="warning" title={catalogStatus.data.lastError} />
+        ) : null}
+        {catalogMessage ? <Alert tone="info" title={catalogMessage} announce /> : null}
+      </Card>
+      <Card>
+        <div className="card-title-row">
+          <div>
+            <h2>
               {t("settings.version")}: {snapshot.appVersion}
             </h2>
             <p>
@@ -212,7 +275,7 @@ export function SettingsPage({
             <ExternalLink size={15} /> {t("settings.checkUpdate")}
           </Button>
         </div>
-        {updateMessage ? <Alert tone="info" title={updateMessage} announce /> : null}
+        {releaseMessage ? <Alert tone="info" title={releaseMessage} announce /> : null}
       </Card>
     </div>
   );

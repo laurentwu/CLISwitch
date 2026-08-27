@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, LogIn, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
+import { catalogProviderInfo } from "../../shared/catalog";
 import { uniqueCopyName } from "../../shared/names";
 import type {
   ApiProviderDraft,
@@ -191,7 +192,11 @@ export function ProviderPage({
               </span>
               <span className="provider-summary">
                 <strong>{provider.name}</strong>
-                <small>{provider.templateName || t("providers.customTemplate")}</small>
+                <small>
+                  {provider.templateId && catalogProviderInfo(snapshot.catalog, provider.templateId)
+                    ? `${catalogProviderInfo(snapshot.catalog, provider.templateId)?.name} (${provider.templateId})`
+                    : provider.templateName || t("providers.customTemplate")}
+                </small>
               </span>
               <Badge tone={provider.referencedBy.length ? "neutral" : "good"}>
                 {provider.referencedBy.length}

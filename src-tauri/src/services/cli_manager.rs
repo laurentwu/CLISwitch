@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     adapters::{ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter},
-    catalog::{ApiProviderTemplate, embedded_catalog},
+    catalog::{ApiProviderTemplate, legacy_catalog, runtime_catalog},
     domain::{
         ApiProviderData, AppSettings, CliId, CurrentCliConfiguration, DetectedCli,
         DetectedProviderCandidate, OAuthKind, ProviderData, ProviderProfile, ScanSnapshot,
@@ -554,11 +554,23 @@ impl CliManager {
                 } else {
                     connection.as_ref().clone()
                 };
+                let dynamic_template = template_id
+                    .as_deref()
+                    .map(|id| {
+                        runtime_catalog().map(|catalog| catalog.dynamic_provider_info(id).is_some())
+                    })
+                    .transpose()?
+                    .unwrap_or(false);
+                let legacy_template = template_id
+                    .as_deref()
+                    .map(|id| legacy_catalog().map(|catalog| catalog.api_template(id).is_some()))
+                    .transpose()?
+                    .unwrap_or(false);
                 let connections = match template_id.as_deref() {
-                    Some(template_id) => {
+                    Some(template_id) if legacy_template && !dynamic_template => {
                         materialize_template_connections(template_id, &detected, selected_model)?
                     }
-                    None => {
+                    Some(_) | None => {
                         let mut connection = detected;
                         connection.template_endpoint_id = None;
                         connection.default_model = selected_model.to_string();
@@ -649,7 +661,7 @@ fn route_model_routed_connection(
     detected: &crate::domain::ProviderConnection,
     selected_model: &str,
 ) -> AppResult<crate::domain::ProviderConnection> {
-    let catalog = embedded_catalog()?;
+    let catalog = legacy_catalog()?;
     let template = catalog
         .api_template(template_id)
         .ok_or_else(|| AppError::Validation(format!("unknown provider template {template_id}")))?;
@@ -691,7 +703,7 @@ fn materialize_template_connections(
     detected: &crate::domain::ProviderConnection,
     selected_model: &str,
 ) -> AppResult<Vec<crate::domain::ProviderConnection>> {
-    let template = embedded_catalog()?
+    let template = legacy_catalog()?
         .api_template(template_id)
         .ok_or_else(|| AppError::Validation(format!("unknown provider template {template_id}")))?;
     materialize_template_connections_from_template(template_id, template, detected, selected_model)
@@ -889,7 +901,7 @@ mod tests {
 
     #[test]
     fn template_import_rejects_an_endpoint_that_requires_another_credential_slot() {
-        let mut template = embedded_catalog()
+        let mut template = legacy_catalog()
             .unwrap()
             .api_template("glm-coding-plan")
             .unwrap()
@@ -1278,7 +1290,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opencode_model_routed_candidate_requires_and_persists_the_selected_model() {
+    async fn opencode_models_dev_candidate_uses_one_provider_level_transport() {
         let fixture = opencode_scan_fixture().await;
         write_json_fixture(&fixture.config_file, &serde_json::json!({})).await;
         write_json_fixture(
@@ -1296,10 +1308,22 @@ mod tests {
             .iter()
             .find(|candidate| candidate.source_provider_id == "opencode")
             .unwrap();
-        assert_eq!(candidate.template_id.as_deref(), Some("opencode-zen"));
-        assert_eq!(candidate.protocol, None);
-        assert_eq!(candidate.endpoint, None);
-        assert_eq!(candidate.default_model, None);
+        assert_eq!(candidate.template_id.as_deref(), Some("opencode"));
+        assert_eq!(candidate.protocol, Some(CliProtocol::OpenaiChat));
+        assert_eq!(
+            candidate
+                .endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.as_str()),
+            Some("https://opencode.ai/zen/v1")
+        );
+        assert!(candidate.default_model.is_some());
+        assert!(
+            candidate
+                .available_models
+                .iter()
+                .any(|model| model == "glm-5")
+        );
         let saved = fixture
             .manager
             .save_unmanaged_candidate(
@@ -1314,17 +1338,14 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(saved.template_id.as_deref(), Some("opencode-zen"));
+        assert_eq!(saved.template_id.as_deref(), Some("opencode"));
         let saved_id = saved.id;
         let ProviderData::Api(api) = &saved.data else {
             panic!("model-routed OpenCode candidate should save as an API provider");
         };
-        assert_eq!(api.connections.len(), 3);
-        let chat = api
-            .connections
-            .iter()
-            .find(|connection| connection.template_endpoint_id.as_deref() == Some("chat"))
-            .unwrap();
+        assert_eq!(api.connections.len(), 1);
+        let chat = &api.connections[0];
+        assert_eq!(chat.template_endpoint_id, None);
         assert_eq!(chat.protocol, CliProtocol::OpenaiChat);
         assert_eq!(chat.default_model, "glm-5");
         assert_eq!(chat.endpoint.as_str(), "https://opencode.ai/zen/v1");
@@ -1368,7 +1389,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opencode_model_routed_candidate_rejects_unsupported_and_unknown_models() {
+    async fn opencode_models_dev_candidate_exposes_unsupported_models_as_hints() {
         let fixture = opencode_scan_fixture().await;
         write_json_fixture(&fixture.config_file, &serde_json::json!({})).await;
         write_json_fixture(
@@ -1386,7 +1407,21 @@ mod tests {
             .find(|candidate| candidate.source_provider_id == "opencode")
             .unwrap()
             .id;
-        let unsupported = fixture
+        let candidate = opencode_item(&scan)
+            .provider_candidates
+            .iter()
+            .find(|candidate| candidate.id == candidate_id)
+            .unwrap();
+        assert!(
+            !candidate
+                .available_models
+                .iter()
+                .any(|model| model == "gemini-3.7-flash")
+        );
+        // Model-level overrides are compatibility hints, not routing rules. A user may still
+        // enter an ID supplied by a private gateway; the provider-level Chat transport remains
+        // stable and the saved model is preserved verbatim.
+        let saved = fixture
             .manager
             .save_unmanaged_candidate(
                 &fixture.oauth,
@@ -1394,29 +1429,17 @@ mod tests {
                 UnmanagedCandidateSaveRequest {
                     snapshot_id: scan.id,
                     candidate_id,
-                    name: "Unsupported OpenCode Zen model".into(),
-                    default_model: Some("gemini-3.7-flash".into()),
-                },
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(unsupported, AppError::Unsupported(_)));
-
-        let unknown = fixture
-            .manager
-            .save_unmanaged_candidate(
-                &fixture.oauth,
-                &fixture.settings,
-                UnmanagedCandidateSaveRequest {
-                    snapshot_id: scan.id,
-                    candidate_id,
-                    name: "Unknown OpenCode Zen model".into(),
+                    name: "OpenCode provider with custom model".into(),
                     default_model: Some("outside-catalog-model".into()),
                 },
             )
             .await
-            .unwrap_err();
-        assert!(matches!(unknown, AppError::Validation(_)));
+            .unwrap();
+        assert_eq!(saved.template_id.as_deref(), Some("opencode"));
+        let ProviderData::Api(api) = saved.data else {
+            panic!("models.dev candidate should save as an API provider");
+        };
+        assert_eq!(api.connections[0].default_model, "outside-catalog-model");
     }
 
     #[tokio::test]

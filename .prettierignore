@@ -5,3 +5,5 @@ src-tauri/Cargo.lock
 src-tauri/gen/
 src-tauri/target/
 dist/
+src-tauri/catalog/models.dev.json
+src-tauri/catalog/models.dev.meta.json

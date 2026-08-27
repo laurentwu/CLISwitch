@@ -32,6 +32,7 @@ export type ErrorOperation =
   | "oauth"
   | "open"
   | "updateCheck"
+  | "catalogUpdate"
   | "close"
   | "background";
 

@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    catalog::{ProviderCatalog, embedded_catalog},
+    catalog::{ProviderCatalog, install_runtime_catalog},
     domain::{
         AppSettings, ApplyRunSnapshot, ConfigurationMatchStatus, PublicProvider,
         SavedConfiguration, ScanSnapshot, calculate_configuration_match,
@@ -17,6 +17,7 @@ use crate::{
     services::{
         apply_coordinator::ApplyCoordinator,
         backup::BackupService,
+        catalog_cache::CatalogCacheService,
         cli_manager::{AdapterRegistry, CliManager},
         model_catalog::ModelCatalogService,
         oauth::OAuthService,
@@ -84,7 +85,7 @@ pub struct AppState {
     pub oauth: OAuthService,
     pub apply: ApplyCoordinator,
     pub models: ModelCatalogService,
-    pub catalog: ProviderCatalog,
+    pub catalog_cache: CatalogCacheService,
     pub redactor: Redactor,
     pub safe_to_exit: Arc<AtomicBool>,
     pub frontend_dirty: Arc<AtomicBool>,
@@ -93,9 +94,11 @@ pub struct AppState {
 
 impl AppState {
     pub async fn initialize(root: std::path::PathBuf) -> AppResult<Self> {
-        let catalog = embedded_catalog()?.clone();
         let paths = PrivatePaths::from_root(root);
         paths.ensure().await?;
+        let catalog_cache = CatalogCacheService::new(paths.root.clone())?;
+        let catalog = catalog_cache.catalog().await?;
+        install_runtime_catalog(catalog.clone());
         let log_guard = initialize_logging(&paths);
         let redactor = Redactor::default();
         let repository = Repository::open(&paths.database, redactor.clone()).await?;
@@ -134,7 +137,7 @@ impl AppState {
             oauth,
             apply,
             models: ModelCatalogService::new()?,
-            catalog,
+            catalog_cache,
             redactor,
             safe_to_exit: Arc::new(AtomicBool::new(false)),
             frontend_dirty: Arc::new(AtomicBool::new(false)),
@@ -143,7 +146,17 @@ impl AppState {
     }
 
     pub async fn snapshot(&self) -> AppResult<AppSnapshot> {
-        let providers = self.repository.list_providers().await?;
+        let catalog = self.catalog_cache.catalog().await?;
+        let mut providers = self.repository.list_providers().await?;
+        for provider in &mut providers {
+            if let Some(template_id) = provider.template_id.as_deref()
+                && let Some(info) = catalog.dynamic_provider_info(template_id)
+            {
+                provider.template_name = Some(info.name.clone());
+                provider.template_mode = Some("api".into());
+                provider.template_category = Some("models.dev".into());
+            }
+        }
         let configurations = self.repository.list_configurations().await?;
         let current = self.cli_manager.latest_snapshot().await;
         let mut profiles = Vec::with_capacity(providers.len());
@@ -170,7 +183,7 @@ impl AppState {
             app_data_directory: self.paths.root.clone(),
             backup_bytes: directory_size(&self.paths.backups).await?,
             app_version: env!("CARGO_PKG_VERSION").into(),
-            catalog: self.catalog.clone(),
+            catalog,
         })
     }
 }

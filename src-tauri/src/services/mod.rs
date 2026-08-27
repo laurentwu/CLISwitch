@@ -1,5 +1,6 @@
 pub mod apply_coordinator;
 pub mod backup;
+pub mod catalog_cache;
 pub mod cli_manager;
 pub mod config_writer;
 pub mod discovery;

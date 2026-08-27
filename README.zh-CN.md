@@ -12,8 +12,9 @@ CLISwitch 是一个基于 Tauri 2 的本地桌面应用，用于查看、保存�
 - 配置区以“当前配置 / 命名配置 / ＋”横向并排展示。
 - 支持自动发现，以及手工指定 CLI 可执行文件和配置目录。
 - 端点 + Key 供应商可配置 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 接入方式。
-- 支持 OpenCode Zen 与 OpenCode Go，并根据所选模型路由到对应端点。
-- 内置 JSONC 目录维护 Provider 模板以及 CLI 到模板端点/auth 模式的明确关系；用户只编辑自己保存的 Provider 实例。
+- Provider 与模型模板来自随软件内置的完整 [models.dev](https://models.dev) JSON 快照；应用使用私有本地缓存，并可在设置页手动更新。
+- 所有上游 Provider 都按名称和 ID 显示；只有通过固定协议、端点和安全策略校验的 Provider 可选，应用不会加载或执行数据库中的 npm 包。
+- 只按 Provider 级别映射传输协议，模型按 ID/名称提供建议并隐藏已弃用项；仍可手工输入模型 ID，也保留自定义 Provider。
 - Claude Code 支持 Anthropic OAuth，Codex CLI 支持 Codex OAuth；可调用已安装的官方 CLI 登录，也可离线导入 auth 文件。
 - API Key 与 OAuth 原文均完整明文显示、复制和编辑；OAuth 原文允许保存任意 UTF-8 内容，即使格式已损坏。
 - 应用前预览、摘要冲突检测、按 CLI 顺序执行、原子替换、写后验证、失败回滚、取消，以及只重试失败项。
@@ -32,6 +33,9 @@ corepack enable
 pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
+
+可运行 `pnpm catalog:update` 更新仓库内置的 models.dev 发布快照。脚本只访问固定上游地址，
+校验 Provider/模型 ID，并生成摘要元数据。
 
 常用验证命令：
 

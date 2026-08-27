@@ -891,13 +891,14 @@ fn validate_active_oauth_binding(
     cli_id: CliId,
     native_digest: &str,
 ) -> AppResult<()> {
+    let catalog = crate::catalog::runtime_catalog()?;
     match &provider.data {
         ProviderData::Oauth(oauth)
-            if provider.template_id.as_deref().is_some_and(|template_id| {
-                crate::catalog::embedded_catalog()
-                    .map(|catalog| catalog.supports_auth_template(cli_id, template_id))
-                    .unwrap_or(false)
-            }) && oauth.digest.as_str() == native_digest =>
+            if provider
+                .template_id
+                .as_deref()
+                .is_some_and(|template_id| catalog.supports_auth_template(cli_id, template_id))
+                && oauth.digest.as_str() == native_digest =>
         {
             Ok(())
         }
@@ -928,10 +929,28 @@ async fn upsert_active_oauth_binding_in_transaction(
     Ok(())
 }
 
+fn dynamic_target_supported(
+    catalog: &crate::catalog::ProviderCatalog,
+    cli_id: CliId,
+    template_id: &str,
+    endpoint_id: Option<&str>,
+    protocol: CliProtocol,
+) -> bool {
+    let Some(info) = catalog.dynamic_provider_info(template_id) else {
+        return false;
+    };
+    info.selectable
+        && info.protocol == Some(protocol)
+        && info.supported_clis.contains(&cli_id)
+        && endpoint_id.is_none_or(str::is_empty)
+}
+
 async fn validate_targets(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     targets: &[ConfigurationTarget],
 ) -> AppResult<()> {
+    let catalog = crate::catalog::runtime_catalog()?;
+    let legacy_catalog = crate::catalog::legacy_catalog()?;
     for target in targets {
         match target {
             ConfigurationTarget::Api {
@@ -959,10 +978,35 @@ async fn validate_targets(
                 let protocol = CliProtocol::from_str(&protocol)?;
                 let template_id: Option<String> = row.try_get("template_id")?;
                 let template_endpoint_id: Option<String> = row.try_get("template_endpoint_id")?;
-                let catalog = crate::catalog::embedded_catalog()?;
                 let supported = match (template_id.as_deref(), template_endpoint_id.as_deref()) {
                     (Some(template_id), Some(endpoint_id)) => {
-                        catalog.supports_api_endpoint(*cli_id, template_id, endpoint_id)
+                        if catalog.dynamic_provider_info(template_id).is_some() {
+                            dynamic_target_supported(
+                                &catalog,
+                                *cli_id,
+                                template_id,
+                                Some(endpoint_id),
+                                protocol,
+                            )
+                        } else if catalog.api_template(template_id).is_some() {
+                            catalog.supports_api_endpoint(*cli_id, template_id, endpoint_id)
+                        } else if legacy_catalog.api_template(template_id).is_some() {
+                            legacy_catalog.supports_api_endpoint(*cli_id, template_id, endpoint_id)
+                        } else {
+                            false
+                        }
+                    }
+                    (Some(template_id), None) => {
+                        if catalog.dynamic_provider_info(template_id).is_some() {
+                            dynamic_target_supported(&catalog, *cli_id, template_id, None, protocol)
+                        } else {
+                            // A custom provider may retain a source/template label which is not
+                            // in the current catalog. Its resolved connection is still checked
+                            // against the fixed CLI protocol contract.
+                            catalog.api_template(template_id).is_none()
+                                && legacy_catalog.api_template(template_id).is_none()
+                                && catalog.supports_protocol(*cli_id, protocol)
+                        }
                     }
                     (None, None) => catalog.supports_protocol(*cli_id, protocol),
                     _ => false,
@@ -974,13 +1018,15 @@ async fn validate_targets(
                 }
                 if let (Some(template_id), Some(endpoint_id)) =
                     (template_id.as_deref(), template_endpoint_id.as_deref())
-                    && catalog
+                    && (catalog
                         .api_template(template_id)
-                        .is_some_and(|template| template.model_routing)
+                        .or_else(|| legacy_catalog.api_template(template_id)))
+                    .is_some_and(|template| template.model_routing)
                 {
                     let model = model.trim();
                     let routed_endpoint = catalog
                         .model_routed_endpoint(template_id, model)
+                        .or_else(|| legacy_catalog.model_routed_endpoint(template_id, model))
                         .ok_or_else(|| {
                             AppError::Validation(format!(
                                 "model {model} has no route in provider template {template_id}"
@@ -1010,17 +1056,16 @@ async fn validate_targets(
                 let oauth_kind = row.try_get::<Option<String>, _>("oauth_kind")?;
                 let template_id = row.try_get::<Option<String>, _>("template_id")?;
                 let supports_auth_template = template_id.as_deref().is_some_and(|template_id| {
-                    crate::catalog::embedded_catalog()
-                        .map(|catalog| catalog.supports_auth_template(*cli_id, template_id))
-                        .unwrap_or(false)
+                    catalog.supports_auth_template(*cli_id, template_id)
+                        || legacy_catalog.supports_auth_template(*cli_id, template_id)
                 });
                 let oauth_kind = oauth_kind.as_deref().map(OAuthKind::from_str).transpose()?;
                 let template_matches_kind = template_id
                     .as_deref()
                     .and_then(|template_id| {
-                        crate::catalog::embedded_catalog()
-                            .ok()?
+                        catalog
                             .auth_template(template_id)
+                            .or_else(|| legacy_catalog.auth_template(template_id))
                     })
                     .is_some_and(|template| Some(template.auth_kind) == oauth_kind);
                 if kind != "oauth" || !template_matches_kind || !supports_auth_template {
@@ -1313,6 +1358,131 @@ mod tests {
         assert_eq!(api.get::<String, _>("auth_type"), "api-key");
     }
 
+    #[tokio::test]
+    async fn destructive_provider_migration_removes_api_profiles_and_mixed_configurations() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/0001_initial.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/0002_provider_templates.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let api_provider_id = Uuid::new_v4().to_string();
+        let api_connection_id = Uuid::new_v4().to_string();
+        let oauth_provider_id = Uuid::new_v4().to_string();
+        let api_configuration_id = Uuid::new_v4().to_string();
+        let oauth_configuration_id = Uuid::new_v4().to_string();
+        for (id, name, normalized_name, kind, oauth_kind) in [
+            (&api_provider_id, "Legacy API", "legacy api", "api", None),
+            (
+                &oauth_provider_id,
+                "OAuth account",
+                "oauth account",
+                "oauth",
+                Some("codex"),
+            ),
+        ] {
+            sqlx::query("INSERT INTO provider_profiles(id, name, normalized_name, kind, coding_plan, oauth_kind, revision, created_at, updated_at) VALUES(?, ?, ?, ?, 0, ?, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+                .bind(id)
+                .bind(name)
+                .bind(normalized_name)
+                .bind(kind)
+                .bind(oauth_kind)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO provider_connections(id, provider_id, protocol, endpoint, auth_type, api_key, default_model, credential_slot_id) VALUES(?, ?, 'openai-chat', 'https://legacy.invalid/v1', 'bearer', 'fixture-api-secret', 'legacy-model', 'api-key')")
+            .bind(&api_connection_id)
+            .bind(&api_provider_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (id, name, normalized_name, order) in [
+            (
+                &api_configuration_id,
+                "API configuration",
+                "api configuration",
+                1_i64,
+            ),
+            (
+                &oauth_configuration_id,
+                "OAuth configuration",
+                "oauth configuration",
+                2_i64,
+            ),
+        ] {
+            sqlx::query("INSERT INTO saved_configurations(id, name, normalized_name, creation_order, revision, created_at, updated_at) VALUES(?, ?, ?, ?, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')")
+                .bind(id)
+                .bind(name)
+                .bind(normalized_name)
+                .bind(order)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO configuration_targets(configuration_id, cli_id, target_kind, provider_id, connection_id, model) VALUES(?, 'opencode', 'api', ?, ?, 'legacy-model')")
+            .bind(&api_configuration_id)
+            .bind(&api_provider_id)
+            .bind(&api_connection_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO configuration_targets(configuration_id, cli_id, target_kind, provider_id, connection_id, model) VALUES(?, 'codex', 'oauth', ?, NULL, 'gpt-5.5')")
+            .bind(&oauth_configuration_id)
+            .bind(&oauth_provider_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0004_reset_legacy_api_providers.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM provider_profiles WHERE kind = 'api'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM provider_profiles WHERE kind = 'oauth'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM saved_configurations")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM configuration_targets")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
     fn api_provider(name: &str) -> ProviderProfile {
         let now = Utc::now();
         ProviderProfile {
@@ -1340,7 +1510,7 @@ mod tests {
 
     fn templated_provider(name: &str, template_id: &str) -> ProviderProfile {
         let now = Utc::now();
-        let template = crate::catalog::embedded_catalog()
+        let template = crate::catalog::legacy_catalog()
             .unwrap()
             .api_template(template_id)
             .unwrap();

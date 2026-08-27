@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     app_state::{AppSnapshot, AppState, StartupState, StartupStatus},
+    catalog::{ProviderCatalog, install_runtime_catalog},
     domain::{
         ApiProviderData, AppSettings, BackupMetadata, CliId, CliProtocol, ConfigurationTarget,
         ConnectionAuthType, OAuthKind, ProviderConnection, ProviderData, ProviderProfile,
@@ -18,6 +19,7 @@ use crate::{
     error::{AppError, AppResult},
     services::{
         apply_coordinator::ApplyProgressEvent,
+        catalog_cache::CatalogStatus,
         cli_manager::UnmanagedCandidateSaveRequest,
         minimax::normalize_provider_credential_kind,
         model_catalog::{ReleaseCheck, check_github_release as check_release},
@@ -95,6 +97,39 @@ pub fn open_startup_data_directory(
 #[tauri::command]
 pub async fn get_app_snapshot(state: State<'_, AppState>) -> AppResult<AppSnapshot> {
     state.snapshot().await
+}
+
+/// Returns the current models.dev cache status without exposing provider secrets.
+#[tauri::command]
+pub async fn get_catalog_status(state: State<'_, AppState>) -> AppResult<CatalogStatus> {
+    Ok(state.catalog_cache.status().await)
+}
+
+/// Lists all upstream providers, including entries which are intentionally disabled by the
+/// backend compatibility/security policy.
+#[tauri::command]
+pub async fn list_catalog_providers(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<crate::catalog::CatalogProviderInfo>> {
+    state.catalog_cache.providers().await
+}
+
+#[tauri::command]
+pub async fn list_catalog_models(
+    state: State<'_, AppState>,
+    provider_id: String,
+) -> AppResult<Vec<crate::catalog::CatalogModelInfo>> {
+    state.catalog_cache.models(&provider_id).await
+}
+
+/// Downloads and validates a new models.dev snapshot. The old snapshot remains active if any
+/// network, size, schema, or atomic-write step fails.
+#[tauri::command]
+pub async fn update_catalog(state: State<'_, AppState>) -> AppResult<CatalogStatus> {
+    let _mutation_guard = state.apply.try_mutation_guard()?;
+    let status = state.catalog_cache.refresh().await?;
+    install_runtime_catalog(state.catalog_cache.catalog().await?);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -233,12 +268,20 @@ pub async fn save_unmanaged_candidate_provider(
             },
         )
         .await?;
-    Ok(provider.public(Vec::new()))
+    let catalog = state.catalog_cache.catalog().await?;
+    Ok(public_with_catalog(&provider, Vec::new(), &catalog))
 }
 
 #[tauri::command]
 pub async fn list_providers(state: State<'_, AppState>) -> AppResult<Vec<PublicProvider>> {
-    state.repository.list_providers().await
+    let catalog = state.catalog_cache.catalog().await?;
+    Ok(state
+        .repository
+        .list_providers()
+        .await?
+        .into_iter()
+        .map(|provider| decorate_public_provider(provider, &catalog))
+        .collect())
 }
 
 #[tauri::command]
@@ -246,11 +289,13 @@ pub async fn get_provider(
     state: State<'_, AppState>,
     provider_id: Uuid,
 ) -> AppResult<PublicProvider> {
+    let catalog = state.catalog_cache.catalog().await?;
     state
         .repository
         .list_providers()
         .await?
         .into_iter()
+        .map(|provider| decorate_public_provider(provider, &catalog))
         .find(|provider| provider.id == provider_id)
         .ok_or_else(|| AppError::NotFound(format!("provider {provider_id}")))
 }
@@ -268,16 +313,19 @@ pub async fn create_provider(
     state: State<'_, AppState>,
     draft: ApiProviderDraft,
 ) -> AppResult<PublicProvider> {
+    let _mutation_guard = state.apply.try_mutation_guard()?;
     let settings = state.repository.get_settings().await?;
     if !settings.plaintext_risk_accepted {
         return Err(AppError::Blocked(
             "plaintext credential risk must be accepted before saving a secret".into(),
         ));
     }
+    let catalog = state.catalog_cache.catalog().await?;
+    validate_api_provider_draft(&catalog, &draft, false)?;
     let now = Utc::now();
     let provider = provider_from_draft(Uuid::new_v4(), 1, now, now, draft);
     state.repository.insert_provider(&provider, None).await?;
-    Ok(provider.public(Vec::new()))
+    Ok(public_with_catalog(&provider, Vec::new(), &catalog))
 }
 
 #[tauri::command]
@@ -310,6 +358,8 @@ pub async fn update_provider(
             "provider is not endpoint + key".into(),
         ));
     }
+    let catalog = state.catalog_cache.catalog().await?;
+    validate_api_provider_draft(&catalog, &draft, true)?;
     let mut provider = provider_from_draft(
         provider_id,
         expected_revision,
@@ -344,7 +394,7 @@ pub async fn update_provider(
         .repository
         .update_provider(&provider, expected_revision, None)
         .await?;
-    let mut public = provider.public(Vec::new());
+    let mut public = public_with_catalog(&provider, Vec::new(), &catalog);
     public.revision = expected_revision + 1;
     Ok(public)
 }
@@ -661,11 +711,44 @@ pub async fn delete_configuration(
         .await
 }
 
+fn supports_current_api_connection(
+    catalog: &ProviderCatalog,
+    cli_id: CliId,
+    template_id: Option<&str>,
+    template_endpoint_id: Option<&str>,
+    protocol: CliProtocol,
+) -> bool {
+    match (template_id, template_endpoint_id) {
+        (Some(template_id), Some(endpoint_id)) => {
+            catalog.supports_api_endpoint(cli_id, template_id, endpoint_id)
+        }
+        (None, None) => catalog.supports_protocol(cli_id, protocol),
+        (Some(template_id), None) => {
+            // A known models.dev identity follows its resolved availability exactly. Only an ID
+            // which disappeared from the current snapshot may fall back to the saved, validated
+            // connection as a stale/custom source reference.
+            match catalog.dynamic_provider_info(template_id) {
+                Some(info) => {
+                    info.selectable
+                        && info.protocol == Some(protocol)
+                        && info.supported_clis.contains(&cli_id)
+                }
+                None => {
+                    catalog.api_template(template_id).is_none()
+                        && catalog.supports_protocol(cli_id, protocol)
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
 #[tauri::command]
 pub async fn save_current_as_configuration(
     state: State<'_, AppState>,
     name: String,
 ) -> AppResult<SavedConfiguration> {
+    let catalog = state.catalog_cache.catalog().await?;
     let snapshot = state
         .cli_manager
         .latest_snapshot()
@@ -684,18 +767,13 @@ pub async fn save_current_as_configuration(
             ProviderData::Api(api) => {
                 if let Some(connection) = api.connections.iter().find(|connection| {
                     current.protocol == Some(connection.protocol)
-                        && match (
+                        && supports_current_api_connection(
+                            &catalog,
+                            item.cli_id,
                             provider.template_id.as_deref(),
                             connection.template_endpoint_id.as_deref(),
-                        ) {
-                            (Some(template_id), Some(endpoint_id)) => state
-                                .catalog
-                                .supports_api_endpoint(item.cli_id, template_id, endpoint_id),
-                            (None, None) => state
-                                .catalog
-                                .supports_protocol(item.cli_id, connection.protocol),
-                            _ => false,
-                        }
+                            connection.protocol,
+                        )
                 }) {
                     targets.push(ConfigurationTarget::Api {
                         cli_id: item.cli_id,
@@ -707,9 +785,7 @@ pub async fn save_current_as_configuration(
             }
             ProviderData::Oauth(_)
                 if provider.template_id.as_deref().is_some_and(|template_id| {
-                    state
-                        .catalog
-                        .supports_auth_template(item.cli_id, template_id)
+                    catalog.supports_auth_template(item.cli_id, template_id)
                 }) =>
             {
                 targets.push(ConfigurationTarget::Oauth {
@@ -885,6 +961,115 @@ pub async fn shutdown_app(app: AppHandle, state: State<'_, AppState>) -> AppResu
     Ok(())
 }
 
+fn decorate_public_provider(
+    mut public: PublicProvider,
+    catalog: &ProviderCatalog,
+) -> PublicProvider {
+    if let Some(template_id) = public.template_id.as_deref()
+        && let Some(info) = catalog.dynamic_provider_info(template_id)
+    {
+        public.template_name = Some(info.name.clone());
+        public.template_mode = Some("api".into());
+        public.template_category = Some("models.dev".into());
+    }
+    public
+}
+
+fn public_with_catalog(
+    provider: &ProviderProfile,
+    referenced_by: Vec<String>,
+    catalog: &ProviderCatalog,
+) -> PublicProvider {
+    decorate_public_provider(provider.public(referenced_by), catalog)
+}
+
+fn validate_api_provider_draft(
+    catalog: &ProviderCatalog,
+    draft: &ApiProviderDraft,
+    allow_stale_template: bool,
+) -> AppResult<()> {
+    let Some(template_id) = draft.template_id.as_deref().filter(|id| !id.is_empty()) else {
+        return Ok(());
+    };
+    let Some(info) = catalog.dynamic_provider_info(template_id) else {
+        if catalog.api_template(template_id).is_none() {
+            if allow_stale_template
+                && draft.connections.iter().all(|connection| {
+                    connection
+                        .template_endpoint_id
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                })
+            {
+                // A downloaded database may remove or rename a provider after it has been saved.
+                // Keep the resolved connection editable as a custom/stale source reference; the
+                // ordinary connection validator still enforces endpoint, auth, key, and model
+                // invariants.
+                return Ok(());
+            }
+            return Err(AppError::Validation(format!(
+                "unknown API provider template {template_id}"
+            )));
+        }
+        // Legacy templates retain their detailed validation in ProviderProfile::validate.
+        return Ok(());
+    };
+    if !info.selectable {
+        return Err(AppError::Validation(format!(
+            "provider {template_id} is unavailable: {}",
+            info.disabled_reason
+                .as_deref()
+                .unwrap_or("unsupported provider")
+        )));
+    }
+    let Some(expected_protocol) = info.protocol else {
+        return Err(AppError::Validation(format!(
+            "provider {template_id} has no supported protocol"
+        )));
+    };
+    if draft.connections.len() != 1 {
+        return Err(AppError::Validation(format!(
+            "models.dev provider {template_id} requires exactly one connection"
+        )));
+    }
+    let connection = &draft.connections[0];
+    if connection
+        .template_endpoint_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty())
+    {
+        return Err(AppError::Validation(
+            "models.dev providers cannot reference legacy endpoint IDs".into(),
+        ));
+    }
+    if connection.protocol != expected_protocol {
+        return Err(AppError::Validation(format!(
+            "provider {template_id} requires {expected_protocol}"
+        )));
+    }
+    if let Some(expected_auth_type) = info.auth_type
+        && connection.auth_type != expected_auth_type
+        && !(expected_auth_type == ConnectionAuthType::ApiKey
+            && connection.protocol == CliProtocol::AnthropicMessages
+            && connection.auth_type == ConnectionAuthType::Bearer)
+    {
+        return Err(AppError::Validation(format!(
+            "provider {template_id} requires {expected_auth_type} authentication"
+        )));
+    }
+    if connection.credential_slot_id != "api-key" {
+        return Err(AppError::Validation(
+            "models.dev providers use the api-key credential slot".into(),
+        ));
+    }
+    // Validate the endpoint against the same backend policy used while resolving the upstream
+    // record. Users may intentionally override a template's destination, but never its security
+    // scheme or embedded credentials.
+    crate::catalog::resolve_catalog_endpoint(connection.endpoint.as_str())
+        .map_err(AppError::Validation)?;
+    Ok(())
+}
+
 fn provider_from_draft(
     id: Uuid,
     revision: i64,
@@ -895,7 +1080,9 @@ fn provider_from_draft(
     let mut provider = ProviderProfile {
         id,
         name: draft.name,
-        template_id: draft.template_id,
+        template_id: draft
+            .template_id
+            .filter(|template_id| !template_id.trim().is_empty()),
         revision,
         created_at,
         updated_at,
@@ -905,7 +1092,9 @@ fn provider_from_draft(
                 .into_iter()
                 .map(|connection| ProviderConnection {
                     id: connection.id.unwrap_or_else(Uuid::new_v4),
-                    template_endpoint_id: connection.template_endpoint_id,
+                    template_endpoint_id: connection
+                        .template_endpoint_id
+                        .filter(|id| !id.trim().is_empty()),
                     credential_slot_id: connection.credential_slot_id,
                     protocol: connection.protocol,
                     endpoint: connection.endpoint,
@@ -944,6 +1133,10 @@ macro_rules! cliswitch_invoke_handler {
             $crate::commands::get_startup_status,
             $crate::commands::open_startup_data_directory,
             $crate::commands::get_app_snapshot,
+            $crate::commands::get_catalog_status,
+            $crate::commands::list_catalog_providers,
+            $crate::commands::list_catalog_models,
+            $crate::commands::update_catalog,
             $crate::commands::scan_clis,
             $crate::commands::select_cli_executable,
             $crate::commands::select_cli_config_directory,
@@ -1069,5 +1262,36 @@ mod tests {
             panic!("command draft should produce an API provider");
         };
         assert_eq!(api.connections[0].auth_type, ConnectionAuthType::ApiKey);
+    }
+
+    #[test]
+    fn save_current_does_not_treat_a_disabled_models_dev_provider_as_stale_custom_data() {
+        let value = serde_json::json!({
+            "disabled-demo": {
+                "npm": "@ai-sdk/openai-compatible",
+                "api": "https://disabled.example/v1",
+                "name": "Disabled demo",
+                "models": { "demo-model": { "name": "Demo model" } }
+            }
+        });
+        let models_dev =
+            crate::catalog::ModelsDevCatalog::from_api_json(&serde_json::to_vec(&value).unwrap())
+                .unwrap();
+        let catalog = ProviderCatalog::from_models_dev(models_dev).unwrap();
+
+        assert!(!supports_current_api_connection(
+            &catalog,
+            CliId::Opencode,
+            Some("disabled-demo"),
+            None,
+            CliProtocol::OpenaiChat,
+        ));
+        assert!(supports_current_api_connection(
+            &catalog,
+            CliId::Opencode,
+            Some("removed-from-catalog"),
+            None,
+            CliProtocol::OpenaiChat,
+        ));
     }
 }

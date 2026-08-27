@@ -41,6 +41,67 @@ const catalog: ProviderCatalog = {
   relations: [],
 };
 
+const modelsDevCatalog: ProviderCatalog = {
+  ...catalog,
+  providerTemplates: [
+    ...catalog.providerTemplates,
+    {
+      mode: "api",
+      id: "dynamic-demo",
+      name: "Dynamic Demo",
+      category: "models.dev",
+      credentialSlots: [{ id: "api-key", name: "API Key" }],
+      endpoints: [
+        {
+          id: "default",
+          name: "OpenAI Chat Completions",
+          protocol: "openai-chat",
+          baseUrl: "https://dynamic.example/v1",
+          credentialSlotId: "api-key",
+          authOptions: [{ id: "bearer", authType: "bearer" }],
+          defaultAuthOptionId: "bearer",
+          models: [],
+        },
+      ],
+    },
+  ],
+  providerInfo: [
+    {
+      id: "dynamic-demo",
+      name: "Dynamic Demo",
+      npm: "@ai-sdk/openai-compatible",
+      env: ["DYNAMIC_API_KEY"],
+      api: "https://dynamic.example/v1",
+      doc: "https://dynamic.example/docs",
+      protocol: "openai-chat",
+      authType: "bearer",
+      endpoint: "https://dynamic.example/v1",
+      selectable: true,
+      supportedClis: ["opencode"],
+      models: [
+        { id: "dynamic-model", name: "Dynamic Model", selectable: true },
+        {
+          id: "disabled-model",
+          name: "Disabled Model",
+          selectable: false,
+          disabledReason: "model requires an override",
+        },
+      ],
+    },
+    {
+      id: "disabled-demo",
+      name: "Disabled Demo",
+      npm: "unsupported-package",
+      env: ["DISABLED_API_KEY"],
+      doc: "",
+      selectable: false,
+      disabledReason: "provider adapter is unsupported",
+      supportedClis: [],
+      models: [],
+    },
+  ],
+};
+
 describe("ApiProviderEditor", () => {
   beforeEach(() => {
     commandMock.mockReset();
@@ -63,6 +124,89 @@ describe("ApiProviderEditor", () => {
     expect(screen.getByRole("heading", { name: "OpenAI Responses" })).toBeInTheDocument();
     expect(screen.getAllByRole("textbox", { name: /Coding Plan API Key/ })).toHaveLength(1);
     expect(screen.getAllByDisplayValue("glm-suggested")).toHaveLength(3);
+  });
+
+  it("creates a models.dev provider with a provider-level connection and catalog model", async () => {
+    commandMock.mockResolvedValue({});
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApiProviderEditor
+          providers={[]}
+          catalog={modelsDevCatalog}
+          onClose={vi.fn()}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    const templateSelect = screen.getByRole("combobox", { name: /Provider 模板/ });
+    const disabledOption = screen.getByRole("option", {
+      name: /Disabled Demo \(disabled-demo\)/,
+    });
+    expect(disabledOption).toBeDisabled();
+    expect(disabledOption).toHaveAttribute("title", "provider adapter is unsupported");
+
+    fireEvent.change(templateSelect, { target: { value: "dynamic-demo" } });
+
+    expect(screen.getByRole("combobox", { name: /默认模型/ })).toHaveValue("dynamic-model");
+    expect(
+      document.querySelector('datalist#models-0 option[value="dynamic-model"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('datalist#models-0 option[value="disabled-model"]')).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
+      target: { value: "fixture-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith("create_provider", expect.anything()),
+    );
+    const createCall = commandMock.mock.calls.find(([name]) => name === "create_provider");
+    const draft = createCall?.[1]?.draft;
+    expect(draft.templateId).toBe("dynamic-demo");
+    expect(draft.connections).toHaveLength(1);
+    expect(draft.connections[0]).toMatchObject({
+      protocol: "openai-chat",
+      endpoint: "https://dynamic.example/v1",
+      defaultModel: "dynamic-model",
+    });
+    expect(draft.connections[0].templateEndpointId).toBeUndefined();
+  });
+
+  it("accepts HTTP endpoints across the IPv4 loopback range", async () => {
+    commandMock.mockResolvedValue({});
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApiProviderEditor
+          initialDraft={{
+            name: "Loopback provider",
+            connections: [
+              {
+                credentialSlotId: "api-key",
+                protocol: "openai-chat",
+                endpoint: "http://127.0.0.2:11434/v1",
+                authType: "bearer",
+                apiKey: "fixture-key",
+                defaultModel: "fixture-model",
+              },
+            ],
+          }}
+          providers={[]}
+          catalog={catalog}
+          onClose={vi.fn()}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith("create_provider", expect.anything()),
+    );
+    expect(commandMock.mock.calls[0]?.[1]?.draft.connections[0].endpoint).toBe(
+      "http://127.0.0.2:11434/v1",
+    );
   });
 
   it("keeps fetched model suggestions with their connection after removing an earlier row", async () => {

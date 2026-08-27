@@ -1,14 +1,50 @@
 # CLI support baseline
 
-This matrix is the compatibility contract for CLISwitch 0.1, last reviewed 2026-08-25 against stable public CLI documentation. CLISwitch fingerprints the supported shape and refuses known incompatible shapes rather than replacing an entire file. Re-test these mappings before each release because upstream CLIs can change independently.
+This matrix is the compatibility contract for CLISwitch 0.1, reviewed 2026-08-25 against the
+stable public CLI schemas. CLISwitch fingerprints the supported shape and refuses known
+incompatible shapes rather than replacing an entire file. Re-test these mappings before each
+release because upstream CLIs can change independently.
 
-| CLI         | Discovery and user files                                                                                                                                                                     | API protocols                                     | OAuth                                                                             | 0.1 schema fingerprint                                                         |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Claude Code | `claude`; `CLAUDE_CONFIG_DIR` or `~/.claude`; `settings.json`; Linux/Windows `.credentials.json`                                                                                             | Anthropic Messages                                | Anthropic only; official `claude auth login`; macOS official `claude setup-token` | `stable-2026-08:settings.model+env/.credentials.json`                          |
-| Codex CLI   | `codex`; `CODEX_HOME` or `~/.codex`; `config.toml`; `auth.json`                                                                                                                              | OpenAI Responses only                             | Codex only; official `codex login`; file credential store                         | `stable-2026-08:model_providers.responses+experimental_bearer_token/file-auth` |
-| OpenCode    | `opencode`; `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`; `opencode.jsonc` preferred over `opencode.json`; `$XDG_DATA_HOME/opencode/auth.json`; `$XDG_STATE_HOME/opencode/model.json` | OpenAI Chat, OpenAI Responses, Anthropic Messages | Not supported in 0.1                                                              | `stable-v1:provider/npm/options/models+auth.type-api+state.model.recent`       |
+| CLI         | Discovery and user files                                                                                                                                                                     | API protocols                                     | OAuth                                                                    | Schema fingerprint                                                             |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| Claude Code | `claude`; `CLAUDE_CONFIG_DIR` or `~/.claude`; `settings.json`; Linux/Windows `.credentials.json`                                                                                             | Anthropic Messages                                | Anthropic only; official `claude auth login`; macOS `claude setup-token` | `stable-2026-08:settings.model+env/.credentials.json`                          |
+| Codex CLI   | `codex`; `CODEX_HOME` or `~/.codex`; `config.toml`; `auth.json`                                                                                                                              | OpenAI Responses only                             | Codex only; official `codex login`; file credential store                | `stable-2026-08:model_providers.responses+experimental_bearer_token/file-auth` |
+| OpenCode    | `opencode`; `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`; `opencode.jsonc` preferred over `opencode.json`; `$XDG_DATA_HOME/opencode/auth.json`; `$XDG_STATE_HOME/opencode/model.json` | OpenAI Chat, OpenAI Responses, Anthropic Messages | Not supported in 0.1                                                     | `stable-v1:provider/npm/options/models+auth.type-api+state.model.recent`       |
 
-Executable discovery uses, in order, a user-approved manual path, the process PATH, an approved login-shell PATH on Unix, and documented/common per-user install locations. Config-directory overrides are separate from executable overrides.
+Executable discovery uses, in order, a user-approved manual path, the process PATH, an approved
+login-shell PATH on Unix, and documented/common per-user install locations. Config-directory
+overrides are separate from executable overrides.
+
+## Provider database and compatibility policy
+
+Provider and model records come from the bundled `src-tauri/catalog/models.dev.json` snapshot. A
+validated private local copy takes precedence and can be refreshed from the fixed
+`https://models.dev/api.json` URL in Settings. Every upstream record is visible by stable ID and
+display name, including records which cannot be selected by this release.
+
+The upstream `npm` field is data, not executable configuration. CLISwitch has a fixed adapter
+allowlist:
+
+| Package                       | Wire protocol           | Supported CLIs        |
+| ----------------------------- | ----------------------- | --------------------- |
+| `@ai-sdk/openai`              | OpenAI Responses        | Codex CLI, OpenCode   |
+| `@ai-sdk/anthropic`           | Anthropic Messages      | Claude Code, OpenCode |
+| `@ai-sdk/openai-compatible`   | OpenAI Chat Completions | OpenCode              |
+| `@openrouter/ai-sdk-provider` | OpenAI Chat Completions | OpenCode              |
+
+All other packages are displayed as disabled with a reason. Provider endpoints must use HTTPS;
+HTTP is accepted only for loopback local model servers. Embedded credentials, unresolved `${…}`
+placeholders, query strings, and fragments are rejected. A provider-level mapping determines the
+transport. A model-level `provider` override is only a compatibility hint: endpoint/body/header
+overrides or a different wire shape are shown as unavailable instead of silently routing the model
+through another provider. Deprecated models are hidden from suggestions; ordinary and custom
+providers still accept a manually entered model ID.
+
+The old static API provider templates are not used for new records. The pre-release destructive
+migration removes API profiles and configurations that depend on them. OAuth profiles, OAuth-only
+configurations, settings, and backups remain. OAuth templates are fixed by the CLI contract and
+are independent of models.dev. Custom providers remain available for endpoints outside the
+database.
 
 ## Managed field mappings
 
@@ -18,103 +54,47 @@ Executable discovery uses, in order, a user-approved manual path, the process PA
 - Endpoint: `env.ANTHROPIC_BASE_URL`.
 - X-Api-Key auth: `env.ANTHROPIC_API_KEY`.
 - Bearer auth: `env.ANTHROPIC_AUTH_TOKEN`.
-- MiniMax endpoints are recognized only on the official `api.minimax.io` and `api.minimaxi.com`
-  hosts. A key beginning with `sk-cp-` is imported as the matching Token Plan; other MiniMax keys
-  are imported as the matching pay-as-you-go API profile. Both `/anthropic` and the legacy
-  `/anthropic/v1` stored form are accepted during discovery.
-- Claude writes MiniMax's CLI-specific `https://<host>/anthropic` Base URL. Token Plan keys use
-  `ANTHROPIC_AUTH_TOKEN`; pay-as-you-go keys use `ANTHROPIC_API_KEY`.
 - OAuth: Linux/Windows `.credentials.json`; macOS setup token in `env.CLAUDE_CODE_OAUTH_TOKEN`.
-- API and OAuth fields that conflict with the selected mode are removed; unrelated JSONC fields, comments, ordering, and line endings are retained.
-- Process environment variables with these names are reported as external overrides. If both
-  `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are present in the process environment, scanning
-  refuses to choose between them and reports a credential conflict instead.
+- API and OAuth fields that conflict with the selected mode are removed; unrelated JSONC fields,
+  comments, ordering, and line endings are retained.
+- Process environment variables with these names are reported as external overrides. If both API
+  credential variables are present, scanning refuses to choose between them.
 
 ### Codex CLI
 
-- `model` selects the model and `model_provider` selects a namespaced `cliswitch_<provider UUID>` table.
-- The provider table uses `base_url`, `wire_api = "responses"`, and `experimental_bearer_token` for a custom Responses endpoint. The latter is documented upstream but discouraged, so every preview displays a warning.
-- OAuth writes `auth.json`, selects the normal OpenAI provider, and sets `cli_auth_credentials_store = "file"` through the supported TOML patch.
+- `model` selects the model and `model_provider` selects a namespaced
+  `cliswitch_<provider UUID>` table.
+- The provider table uses `base_url`, `wire_api = "responses"`, and
+  `experimental_bearer_token` for a custom Responses endpoint. Every preview displays a warning
+  because the field is documented upstream but discouraged.
+- OAuth writes `auth.json`, selects the normal OpenAI provider, and sets
+  `cli_auth_credentials_store = "file"` through the supported TOML patch.
 - A non-Responses custom `wire_api` is refused. `forced_login_method` is surfaced as an override.
 - Unmanaged TOML tables, comments, ordering, and line endings are retained.
 
 ### OpenCode stable schema
 
-- Only the stable singular `provider` object is supported. The beta plural `providers` schema is explicitly refused.
-- Managed providers use namespaced IDs `cliswitch_<provider UUID>` and set the global `model` to `<provider ID>/<model>`.
-- Current-model detection follows OpenCode's precedence: an explicit global `model`, then the first `recent` entry in `$XDG_STATE_HOME/opencode/model.json` (defaulting to `~/.local/state/opencode/model.json`), then a single unambiguous provider/model pair from the config. Ambiguous configured models are reported instead of guessed.
-- Package mapping is loaded from `src-tauri/catalog/clis.jsonc` and tested:
-
-| CLISwitch protocol      | OpenCode `npm` package      | Auth entry                      |
-| ----------------------- | --------------------------- | ------------------------------- |
-| OpenAI Chat Completions | `@ai-sdk/openai-compatible` | `{ "type": "api", "key": "…" }` |
-| OpenAI Responses        | `@ai-sdk/openai`            | `{ "type": "api", "key": "…" }` |
-| Anthropic Messages      | `@ai-sdk/anthropic`         | `{ "type": "api", "key": "…" }` |
-
-- OpenCode credentials are enumerated from `auth.json`, then joined to the singular `provider`
-  configuration by provider ID. Every complete `type: "api"` entry is offered separately for
-  saving; OAuth entries are identified but are not savable in 0.1.
-- Self-described custom providers need no template entry when they declare a supported `npm`,
-  `options.baseURL`, and at least one model. Built-in providers may use this declarative fallback
-  relation catalog. Explicit user configuration overrides every fallback value.
-- OpenCode Zen (`opencode/<model>`) and OpenCode Go (`opencode-go/<model>`) are model-routed
-  templates. Their endpoint is selected from the model ID, so credentials without an inferable
-  current model are presented with a model picker instead of an invented transport. Models that
-  OpenCode documents with `@ai-sdk/google` remain unsupported because that package is not an
-  adapter in this CLI baseline.
-
-| OpenCode provider ID     | CLISwitch name                    | CLISwitch protocol | Auth             | Default endpoint                                |
-| ------------------------ | --------------------------------- | ------------------ | ---------------- | ----------------------------------------------- |
-| `openai`                 | OpenAI                            | OpenAI Responses   | Bearer           | `https://api.openai.com/v1`                     |
-| `anthropic`              | Anthropic                         | Anthropic Messages | API key          | `https://api.anthropic.com`                     |
-| `openrouter`             | OpenRouter                        | OpenAI Chat        | Bearer           | `https://openrouter.ai/api/v1`                  |
-| `opencode`               | OpenCode Zen                      | Model-routed       | Bearer / API key | `https://opencode.ai/zen/v1`                    |
-| `opencode-go`            | OpenCode Go                       | Model-routed       | Bearer / API key | `https://opencode.ai/zen/go/v1`                 |
-| `zhipuai-coding-plan`    | GLM Coding Plan                   | OpenAI Chat        | Bearer           | `https://open.bigmodel.cn/api/coding/paas/v4`   |
-| `zai-coding-plan`        | Z.AI Coding Plan                  | OpenAI Chat        | Bearer           | `https://api.z.ai/api/coding/paas/v4`           |
-| `minimax-coding-plan`    | MiniMax Token Plan (minimax.io)   | Anthropic Messages | API key          | `https://api.minimax.io/anthropic/v1`           |
-| `minimax-cn-coding-plan` | MiniMax Token Plan (minimaxi.com) | Anthropic Messages | API key          | `https://api.minimaxi.com/anthropic/v1`         |
-| `alibaba-coding-plan`    | Alibaba Coding Plan               | OpenAI Chat        | Bearer           | `https://coding-intl.dashscope.aliyuncs.com/v1` |
-| `alibaba-coding-plan-cn` | Alibaba Coding Plan (China)       | OpenAI Chat        | Bearer           | `https://coding.dashscope.aliyuncs.com/v1`      |
-| `tencent-coding-plan`    | Tencent Coding Plan (China)       | OpenAI Chat        | Bearer           | `https://api.lkeap.cloud.tencent.com/coding/v3` |
-| `kimi-for-coding`        | Kimi For Coding                   | Anthropic Messages | API key          | `https://api.kimi.com/coding/v1`                |
-| `umans-ai-coding-plan`   | Umans AI Coding Plan              | OpenAI Chat        | Bearer           | `https://api.code.umans.ai/v1`                  |
-| `kuae-cloud-coding-plan` | KUAE Cloud Coding Plan            | OpenAI Chat        | Bearer           | `https://coding-plan-endpoint.kuaecloud.net/v1` |
-
-The GLM Coding Plan template is one provider with one shared credential slot and three endpoint
-identities: Anthropic Messages at `https://open.bigmodel.cn/api/anthropic`, OpenAI Chat at
-`https://open.bigmodel.cn/api/coding/paas/v4`, and OpenAI Responses at
-`https://open.bigmodel.cn/api/v1`. OpenCode has a relation to all three. None is marked as the
-OpenCode default, so a saved configuration must explicitly select one endpoint.
-
-OpenCode Zen and OpenCode Go likewise use one shared API-key slot and three transport endpoints
-(Responses, Chat Completions, and Anthropic Messages). Each catalog model belongs to exactly one
-endpoint. Saving an imported provider requires choosing a model when the current OpenCode model
-cannot be inferred; that choice determines the endpoint and SDK package written back to OpenCode.
-Responses and Chat Completions use Bearer authentication, while Anthropic Messages uses an API-key
-header.
-
-Provider/CLI maintenance is split across three bundled, read-only JSONC files:
-
-- `src-tauri/catalog/clis.jsonc` defines CLIs, supported protocols, auth modes, and protocol SDK
-  packages.
-- `src-tauri/catalog/provider-templates.jsonc` defines API templates (credential slots, endpoints,
-  protocols, and suggested models) and auth templates.
-- `src-tauri/catalog/cli-provider-relations.jsonc` joins a CLI to a template endpoint or auth mode,
-  records recognized native provider IDs, and may override the Base URL required by a particular
-  CLI.
-
-Model lists are suggestions, not allowlists, except in a `modelRouting` template where the model ID
-is also the endpoint-routing key. Users may enter another model ID on ordinary or custom providers;
-Zen/Go imports require a catalog model so CLISwitch does not guess a transport. Existing database
-providers migrate as custom providers without endpoint inference; existing auth providers receive
-their exact auth-template identity.
-
-- Provider endpoint is written to `options.baseURL`; the selected model is placed in the provider `models` object.
-- Config JSONC and auth JSON are patched at managed paths while retaining unrelated fields and formatting where the CST writer supports it.
+- Only the stable singular `provider` object is supported. The beta plural `providers` schema is
+  explicitly refused.
+- Managed providers use namespaced IDs `cliswitch_<provider UUID>` and set the global `model` to
+  `<provider ID>/<model>`.
+- Current-model detection follows this precedence: explicit global `model`, the first `recent`
+  entry in `$XDG_STATE_HOME/opencode/model.json` (defaulting to `~/.local/state/opencode/model.json`),
+  then a single unambiguous provider/model pair from the config. Ambiguous configured models are
+  reported instead of guessed.
+- Credentials are enumerated from `auth.json` and joined to the singular `provider` configuration
+  by provider ID. Complete `type: "api"` entries are offered separately for saving; OAuth entries
+  are recognized but are not savable in 0.1.
+- Provider endpoint is written to `options.baseURL`; the selected model is placed in the provider
+  `models` object. Config JSONC and auth JSON are patched at managed paths while retaining
+  unrelated fields and formatting where the CST writer supports it.
 
 ## Behavior outside the baseline
 
-Unreadable files, malformed roots, unsupported field types, beta/unknown managed schemas, permission failures, non-regular files, unsafe symlinks, and post-preview digest changes are reported per CLI. One failed CLI does not stop the remaining queue. A missing CLI is skipped and does not cause CLISwitch to create a speculative configuration for it.
+Unreadable files, malformed roots, unsupported field types, beta/unknown managed schemas,
+permission failures, non-regular files, unsafe symlinks, and post-preview digest changes are
+reported per CLI. One failed CLI does not stop the remaining queue. A missing CLI is skipped and
+does not cause CLISwitch to create a speculative configuration for it.
 
-OAuth is intentionally one-to-one: Anthropic OAuth can target only Claude Code, and Codex OAuth can target only Codex CLI. OpenCode uses endpoint + key providers only in 0.1.
+OAuth is intentionally one-to-one: Anthropic OAuth can target only Claude Code, and Codex OAuth can
+target only Codex CLI. OpenCode uses endpoint + key providers only in 0.1.

@@ -11,6 +11,7 @@ use crate::{
         CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id,
         read_optional,
     },
+    catalog::runtime_catalog,
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
         OAuthKind, ProviderConnection, ProviderData, ProviderProfile, SourceFileSnapshot,
@@ -98,18 +99,37 @@ impl CliAdapter for CodexAdapter {
         let managed_provider_id = provider_id
             .strip_prefix("cliswitch_")
             .and_then(|value| Uuid::parse_str(value).ok());
+        let dynamic_info = if let (Some(endpoint), Some(provider_info)) =
+            (endpoint.as_deref(), runtime_catalog()?.provider_info)
+        {
+            let parsed = Url::parse(endpoint)?;
+            provider_info.into_iter().find(|info| {
+                info.selectable
+                    && info.protocol == Some(CliProtocol::OpenaiResponses)
+                    && (info.id == provider_id
+                        || info.endpoint.as_ref().is_some_and(|candidate| {
+                            candidate.as_str().trim_end_matches('/')
+                                == parsed.as_str().trim_end_matches('/')
+                        }))
+            })
+        } else {
+            None
+        };
         let candidate = match (&endpoint, &key, &model) {
-            (Some(endpoint), Some(key), Some(model)) => Some(ProviderConnection {
-                id: Uuid::new_v4(),
-                template_endpoint_id: None,
-                credential_slot_id: "api-key".into(),
-                protocol: CliProtocol::OpenaiResponses,
-                endpoint: Url::parse(endpoint)?,
-                auth_type: ConnectionAuthType::Bearer,
-                api_key: key.clone(),
-                default_model: model.clone(),
-                verification: VerificationInfo::default(),
-            }),
+            (Some(endpoint), Some(key), Some(model)) => Some((
+                dynamic_info.clone(),
+                ProviderConnection {
+                    id: Uuid::new_v4(),
+                    template_endpoint_id: None,
+                    credential_slot_id: "api-key".into(),
+                    protocol: CliProtocol::OpenaiResponses,
+                    endpoint: Url::parse(endpoint)?,
+                    auth_type: ConnectionAuthType::Bearer,
+                    api_key: key.clone(),
+                    default_model: model.clone(),
+                    verification: VerificationInfo::default(),
+                },
+            )),
             _ => None,
         };
         let auth_file_exists = paths
@@ -133,15 +153,36 @@ impl CliAdapter for CodexAdapter {
         }
         let unmanaged_api_candidates = candidate
             .into_iter()
-            .map(|connection| AdapterApiCandidate {
-                source_provider_id: provider_id.clone(),
-                suggested_name: provider_id.clone(),
-                template_id: None,
-                available_models: vec![connection.default_model.clone()],
-                default_model: Some(connection.default_model.clone()),
-                is_current: true,
-                model_routed: false,
-                connection,
+            .map(|(dynamic_info, connection)| {
+                let mut available_models = dynamic_info
+                    .as_ref()
+                    .map(|info| {
+                        info.models
+                            .iter()
+                            .filter(|model| model.selectable)
+                            .map(|model| model.id.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !available_models.contains(&connection.default_model) {
+                    available_models.push(connection.default_model.clone());
+                }
+                AdapterApiCandidate {
+                    source_provider_id: dynamic_info
+                        .as_ref()
+                        .map(|info| info.id.clone())
+                        .unwrap_or_else(|| provider_id.clone()),
+                    suggested_name: dynamic_info
+                        .as_ref()
+                        .map(|info| info.name.clone())
+                        .unwrap_or_else(|| provider_id.clone()),
+                    template_id: dynamic_info.map(|info| info.id),
+                    available_models,
+                    default_model: Some(connection.default_model.clone()),
+                    is_current: true,
+                    model_routed: false,
+                    connection,
+                }
             })
             .collect();
         Ok(AdapterReadResult {

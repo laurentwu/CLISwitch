@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Play, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
-import { providerSupportsCli } from "../../shared/catalog";
+import { providerDisplayName, providerSupportsCli } from "../../shared/catalog";
 import { uniqueCopyName, validateEntityName } from "../../shared/names";
 import type {
   ApplyRunSnapshot,
@@ -234,7 +234,9 @@ export function SavedConfigurationTab({
             <option value="">{t("config.provider")}</option>
             {syncOptions.map((provider) => (
               <option key={provider.id} value={provider.id}>
-                {provider.name}
+                {provider.templateId
+                  ? providerDisplayName(catalog, provider.templateId, provider.name)
+                  : provider.name}
               </option>
             ))}
           </Select>

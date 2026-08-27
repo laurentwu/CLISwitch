@@ -10,7 +10,7 @@ use crate::{
         AdapterApiCandidate, AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan,
         CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, read_optional,
     },
-    catalog::embedded_catalog,
+    catalog::{CatalogProviderInfo, legacy_catalog, runtime_catalog},
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
         OAuthKind, ProviderConnection, ProviderData, ProviderProfile, SourceFileSnapshot,
@@ -28,6 +28,83 @@ use crate::{
 
 #[derive(Debug, Default)]
 pub struct ClaudeCodeAdapter;
+
+fn same_endpoint(left: &Url, right: &Url) -> bool {
+    left.scheme().eq_ignore_ascii_case(right.scheme())
+        && left.host_str().map(str::to_ascii_lowercase)
+            == right.host_str().map(str::to_ascii_lowercase)
+        && left.port_or_known_default() == right.port_or_known_default()
+        && left.path().trim_end_matches('/') == right.path().trim_end_matches('/')
+        && left.query() == right.query()
+        && left.fragment() == right.fragment()
+}
+
+fn same_anthropic_endpoint(left: &Url, right: &Url) -> bool {
+    if same_endpoint(left, right) {
+        return true;
+    }
+    let left_path = left.path().trim_end_matches('/');
+    let right_path = right.path().trim_end_matches('/');
+    fn without_v1(path: &str) -> &str {
+        path.strip_suffix("/v1").unwrap_or(path)
+    }
+    left.scheme().eq_ignore_ascii_case(right.scheme())
+        && left.host_str().map(str::to_ascii_lowercase)
+            == right.host_str().map(str::to_ascii_lowercase)
+        && left.port_or_known_default() == right.port_or_known_default()
+        && without_v1(left_path) == without_v1(right_path)
+        && left.query() == right.query()
+        && left.fragment() == right.fragment()
+}
+
+fn dynamic_anthropic_provider<'a>(
+    catalog: &'a crate::catalog::ProviderCatalog,
+    endpoint: &Url,
+    api_key: &str,
+) -> Option<&'a CatalogProviderInfo> {
+    let providers = catalog.provider_info.as_ref()?;
+    let mut matches = providers
+        .iter()
+        .filter(|info| {
+            info.selectable
+                && info.protocol == Some(CliProtocol::AnthropicMessages)
+                && info
+                    .endpoint
+                    .as_ref()
+                    .is_some_and(|candidate| same_anthropic_endpoint(candidate, endpoint))
+        })
+        .collect::<Vec<_>>();
+    if matches.len() <= 1 {
+        return matches.pop();
+    }
+    // models.dev can publish separate API and coding-plan identities at the same endpoint. The
+    // stable token-plan prefix is the only credential signal we use to disambiguate them; if a
+    // future snapshot remains ambiguous, leave the provider unmanaged instead of guessing.
+    let token_plan = api_key.starts_with("sk-cp-");
+    let preferred = matches
+        .iter()
+        .copied()
+        .filter(|info| info.id.ends_with("-coding-plan") == token_plan)
+        .collect::<Vec<_>>();
+    if preferred.len() == 1 {
+        preferred.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn selectable_models(info: &CatalogProviderInfo, current: &str) -> Vec<String> {
+    let mut models = info
+        .models
+        .iter()
+        .filter(|model| model.selectable)
+        .map(|model| model.id.clone())
+        .collect::<Vec<_>>();
+    if !models.iter().any(|model| model == current) {
+        models.push(current.to_string());
+    }
+    models
+}
 
 #[async_trait]
 impl CliAdapter for ClaudeCodeAdapter {
@@ -124,11 +201,39 @@ impl CliAdapter for ClaudeCodeAdapter {
         let candidate = match (&endpoint, &credential, &model) {
             (Some(endpoint), Some((configured_auth_type, key)), Some(model)) => {
                 let parsed_endpoint = Url::parse(endpoint)?;
-                if let Some(region) = recognize_anthropic_endpoint(&parsed_endpoint) {
+                let catalog = runtime_catalog()?;
+                // A dynamic models.dev provider is identified by its provider ID and a resolved
+                // transport. Model-level overrides never change this mapping.
+                let dynamic_info = dynamic_anthropic_provider(&catalog, &parsed_endpoint, key);
+                if let Some(info) = dynamic_info {
+                    recognized_provider_name = Some(info.name.clone());
+                    Some(AdapterApiCandidate {
+                        source_provider_id: info.id.clone(),
+                        suggested_name: info.name.clone(),
+                        template_id: Some(info.id.clone()),
+                        available_models: selectable_models(info, model),
+                        default_model: Some(model.clone()),
+                        is_current: true,
+                        model_routed: false,
+                        connection: ProviderConnection {
+                            id: Uuid::new_v4(),
+                            template_endpoint_id: None,
+                            credential_slot_id: "api-key".into(),
+                            protocol: CliProtocol::AnthropicMessages,
+                            endpoint: parsed_endpoint,
+                            auth_type: *configured_auth_type,
+                            api_key: key.clone(),
+                            default_model: model.clone(),
+                            verification: VerificationInfo::default(),
+                        },
+                    })
+                } else if let Some(region) = recognize_anthropic_endpoint(&parsed_endpoint) {
+                    // Keep the narrowly-scoped MiniMax import recognition for legacy snapshots;
+                    // it is not used by the models.dev runtime catalog.
                     let credential_kind = classify_credential(key);
                     let template_id = template_id(region, credential_kind);
-                    let catalog = embedded_catalog()?;
-                    let template = catalog.api_template(template_id).ok_or_else(|| {
+                    let legacy = legacy_catalog()?;
+                    let template = legacy.api_template(template_id).ok_or_else(|| {
                         AppError::Serialization(format!(
                             "MiniMax provider template {template_id} is unavailable"
                         ))
@@ -257,12 +362,13 @@ impl CliAdapter for ClaudeCodeAdapter {
                         "Claude Code only accepts Anthropic Messages".into(),
                     ));
                 }
+                let active_catalog = runtime_catalog()?;
                 let (effective_endpoint, effective_auth_type) = match (
                     provider.template_id.as_deref(),
                     connection.template_endpoint_id.as_deref(),
                 ) {
                     (Some(template_id), Some(endpoint_id)) => {
-                        let catalog = embedded_catalog()?;
+                        let catalog = legacy_catalog()?;
                         let relation = catalog
                             .api_relation(CliId::ClaudeCode, template_id, endpoint_id)
                             .ok_or_else(|| {
@@ -280,6 +386,16 @@ impl CliAdapter for ClaudeCodeAdapter {
                             relation.base_url.as_ref().unwrap_or(&connection.endpoint),
                             auth_type,
                         )
+                    }
+                    (Some(template_id), None)
+                        if active_catalog
+                            .dynamic_provider_info(template_id)
+                            .is_some_and(|info| {
+                                info.selectable
+                                    && info.protocol == Some(CliProtocol::AnthropicMessages)
+                            }) =>
+                    {
+                        (&connection.endpoint, connection.auth_type)
                     }
                     (None, None) => (&connection.endpoint, connection.auth_type),
                     _ => {
