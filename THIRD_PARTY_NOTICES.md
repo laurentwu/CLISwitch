@@ -9,7 +9,9 @@ pnpm licenses list --prod --json > pnpm-licenses.json
 cargo metadata --manifest-path src-tauri/Cargo.toml --locked --format-version 1 > cargo-metadata.json
 ```
 
-The generated JSON files are review artifacts and are not committed because they contain redundant package metadata. A release owner must review new or changed license expressions before publishing.
+Generated license and dependency JSON files are review artifacts and are not committed because they
+contain redundant package metadata. The bundled models.dev snapshot is tracked separately below. A
+release owner must review new or changed license expressions before publishing.
 
 ## Principal runtime components
 
@@ -26,6 +28,13 @@ The generated JSON files are review artifacts and are not committed because they
 | Tokio, Serde, SQLx, reqwest, url, uuid, chrono, tracing     | MIT and/or Apache-2.0 as identified in Cargo.lock metadata           |
 | jsonc-parser, toml_edit, portable-pty, sysinfo, directories | Permissive licenses identified in Cargo.lock metadata                |
 | SQLite bundled through SQLx/system SQLite                   | Public-domain SQLite terms; wrapper crates retain their own licenses |
+
+## Bundled provider data
+
+`src-tauri/catalog/models.dev.json` is a generated snapshot of the models.dev provider/model
+database from <https://models.dev/api.json>. models.dev is Copyright (c) 2025 models.dev and is
+distributed under the MIT License. The snapshot is data only; CLISwitch does not bundle or execute
+the npm packages named by it. See the upstream project at <https://github.com/anomalyco/models.dev>.
 
 Build and test-only tools—including Vite, TypeScript, ESLint, Prettier, Vitest, WebdriverIO, and the WDIO Tauri plugins—are not intentionally shipped as production frontend code. They retain their respective permissive licenses. The dedicated E2E binary is not a release artifact.
 

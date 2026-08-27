@@ -1,11 +1,42 @@
 import type {
   ApiCliProviderRelation,
   ApiProviderTemplate,
+  CatalogModelInfo,
+  CatalogProviderInfo,
   CliId,
   ProviderCatalog,
   PublicProvider,
   PublicProviderConnection,
 } from "./types";
+
+export function catalogProviderInfos(catalog: ProviderCatalog): CatalogProviderInfo[] {
+  return catalog.providerInfo ?? [];
+}
+
+export function catalogProviderInfo(
+  catalog: ProviderCatalog,
+  providerId?: string | null,
+): CatalogProviderInfo | undefined {
+  if (!providerId) return undefined;
+  return catalogProviderInfos(catalog).find((provider) => provider.id === providerId);
+}
+
+export function catalogModels(
+  catalog: ProviderCatalog,
+  providerId?: string | null,
+): CatalogModelInfo[] {
+  return catalogProviderInfo(catalog, providerId)?.models ?? [];
+}
+
+export function providerDisplayName(
+  catalog: ProviderCatalog,
+  providerId: string,
+  fallback?: string,
+): string {
+  const provider = catalogProviderInfo(catalog, providerId);
+  if (!provider) return fallback ?? providerId;
+  return `${provider.name} (${provider.id})`;
+}
 
 export function apiTemplate(
   catalog: ProviderCatalog,
@@ -36,6 +67,13 @@ export function connectionsForCli(
   provider: PublicProvider,
 ): PublicProviderConnection[] {
   if (provider.kind !== "api") return [];
+  const dynamic = catalogProviderInfo(catalog, provider.templateId);
+  if (dynamic) {
+    if (!dynamic.selectable || !dynamic.protocol || !dynamic.supportedClis.includes(cliId))
+      return [];
+    const protocols = new Set([dynamic.protocol]);
+    return provider.connections.filter((connection) => protocols.has(connection.protocol));
+  }
   if (provider.templateId) {
     const endpointIds = new Set(
       apiRelations(catalog, cliId, provider.templateId).map((relation) => relation.endpointId),
@@ -57,6 +95,8 @@ export function providerSupportsCli(
   cliId: CliId,
   provider: PublicProvider,
 ): boolean {
+  const dynamic = catalogProviderInfo(catalog, provider.templateId);
+  if (dynamic) return dynamic.selectable && dynamic.supportedClis.includes(cliId);
   if (provider.kind === "api") return connectionsForCli(catalog, cliId, provider).length > 0;
   if (provider.templateId) {
     return catalog.relations.some(

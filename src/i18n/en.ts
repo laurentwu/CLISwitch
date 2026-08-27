@@ -54,6 +54,7 @@ export const en = {
         oauth: "OAuth operation failed",
         open: "Open failed",
         updateCheck: "Update check failed",
+        catalogUpdate: "Updating the provider database failed",
         close: "Exit failed",
         background: "Background synchronization failed",
       },
@@ -193,6 +194,18 @@ export const en = {
       riskText:
         "File permissions are not encryption. Same-user processes, administrators, malware, system backups, SQLite WAL files, and snapshots may read credentials; ordinary deletion is not secure erasure.",
       upToDate: "Already up to date",
+      catalogTitle: "Provider database",
+      catalogHint:
+        "Data is sourced from models.dev; updates do not change saved provider connections.",
+      catalogUpdate: "Update database",
+      catalogUpdating: "Updating…",
+      catalogUpdated: "Provider database updated",
+      catalogStatusUnavailable: "Provider database status is unavailable",
+      catalogSource: "Current source",
+      catalogSource_bundled: "Bundled snapshot",
+      catalogSource_local: "Local cache",
+      catalogCounts: "{{providers}} providers, {{models}} models",
+      catalogUpdatedAt: "Last updated",
     },
     accessibility: { primaryNavigation: "Primary navigation" },
     validation: {

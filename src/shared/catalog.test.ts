@@ -5,7 +5,12 @@ import type {
   PublicProvider,
   PublicProviderConnection,
 } from "./types";
-import { connectionsForCli, preferredConnectionForCli, providerSupportsCli } from "./catalog";
+import {
+  catalogModels,
+  connectionsForCli,
+  preferredConnectionForCli,
+  providerSupportsCli,
+} from "./catalog";
 
 const endpoint = (id: string, protocol: CliProtocol) => ({
   id,
@@ -190,5 +195,65 @@ describe("provider catalog selectors", () => {
     expect(providerSupportsCli(catalog, "codex", templatedOAuth)).toBe(false);
     expect(providerSupportsCli(catalog, "codex", legacyOAuth)).toBe(true);
     expect(providerSupportsCli(catalog, "claude-code", legacyOAuth)).toBe(false);
+  });
+
+  it("uses providerInfo for models.dev compatibility and model suggestions", () => {
+    const dynamicCatalog: ProviderCatalog = {
+      ...catalog,
+      providerInfo: [
+        {
+          id: "dynamic-chat",
+          name: "Dynamic Chat",
+          npm: "@ai-sdk/openai-compatible",
+          env: ["DYNAMIC_API_KEY"],
+          api: "https://dynamic.example/v1",
+          doc: "",
+          protocol: "openai-chat",
+          authType: "bearer",
+          endpoint: "https://dynamic.example/v1",
+          selectable: true,
+          supportedClis: ["opencode"],
+          models: [{ id: "dynamic-model", name: "Dynamic Model", selectable: true }],
+        },
+        {
+          id: "disabled-chat",
+          name: "Disabled Chat",
+          npm: "unsupported",
+          env: [],
+          doc: "",
+          selectable: false,
+          disabledReason: "provider adapter is unsupported",
+          supportedClis: [],
+          models: [],
+        },
+      ],
+    };
+    const dynamicProvider: PublicProvider = {
+      ...templatedApiProvider,
+      id: "dynamic-provider",
+      templateId: "dynamic-chat",
+      connections: [
+        connection("dynamic-chat-connection", "openai-chat"),
+        connection("dynamic-responses-connection", "openai-responses"),
+      ],
+    };
+    const disabledProvider: PublicProvider = {
+      ...dynamicProvider,
+      id: "disabled-provider",
+      templateId: "disabled-chat",
+    };
+
+    expect(
+      connectionsForCli(dynamicCatalog, "opencode", dynamicProvider).map(
+        (candidate) => candidate.id,
+      ),
+    ).toEqual(["dynamic-chat-connection"]);
+    expect(providerSupportsCli(dynamicCatalog, "opencode", dynamicProvider)).toBe(true);
+    expect(providerSupportsCli(dynamicCatalog, "codex", dynamicProvider)).toBe(false);
+    expect(connectionsForCli(dynamicCatalog, "opencode", disabledProvider)).toEqual([]);
+    expect(providerSupportsCli(dynamicCatalog, "opencode", disabledProvider)).toBe(false);
+    expect(catalogModels(dynamicCatalog, "dynamic-chat")).toEqual([
+      { id: "dynamic-model", name: "Dynamic Model", selectable: true },
+    ]);
   });
 });

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Files, Plus, Save, Trash2, Wifi } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { apiTemplate } from "../../shared/catalog";
+import { apiTemplate, catalogModels, catalogProviderInfos } from "../../shared/catalog";
 import { command } from "../../shared/ipc";
 import { validateEntityName } from "../../shared/names";
 import type {
@@ -34,7 +34,23 @@ const connectionSchema = z.object({
   protocol: z.enum(["openai-chat", "openai-responses", "anthropic-messages"]),
   endpoint: z
     .url()
-    .refine((value) => ["http:", "https:"].includes(new URL(value).protocol), "HTTP(S) required"),
+    .refine((value) => {
+      const url = new URL(value);
+      const hostname = url.hostname.toLowerCase();
+      const loopback =
+        hostname === "localhost" ||
+        hostname === "::1" ||
+        hostname === "[::1]" ||
+        /^127(?:\.\d{1,3}){3}$/.test(hostname);
+      return (
+        url.protocol === "https:" ||
+        (url.protocol === "http:" && loopback && !url.username && !url.password)
+      );
+    }, "HTTPS required (HTTP is allowed only for loopback)")
+    .refine((value) => {
+      const url = new URL(value);
+      return !url.username && !url.password && !url.search && !url.hash;
+    }, "Endpoint must not contain credentials, query, or fragment"),
   authType: z.enum(["api-key", "bearer"]),
   apiKey: z.string().min(1),
   defaultModel: z.string().trim().min(1),
@@ -83,9 +99,17 @@ function defaultModel(endpoint: ProviderEndpointTemplate) {
   return endpoint.models.find((model) => model.default)?.id ?? endpoint.models[0]?.id ?? "";
 }
 
+function templateDefaultModel(template: ApiProviderTemplate, catalog: ProviderCatalog): string {
+  if (template.category === "models.dev") {
+    return catalogModels(catalog, template.id).find((model) => model.selectable)?.id ?? "";
+  }
+  return template.endpoints[0] ? defaultModel(template.endpoints[0]) : "";
+}
+
 function templateConnections(
   template: ApiProviderTemplate,
   existing: DraftConnection[],
+  catalog: ProviderCatalog,
 ): DraftConnection[] {
   const secrets = new Map<string, string>();
   for (const connection of existing) {
@@ -93,13 +117,16 @@ function templateConnections(
   }
   return template.endpoints.map((endpoint) => {
     return {
-      templateEndpointId: endpoint.id,
+      templateEndpointId: template.category === "models.dev" ? undefined : endpoint.id,
       credentialSlotId: endpoint.credentialSlotId,
       protocol: endpoint.protocol,
       endpoint: endpoint.baseUrl,
       authType: defaultAuth(endpoint),
       apiKey: secrets.get(endpoint.credentialSlotId) ?? "",
-      defaultModel: defaultModel(endpoint),
+      defaultModel:
+        template.category === "models.dev"
+          ? templateDefaultModel(template, catalog)
+          : defaultModel(endpoint),
     };
   });
 }
@@ -107,25 +134,32 @@ function templateConnections(
 function reconcileTemplateConnections(
   template: ApiProviderTemplate,
   existing: DraftConnection[],
+  catalog: ProviderCatalog,
 ): DraftConnection[] {
   const bySlot = new Map<string, string>();
   for (const connection of existing) {
     if (connection.apiKey) bySlot.set(connection.credentialSlotId, connection.apiKey);
   }
   return template.endpoints.map((endpoint) => {
-    const previous = existing.find((connection) => connection.templateEndpointId === endpoint.id);
+    const previous =
+      existing.find((connection) => connection.templateEndpointId === endpoint.id) ??
+      (template.category === "models.dev" && existing.length === 1 ? existing[0] : undefined);
     const previousAuthIsValid = endpoint.authOptions.some(
       (option) => option.authType === previous?.authType,
     );
     return {
       id: previous?.id,
-      templateEndpointId: endpoint.id,
+      templateEndpointId: template.category === "models.dev" ? undefined : endpoint.id,
       credentialSlotId: endpoint.credentialSlotId,
       protocol: endpoint.protocol,
       endpoint: previous?.endpoint ?? endpoint.baseUrl,
       authType: previousAuthIsValid && previous ? previous.authType : defaultAuth(endpoint),
       apiKey: bySlot.get(endpoint.credentialSlotId) ?? previous?.apiKey ?? "",
-      defaultModel: previous?.defaultModel ?? defaultModel(endpoint),
+      defaultModel:
+        previous?.defaultModel ??
+        (template.category === "models.dev"
+          ? templateDefaultModel(template, catalog)
+          : defaultModel(endpoint)),
     };
   });
 }
@@ -144,7 +178,10 @@ function normalizeDraft(value: ApiProviderDraft): ApiProviderDraft {
     connections: value.connections.map((connection) => ({
       ...connection,
       apiKey: secrets.get(connection.credentialSlotId) ?? connection.apiKey,
-      templateEndpointId: value.templateId ? connection.templateEndpointId : undefined,
+      templateEndpointId:
+        value.templateId && connection.templateEndpointId?.trim()
+          ? connection.templateEndpointId
+          : undefined,
     })),
   };
 }
@@ -218,7 +255,7 @@ export function ApiProviderEditor({
           templateId: detail.templateId ?? "",
           connections:
             detailTemplate && detailConnections
-              ? reconcileTemplateConnections(detailTemplate, detailConnections)
+              ? reconcileTemplateConnections(detailTemplate, detailConnections, catalog)
               : detailConnections,
         }
       : initialDraft
@@ -231,7 +268,7 @@ export function ApiProviderEditor({
             name: initialName ?? initialTemplate?.name ?? "",
             templateId: initialTemplate?.id ?? "",
             connections: initialTemplate
-              ? templateConnections(initialTemplate, [])
+              ? templateConnections(initialTemplate, [], catalog)
               : startsCustom || !requireTemplateSelection
                 ? [
                     {
@@ -346,7 +383,7 @@ export function ApiProviderEditor({
     if (!template) return;
     const currentName = form.getValues("name");
     form.setValue("templateId", nextTemplateId, { shouldDirty: true });
-    fields.replace(templateConnections(template, form.getValues("connections")));
+    fields.replace(templateConnections(template, form.getValues("connections"), catalog));
     if (!currentName.trim() || currentName === selectedTemplate?.name) {
       form.setValue("name", template.name, { shouldDirty: true });
     }
@@ -450,10 +487,10 @@ export function ApiProviderEditor({
           <Input {...form.register("name")} aria-invalid={Boolean(form.formState.errors.name)} />
         </Field>
         <Field label={t("providers.template")} hint={t("providers.templateHint")}>
-          {creationTemplatePicker ? (
+          {creationTemplatePicker || catalogProviderInfos(catalog).length > 0 ? (
             <ProviderTemplateSelect
               catalog={catalog}
-              value={creationTemplateValue}
+              value={creationTemplatePicker ? creationTemplateValue : (templateId ?? "")}
               onChange={chooseTemplate}
             />
           ) : (
@@ -484,10 +521,28 @@ export function ApiProviderEditor({
             connections.findIndex(
               (item) => item.credentialSlotId === connection?.credentialSlotId,
             ) === index;
-          const suggestions = [
-            ...(endpointTemplate?.models.map((model) => model.id) ?? []),
-            ...(modelOptions[field.id] ?? []),
-          ].filter((model, modelIndex, all) => all.indexOf(model) === modelIndex);
+          const dynamicModels = catalogModels(catalog, templateId)
+            .filter((model) => model.selectable)
+            .map((model) => ({ id: model.id, name: model.name }));
+          const staticModels =
+            endpointTemplate?.models.map((model) => ({
+              id: model.id,
+              name: model.name,
+            })) ?? [];
+          const fetchedModels = (modelOptions[field.id] ?? []).map((model) => ({
+            id: model,
+            name: model,
+          }));
+          const currentModel = connection?.defaultModel?.trim();
+          const suggestions = [...dynamicModels, ...staticModels, ...fetchedModels]
+            .filter(
+              (model, modelIndex, all) =>
+                all.findIndex((candidate) => candidate.id === model.id) === modelIndex,
+            )
+            .filter((model) => model.id !== currentModel || !currentModel);
+          if (currentModel && !suggestions.some((model) => model.id === currentModel)) {
+            suggestions.unshift({ id: currentModel, name: currentModel });
+          }
           return (
             <Card key={field.id}>
               <input type="hidden" {...form.register(`connections.${index}.templateEndpointId`)} />
@@ -566,7 +621,7 @@ export function ApiProviderEditor({
                   />
                   <datalist id={`models-${index}`}>
                     {suggestions.map((model) => (
-                      <option key={model} value={model} />
+                      <option key={model.id} value={model.id} label={model.name} />
                     ))}
                   </datalist>
                 </Field>

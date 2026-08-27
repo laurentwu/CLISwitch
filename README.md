@@ -12,8 +12,9 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 - A horizontal `Current configuration / named configurations / +` workspace.
 - Local discovery with explicit executable and config-directory overrides.
 - Endpoint + key providers with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages connections.
-- OpenCode Zen and OpenCode Go templates with model-aware endpoint routing.
-- Bundled JSONC catalogs for provider templates and explicit CLI-to-template endpoint/auth relations; users edit only their saved provider instances.
+- Provider and model templates sourced from a full bundled [models.dev](https://models.dev) JSON snapshot, with a private local cache and a manual update action in Settings.
+- Every upstream provider is visible by name and ID. Only providers which match the fixed protocol, endpoint, and security policy are selectable; unsupported npm packages are never loaded or executed.
+- Provider-level transport mapping, model ID/name suggestions, deprecated-model filtering, and manual model IDs. Custom providers remain available for endpoints outside the catalog.
 - Anthropic OAuth for Claude Code and Codex OAuth for Codex CLI, using installed official CLIs or offline auth-file import.
 - Full plaintext viewing, copying, and editing of API keys and OAuth source content.
 - Preview-before-apply, optimistic digest conflict checks, sequential per-CLI writes, atomic replacement, verification, rollback, cancellation, and retry of failed items only.
@@ -32,6 +33,9 @@ corepack enable
 pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
+
+Refresh the checked-in models.dev release snapshot with `pnpm catalog:update`. The updater uses the
+fixed upstream URL, validates provider/model identities, and records a digest sidecar.
 
 Common verification commands:
 

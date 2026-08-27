@@ -11,7 +11,10 @@ use crate::{
         CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id,
         read_optional,
     },
-    catalog::{ProviderModelTemplate, embedded_catalog},
+    catalog::{
+        ProviderCatalog, ProviderModelTemplate, fixed_adapter_protocol, legacy_catalog,
+        runtime_catalog,
+    },
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
         OAuthKind, ProviderConnection, ProviderData, ProviderProfile, SourceFileSnapshot,
@@ -173,6 +176,29 @@ struct ResolvedProviderMetadata {
     unsupported_model_package: Option<String>,
 }
 
+fn catalog_for_provider<'a>(
+    runtime: &'a ProviderCatalog,
+    legacy: &'a ProviderCatalog,
+    provider_id: &str,
+) -> &'a ProviderCatalog {
+    if runtime.dynamic_provider_info(provider_id).is_some()
+        || runtime.api_template(provider_id).is_some()
+        || runtime
+            .native_api_relation(CliId::Opencode, provider_id)
+            .is_some()
+    {
+        runtime
+    } else if legacy.api_template(provider_id).is_some()
+        || legacy
+            .native_api_relation(CliId::Opencode, provider_id)
+            .is_some()
+    {
+        legacy
+    } else {
+        runtime
+    }
+}
+
 fn configured_provider<'a>(
     root: &'a serde_json::Map<String, Value>,
     provider_id: &str,
@@ -188,10 +214,13 @@ fn resolve_provider_metadata(
     provider: Option<&serde_json::Map<String, Value>>,
     model_id: Option<&str>,
 ) -> AppResult<ResolvedProviderMetadata> {
-    let catalog = embedded_catalog()?;
+    let runtime = runtime_catalog()?;
+    let legacy = legacy_catalog()?;
+    let catalog = catalog_for_provider(&runtime, legacy, provider_id);
     let native_relation = catalog.native_api_relation(CliId::Opencode, provider_id);
     let template_id = native_relation.map(|relation| relation.provider_template_id.as_str());
     let template = template_id.and_then(|id| catalog.api_template(id));
+    let dynamic_info = runtime.dynamic_provider_info(provider_id);
     let explicit_npm = provider
         .and_then(|provider| provider.get("npm"))
         .and_then(Value::as_str)
@@ -214,7 +243,19 @@ fn resolve_provider_metadata(
         });
     let package_relation = explicit_npm.as_deref().and_then(|package| {
         template_id.and_then(|id| {
-            let package_protocol = catalog.package_protocol(CliId::Opencode, package);
+            // Most packages are mapped by the fixed OpenCode catalog. The OpenRouter adapter is
+            // also a safe built-in models.dev alias, but it is not the package OpenCode writes
+            // for the generic Chat transport; recognize it only when it is the exact package
+            // declared by this dynamic provider.
+            let package_protocol =
+                catalog
+                    .package_protocol(CliId::Opencode, package)
+                    .or_else(|| {
+                        dynamic_info
+                            .filter(|info| info.selectable && info.npm == package)
+                            .and_then(|info| info.protocol)
+                            .or_else(|| fixed_adapter_protocol(package))
+                    });
             catalog.api_relations(CliId::Opencode, id).find(|relation| {
                 if relation.provider_package.as_deref() == Some(package) {
                     return true;
@@ -253,6 +294,14 @@ fn resolve_provider_metadata(
     let protocol = explicit_npm
         .as_deref()
         .and_then(|package| catalog.package_protocol(CliId::Opencode, package))
+        .or_else(|| {
+            explicit_npm.as_deref().and_then(|package| {
+                dynamic_info
+                    .filter(|info| info.selectable && info.npm == package)
+                    .and_then(|info| info.protocol)
+                    .or_else(|| fixed_adapter_protocol(package).filter(|_| dynamic_info.is_some()))
+            })
+        })
         .or_else(|| relation_endpoint.map(|endpoint| endpoint.protocol));
     let endpoint = explicit_base_url
         .clone()
@@ -284,36 +333,53 @@ fn resolve_provider_metadata(
     // provider only keeps the template identity when it still selects that
     // provider's native endpoint. A different package is a custom provider,
     // even when the package happens to be known elsewhere in the catalog.
-    let resolved_template_id =
-        if is_model_routed_template && (explicit_npm.is_some() || explicit_base_url.is_some()) {
-            None
-        } else if explicit_npm.is_some()
-            && !is_model_routed_template
-            && relation.is_some_and(|relation| {
-                native_relation.is_some_and(|native| {
-                    native.provider_template_id == relation.provider_template_id
-                        && native.endpoint_id == relation.endpoint_id
-                })
+    let dynamic_package_matches = dynamic_info.is_none_or(|info| {
+        explicit_npm
+            .as_deref()
+            .is_none_or(|package| package == info.npm)
+    });
+    let resolved_template_id = if !dynamic_package_matches {
+        // An explicit package override changes the provider's transport identity. Keep the
+        // upstream ID only when it still uses the package models.dev declared for that
+        // provider; otherwise save it as a resolved custom connection.
+        None
+    } else if is_model_routed_template && (explicit_npm.is_some() || explicit_base_url.is_some()) {
+        None
+    } else if explicit_npm.is_some()
+        && !is_model_routed_template
+        && relation.is_some_and(|relation| {
+            native_relation.is_some_and(|native| {
+                native.provider_template_id == relation.provider_template_id
+                    && native.endpoint_id == relation.endpoint_id
             })
-        {
-            template_id.map(str::to_string)
-        } else if explicit_npm.is_some() && !is_model_routed_template {
-            None
-        } else {
-            template_id.map(str::to_string)
-        };
+        })
+    {
+        template_id.map(str::to_string)
+    } else if explicit_npm.is_some() && !is_model_routed_template {
+        None
+    } else {
+        template_id.map(str::to_string)
+    };
     let resolved_template = resolved_template_id
         .as_deref()
         .and_then(|id| catalog.api_template(id));
+    let dynamic_template =
+        resolved_template.is_some_and(|template| template.category == "models.dev");
     let model_routed = template.is_some_and(|template| template.model_routing)
         && explicit_npm.is_none()
         && explicit_base_url.is_none();
     Ok(ResolvedProviderMetadata {
         display_name,
         template_id: resolved_template_id.clone(),
-        template_endpoint_id: resolved_template_id
-            .as_ref()
-            .and_then(|_| relation.map(|relation| relation.endpoint_id.clone())),
+        // Dynamic templates are provider-level identities. Their endpoint/protocol is persisted
+        // as a resolved connection and must not be coupled to the retired endpoint relation IDs.
+        template_endpoint_id: if dynamic_template {
+            None
+        } else {
+            resolved_template_id
+                .as_ref()
+                .and_then(|_| relation.map(|relation| relation.endpoint_id.clone()))
+        },
         credential_slot_id: resolved_template_id
             .as_ref()
             .and_then(|_| relation_endpoint.map(|endpoint| endpoint.credential_slot_id.clone()))
@@ -354,22 +420,28 @@ fn opencode_models(
     connection: &ProviderConnection,
     selected_model: &str,
 ) -> Value {
+    let runtime = runtime_catalog().ok();
+    let legacy = legacy_catalog().ok();
     let suggestions = provider
         .template_id
         .as_deref()
         .zip(connection.template_endpoint_id.as_deref())
         .and_then(|(template_id, endpoint_id)| {
-            embedded_catalog()
-                .ok()?
+            let runtime = runtime.as_ref()?;
+            let catalog = legacy
+                .as_ref()
+                .map(|legacy| catalog_for_provider(runtime, legacy, template_id))
+                .unwrap_or(runtime);
+            catalog
                 .api_template(template_id)?
                 .endpoints
                 .iter()
                 .find(|endpoint| endpoint.id == endpoint_id)
-                .map(|endpoint| endpoint.models.as_slice())
+                .map(|endpoint| endpoint.models.clone())
         })
         .unwrap_or_default();
     let mut models = serde_json::Map::new();
-    for model in suggestions {
+    for model in &suggestions {
         models.insert(model.id.clone(), opencode_model_value(model));
     }
     models
@@ -419,8 +491,14 @@ fn provider_models(
 }
 
 fn model_routed_model_is_supported(template_id: &str, model_id: &str) -> AppResult<bool> {
-    let catalog = embedded_catalog()?;
-    Ok(catalog
+    let catalog = runtime_catalog()?;
+    if catalog
+        .model_routed_endpoint(template_id, model_id)
+        .is_some()
+    {
+        return Ok(true);
+    }
+    Ok(legacy_catalog()?
         .model_routed_endpoint(template_id, model_id)
         .is_some())
 }
@@ -566,6 +644,18 @@ impl CliAdapter for OpenCodeAdapter {
                 diagnostics.push(format!(
                     "OpenCode provider {diagnostic_provider_id} model {model} has no supported model route; choose a model from the provider catalog"
                 ));
+            } else if let Some(dynamic_info) =
+                runtime_catalog()?.dynamic_provider_info(diagnostic_provider_id)
+                && let Some(model_info) = dynamic_info.models.iter().find(|item| item.id == model)
+                && !model_info.selectable
+            {
+                diagnostics.push(format!(
+                    "OpenCode provider {diagnostic_provider_id} model {model} is unavailable: {}",
+                    model_info
+                        .disabled_reason
+                        .as_deref()
+                        .unwrap_or("model is not supported by the selected adapter")
+                ));
             }
         }
         if let (Some(provider_id), Some(metadata)) = (&provider_id, &current_metadata)
@@ -658,7 +748,16 @@ impl CliAdapter for OpenCodeAdapter {
                     .map(|selection| selection.model_id.as_str()),
             )?;
             let mut models = provider_models(configured, selection.as_ref(), auth_provider_id);
-            let catalog = embedded_catalog()?;
+            let catalog = runtime_catalog()?;
+            if let Some(dynamic_info) = catalog.dynamic_provider_info(auth_provider_id)
+                && dynamic_info.selectable
+            {
+                for model in dynamic_info.models.iter().filter(|model| model.selectable) {
+                    if !models.contains(&model.id) {
+                        models.push(model.id.clone());
+                    }
+                }
+            }
             let routed_template = metadata
                 .template_id
                 .as_deref()
@@ -862,7 +961,13 @@ impl CliAdapter for OpenCodeAdapter {
             .iter()
             .find(|connection| connection.id == connection_id)
             .ok_or_else(|| AppError::Validation("connection does not exist".into()))?;
-        let catalog = embedded_catalog()?;
+        let runtime = runtime_catalog()?;
+        let legacy = legacy_catalog()?;
+        let catalog = catalog_for_provider(
+            &runtime,
+            legacy,
+            provider.template_id.as_deref().unwrap_or_default(),
+        );
         if let (Some(template_id), Some(endpoint_id)) = (
             provider.template_id.as_deref(),
             connection.template_endpoint_id.as_deref(),
@@ -895,7 +1000,16 @@ impl CliAdapter for OpenCodeAdapter {
                     .find(|relation| relation.endpoint_id == endpoint_id)
                     .and_then(|relation| relation.provider_package.as_deref())
             });
+        let dynamic_package = provider
+            .template_id
+            .as_deref()
+            .and_then(|template_id| catalog.dynamic_provider_info(template_id))
+            .filter(|info| {
+                info.selectable && fixed_adapter_protocol(&info.npm) == Some(connection.protocol)
+            })
+            .map(|info| info.npm.as_str());
         let package = relation_package
+            .or(dynamic_package)
             .or_else(|| catalog.protocol_package(CliId::Opencode, connection.protocol))
             .ok_or_else(|| {
                 AppError::Validation(format!(

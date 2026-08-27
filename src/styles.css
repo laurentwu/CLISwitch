@@ -491,6 +491,17 @@ small {
   margin: 0;
   overflow-wrap: anywhere;
 }
+.catalog-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+.catalog-status-grid .path-text {
+  grid-column: 1 / -1;
+}
 .path-text {
   direction: ltr;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;

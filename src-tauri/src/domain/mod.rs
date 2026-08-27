@@ -232,19 +232,8 @@ impl ProviderConnection {
                 "credential slot ID is required".into(),
             ));
         }
-        if !matches!(self.endpoint.scheme(), "http" | "https") {
-            return Err(AppError::Validation(
-                "endpoint must use HTTP or HTTPS".into(),
-            ));
-        }
-        if !self.endpoint.username().is_empty() || self.endpoint.password().is_some() {
-            return Err(AppError::Validation(
-                "endpoint must not contain embedded credentials".into(),
-            ));
-        }
-        if self.endpoint.host_str().is_none() {
-            return Err(AppError::Validation("endpoint must include a host".into()));
-        }
+        crate::catalog::resolve_catalog_endpoint(self.endpoint.as_str())
+            .map_err(AppError::Validation)?;
         if self.protocol != CliProtocol::AnthropicMessages
             && self.auth_type != ConnectionAuthType::Bearer
         {
@@ -331,62 +320,100 @@ impl ProviderProfile {
                     }
                 }
                 if let Some(template_id) = self.template_id.as_deref() {
-                    let catalog = crate::catalog::embedded_catalog()?;
-                    let template = catalog.api_template(template_id).ok_or_else(|| {
-                        AppError::Validation(format!("unknown API provider template {template_id}"))
-                    })?;
-                    if api.connections.len() != template.endpoints.len() {
-                        return Err(AppError::Validation(format!(
-                            "provider template {template_id} requires all configured endpoints"
-                        )));
-                    }
-                    let mut template_endpoint_ids = std::collections::HashSet::new();
-                    for connection in &api.connections {
-                        let endpoint_id =
-                            connection.template_endpoint_id.as_deref().ok_or_else(|| {
-                                AppError::Validation(
-                                    "template provider endpoint is missing its template ID".into(),
-                                )
-                            })?;
-                        if !template_endpoint_ids.insert(endpoint_id) {
+                    let has_template_endpoints = api
+                        .connections
+                        .iter()
+                        .any(|connection| connection.template_endpoint_id.is_some());
+                    let runtime = crate::catalog::runtime_catalog()?;
+                    if !has_template_endpoints
+                        && let Some(info) = runtime.dynamic_provider_info(template_id)
+                    {
+                        // models.dev identities are provider-level source references. Their
+                        // resolved connection is deliberately endpoint-ID-free, but the domain
+                        // still enforces the generated provider's fixed transport contract at
+                        // every persistence boundary.
+                        if info.selectable {
+                            if api.connections.len() != 1 {
+                                return Err(AppError::Validation(format!(
+                                    "models.dev provider {template_id} requires exactly one connection"
+                                )));
+                            }
+                            let connection = &api.connections[0];
+                            if info.protocol != Some(connection.protocol)
+                                || connection.credential_slot_id != "api-key"
+                                || (info.auth_type == Some(ConnectionAuthType::Bearer)
+                                    && connection.auth_type != ConnectionAuthType::Bearer)
+                            {
+                                return Err(AppError::Validation(format!(
+                                    "connection does not match models.dev provider {template_id}"
+                                )));
+                            }
+                        }
+                    } else if has_template_endpoints {
+                        // Legacy template instances carry endpoint identities. New models.dev
+                        // instances intentionally do not: the catalog provider ID is only a
+                        // source reference and the saved connection is a resolved transport
+                        // snapshot.
+                        let catalog = crate::catalog::legacy_catalog()?;
+                        let template = catalog.api_template(template_id).ok_or_else(|| {
+                            AppError::Validation(format!(
+                                "unknown API provider template {template_id}"
+                            ))
+                        })?;
+                        if api.connections.len() != template.endpoints.len() {
                             return Err(AppError::Validation(format!(
-                                "provider repeats template endpoint {endpoint_id}"
+                                "provider template {template_id} requires all configured endpoints"
                             )));
                         }
-                        let endpoint = template
-                            .endpoints
-                            .iter()
-                            .find(|endpoint| endpoint.id == endpoint_id)
-                            .ok_or_else(|| {
-                                AppError::Validation(format!(
-                                    "template {template_id} has no endpoint {endpoint_id}"
-                                ))
-                            })?;
-                        if connection.protocol != endpoint.protocol
-                            || connection.credential_slot_id != endpoint.credential_slot_id
-                            || !endpoint
-                                .auth_options
+                        let mut template_endpoint_ids = std::collections::HashSet::new();
+                        for connection in &api.connections {
+                            let endpoint_id =
+                                connection.template_endpoint_id.as_deref().ok_or_else(|| {
+                                    AppError::Validation(
+                                        "template provider endpoint is missing its template ID"
+                                            .into(),
+                                    )
+                                })?;
+                            if !template_endpoint_ids.insert(endpoint_id) {
+                                return Err(AppError::Validation(format!(
+                                    "provider repeats template endpoint {endpoint_id}"
+                                )));
+                            }
+                            let endpoint = template
+                                .endpoints
                                 .iter()
-                                .any(|option| option.auth_type == connection.auth_type)
-                        {
-                            return Err(AppError::Validation(format!(
-                                "endpoint {endpoint_id} does not match template {template_id}"
-                            )));
-                        }
-                        if template.model_routing {
-                            let model = connection.default_model.trim();
-                            let routed_endpoint = catalog
-                                .model_routed_endpoint(template_id, model)
+                                .find(|endpoint| endpoint.id == endpoint_id)
                                 .ok_or_else(|| {
                                     AppError::Validation(format!(
-                                        "model {model} has no route in provider template {template_id}"
+                                        "template {template_id} has no endpoint {endpoint_id}"
                                     ))
                                 })?;
-                            if routed_endpoint.id != endpoint_id {
+                            if connection.protocol != endpoint.protocol
+                                || connection.credential_slot_id != endpoint.credential_slot_id
+                                || !endpoint
+                                    .auth_options
+                                    .iter()
+                                    .any(|option| option.auth_type == connection.auth_type)
+                            {
                                 return Err(AppError::Validation(format!(
-                                    "model {model} routes to endpoint {}, not {endpoint_id}",
-                                    routed_endpoint.id
+                                    "endpoint {endpoint_id} does not match template {template_id}"
                                 )));
+                            }
+                            if template.model_routing {
+                                let model = connection.default_model.trim();
+                                let routed_endpoint = catalog
+                                    .model_routed_endpoint(template_id, model)
+                                    .ok_or_else(|| {
+                                        AppError::Validation(format!(
+                                            "model {model} has no route in provider template {template_id}"
+                                        ))
+                                    })?;
+                                if routed_endpoint.id != endpoint_id {
+                                    return Err(AppError::Validation(format!(
+                                        "model {model} routes to endpoint {}, not {endpoint_id}",
+                                        routed_endpoint.id
+                                    )));
+                                }
                             }
                         }
                     }
@@ -404,13 +431,12 @@ impl ProviderProfile {
             // validation also keeps a saved template and OAuth kind from drifting apart.
             ProviderData::Oauth(oauth) => {
                 if let Some(template_id) = self.template_id.as_deref() {
-                    let template = crate::catalog::embedded_catalog()?
-                        .auth_template(template_id)
-                        .ok_or_else(|| {
-                            AppError::Validation(format!(
-                                "unknown auth provider template {template_id}"
-                            ))
-                        })?;
+                    let catalog = crate::catalog::runtime_catalog()?;
+                    let template = catalog.auth_template(template_id).ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "unknown auth provider template {template_id}"
+                        ))
+                    })?;
                     if template.auth_kind != oauth.oauth_kind {
                         return Err(AppError::Validation(format!(
                             "auth template {template_id} does not match the saved auth kind"
@@ -455,10 +481,14 @@ impl ProviderProfile {
                     Some(oauth.verification.status),
                 ),
             };
-        let template = self
-            .template_id
-            .as_deref()
-            .and_then(|id| crate::catalog::embedded_catalog().ok()?.template(id));
+        let template = self.template_id.as_deref().and_then(|id| {
+            if let Ok(catalog) = crate::catalog::embedded_catalog()
+                && let Some(template) = catalog.template(id)
+            {
+                return Some(template);
+            }
+            crate::catalog::legacy_catalog().ok()?.template(id)
+        });
         PublicProvider {
             id: self.id,
             name: self.name.clone(),
@@ -478,6 +508,25 @@ impl ProviderProfile {
             revision: self.revision,
             updated_at: self.updated_at,
         }
+    }
+
+    /// Adds runtime models.dev metadata to the redacted public projection. The regular `public`
+    /// method intentionally remains available for library callers that only have the bundled
+    /// legacy catalog.
+    pub fn public_with_catalog(
+        &self,
+        referenced_by: Vec<String>,
+        catalog: &crate::catalog::ProviderCatalog,
+    ) -> PublicProvider {
+        let mut public = self.public(referenced_by);
+        if let Some(template_id) = public.template_id.as_deref()
+            && let Some(info) = catalog.dynamic_provider_info(template_id)
+        {
+            public.template_name = Some(info.name.clone());
+            public.template_mode = Some("api".into());
+            public.template_category = Some("models.dev".into());
+        }
+        public
     }
 }
 
@@ -1022,7 +1071,7 @@ mod tests {
     use super::*;
 
     fn api_provider_from_template(template_id: &str) -> ProviderProfile {
-        let template = crate::catalog::embedded_catalog()
+        let template = crate::catalog::legacy_catalog()
             .unwrap()
             .api_template(template_id)
             .unwrap();

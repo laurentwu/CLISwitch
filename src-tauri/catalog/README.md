@@ -1,18 +1,23 @@
 # Provider catalog
 
-These bundled JSONC files are the source of truth for compatibility. They are compiled into the
-application and exposed read-only to the frontend; user-edited provider instances stay in SQLite.
+The runtime provider/model source is `models.dev.json`, a full snapshot of
+`https://models.dev/api.json`. It is compiled into the application as the offline fallback. Run
+`pnpm catalog:update` to refresh it and `models.dev.meta.json`; do not hand-edit either generated
+file.
 
-- `clis.jsonc`: CLI protocol capabilities, auth modes, and protocol adapter packages.
-- `provider-templates.jsonc`: API templates and auth templates. An API template owns credential
-  slots; endpoints reference a slot and normally contain suggested (not exclusive) models. For
-  templates with `modelRouting: true`, those model entries form the routing table and each model
-  must select exactly one endpoint; `unsupportedModels` records models whose official SDK package
-  is outside the CLI catalog.
-- `cli-provider-relations.jsonc`: explicit CLI-to-endpoint/auth-mode joins, including native
-  provider aliases and any relation-specific package or Base URL override.
+`clis.jsonc` remains the small, fixed compatibility policy for supported CLIs, wire protocols,
+OAuth modes, and OpenCode package mappings. Upstream npm package names are treated only as data:
+CLISwitch maps an explicit allowlist to these built-in adapters and never imports or executes a
+package from the snapshot.
 
-Keep persisted IDs stable. To add a template, add its relations in the same change. A
-multi-endpoint relation may omit `default` on every endpoint when the user must choose explicitly;
-at most one endpoint may be the default. The Rust catalog validator and tests reject broken
-references, duplicate routes, invalid URLs, or incompatible protocol packages.
+At runtime a validated download is stored as private `models.dev.json` plus
+`models.dev.meta.json` in the application-data directory. A valid local file takes precedence;
+an absent, oversized, or invalid local file falls back to the bundled snapshot. Updates use the
+fixed upstream URL, reject redirects, cap response size, validate before activation, and replace
+each cache file atomically with a digest-matched sidecar. A failed update leaves the previous
+active snapshot unchanged.
+
+`provider-templates.jsonc` and `cli-provider-relations.jsonc` are retained only as migration/test
+fixtures for the pre-release static-provider design. Runtime API templates and CLI relations are
+generated from models.dev plus `clis.jsonc`; OAuth templates remain fixed and independent of
+models.dev. Persisted models.dev provider IDs must remain the upstream IDs.

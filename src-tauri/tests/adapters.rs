@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use chrono::Utc;
 use cliswitch_lib::{
     adapters::{ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter},
-    catalog::embedded_catalog,
+    catalog::{legacy_catalog, runtime_catalog},
     domain::{
         ApiProviderData, CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType,
         ProviderConnection, ProviderData, ProviderProfile, VerificationInfo,
@@ -61,10 +61,7 @@ fn templated_provider(
     auth_type: ConnectionAuthType,
 ) -> (ProviderProfile, Uuid) {
     let now = Utc::now();
-    let template = embedded_catalog()
-        .unwrap()
-        .api_template(template_id)
-        .unwrap();
+    let template = legacy_catalog().unwrap().api_template(template_id).unwrap();
     let endpoint = template
         .endpoints
         .iter()
@@ -157,22 +154,20 @@ async fn claude_explicit_api_settings_take_priority_over_a_stale_oauth_file() {
 
 #[tokio::test]
 async fn claude_recognizes_minimax_region_and_credential_kind_from_endpoint_and_key() {
-    for (base_url, key_field, key, template_id, expected_auth_type, canonical_url) in [
+    for (base_url, key_field, key, template_id, expected_auth_type) in [
         (
             "https://api.minimax.io/anthropic",
             "ANTHROPIC_API_KEY",
             "sk-cp-global-fixture",
             "minimax-coding-plan",
-            ConnectionAuthType::Bearer,
-            "https://api.minimax.io/anthropic/v1",
+            ConnectionAuthType::ApiKey,
         ),
         (
             "https://api.minimaxi.com/anthropic/v1/",
             "ANTHROPIC_AUTH_TOKEN",
             "sk-api-china-fixture",
-            "minimax-cn-api",
-            ConnectionAuthType::ApiKey,
-            "https://api.minimaxi.com/anthropic/v1",
+            "minimax-cn",
+            ConnectionAuthType::Bearer,
         ),
     ] {
         let temp = TempDir::new().unwrap();
@@ -197,18 +192,15 @@ async fn claude_recognizes_minimax_region_and_credential_kind_from_endpoint_and_
         assert_eq!(current.unmanaged_api_candidates.len(), 1);
         let candidate = &current.unmanaged_api_candidates[0];
         assert_eq!(candidate.template_id.as_deref(), Some(template_id));
-        assert_eq!(
-            candidate.connection.template_endpoint_id.as_deref(),
-            Some("anthropic")
-        );
+        assert_eq!(candidate.connection.template_endpoint_id.as_deref(), None);
         assert_eq!(candidate.connection.auth_type, expected_auth_type);
-        assert_eq!(candidate.connection.endpoint.as_str(), canonical_url);
+        assert_eq!(candidate.connection.endpoint.as_str(), base_url);
         assert_eq!(
             current.current.provider_name.as_deref(),
-            embedded_catalog()
+            runtime_catalog()
                 .unwrap()
-                .api_template(template_id)
-                .map(|template| template.name.as_str())
+                .dynamic_provider_info(template_id)
+                .map(|provider| provider.name.as_str())
         );
     }
 }
@@ -485,7 +477,7 @@ async fn opencode_materializes_the_explicitly_selected_glm_endpoint() {
 }
 
 #[tokio::test]
-async fn opencode_zen_and_go_use_the_selected_model_to_route_transport() {
+async fn opencode_models_dev_providers_use_one_provider_level_transport() {
     for (
         provider_id,
         model_id,
@@ -497,9 +489,9 @@ async fn opencode_zen_and_go_use_the_selected_model_to_route_transport() {
         (
             "opencode",
             "gpt-5.6-sol",
-            CliProtocol::OpenaiResponses,
+            CliProtocol::OpenaiChat,
             "https://opencode.ai/zen/v1",
-            "@ai-sdk/openai",
+            "@ai-sdk/openai-compatible",
             "glm-5",
         ),
         (
@@ -539,15 +531,8 @@ async fn opencode_zen_and_go_use_the_selected_model_to_route_transport() {
         }));
         assert_eq!(current.current.protocol, Some(expected_protocol));
         let candidate = &current.unmanaged_api_candidates[0];
-        assert_eq!(
-            candidate.template_id.as_deref(),
-            Some(if provider_id == "opencode" {
-                "opencode-zen"
-            } else {
-                "opencode-go"
-            })
-        );
-        assert!(candidate.model_routed);
+        assert_eq!(candidate.template_id.as_deref(), Some(provider_id));
+        assert!(!candidate.model_routed);
         assert_eq!(candidate.default_model.as_deref(), Some(model_id));
         assert_eq!(candidate.connection.protocol, expected_protocol);
         assert_eq!(candidate.connection.endpoint.as_str(), expected_endpoint);
@@ -583,22 +568,25 @@ async fn opencode_zen_and_go_use_the_selected_model_to_route_transport() {
         assert!(config.contains(expected_package));
         assert!(config.contains(expected_endpoint));
 
+        // Model selection is a hint for a provider-level models.dev identity. It must not route
+        // the same saved connection to a different transport when a user types another model.
         let wrong_route_target = ConfigurationTarget::Api {
             cli_id: CliId::Opencode,
             provider_id: provider.id,
             connection_id: candidate.connection.id,
             model: wrong_route_model.into(),
         };
-        let error = adapter
+        let plan = adapter
             .plan_write(&paths, &wrong_route_target, &provider)
             .await
-            .unwrap_err();
-        assert!(error.to_string().contains("routes to endpoint"));
+            .unwrap();
+        let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
+        assert!(config.contains(wrong_route_model));
     }
 }
 
 #[tokio::test]
-async fn opencode_model_routed_credentials_without_a_current_model_need_selection() {
+async fn opencode_models_dev_credentials_without_a_current_model_use_a_catalog_default() {
     let temp = TempDir::new().unwrap();
     let adapter = OpenCodeAdapter;
     let host = environment(temp.path());
@@ -617,10 +605,13 @@ async fn opencode_model_routed_credentials_without_a_current_model_need_selectio
     assert_eq!(current.current.model, None);
     assert_eq!(current.unmanaged_api_candidates.len(), 2);
     for candidate in &current.unmanaged_api_candidates {
-        assert!(candidate.model_routed);
-        assert_eq!(candidate.default_model, None);
+        assert!(!candidate.model_routed);
+        assert!(candidate.default_model.is_some());
         assert!(!candidate.available_models.is_empty());
-        assert!(candidate.connection.default_model.is_empty());
+        assert_eq!(
+            candidate.connection.default_model.as_str(),
+            candidate.default_model.as_deref().unwrap()
+        );
     }
     assert!(current.current.diagnostics.iter().all(|message| {
         !message.contains("cannot be saved without")
@@ -629,7 +620,7 @@ async fn opencode_model_routed_credentials_without_a_current_model_need_selectio
 }
 
 #[tokio::test]
-async fn opencode_zen_google_models_are_reported_as_unsupported() {
+async fn opencode_models_dev_model_overrides_are_reported_as_hints() {
     let temp = TempDir::new().unwrap();
     let adapter = OpenCodeAdapter;
     let host = environment(temp.path());
@@ -647,15 +638,18 @@ async fn opencode_zen_google_models_are_reported_as_unsupported() {
 
     let current = adapter.read_current(&paths, &host).await.unwrap();
     assert!(current.current.diagnostics.iter().any(|message| {
-        message.contains("gemini-3.7-flash") && message.contains("@ai-sdk/google")
+        message.contains("gemini-3.7-flash")
+            && message.contains("unavailable")
+            && message.contains("different provider adapter")
     }));
     let candidate = &current.unmanaged_api_candidates[0];
-    assert!(candidate.model_routed);
-    assert_eq!(candidate.default_model, None);
+    assert!(!candidate.model_routed);
+    assert_eq!(candidate.template_id.as_deref(), Some("opencode"));
+    assert_eq!(candidate.default_model.as_deref(), Some("gemini-3.7-flash"));
 }
 
 #[tokio::test]
-async fn opencode_zen_base_url_override_keeps_model_selected_transport() {
+async fn opencode_models_dev_base_url_override_keeps_provider_transport() {
     let temp = TempDir::new().unwrap();
     let adapter = OpenCodeAdapter;
     let host = environment(temp.path());
@@ -679,11 +673,11 @@ async fn opencode_zen_base_url_override_keeps_model_selected_transport() {
     .await;
 
     let current = adapter.read_current(&paths, &host).await.unwrap();
-    assert_eq!(current.current.protocol, Some(CliProtocol::OpenaiResponses));
+    assert_eq!(current.current.protocol, Some(CliProtocol::OpenaiChat));
     let candidate = &current.unmanaged_api_candidates[0];
-    assert_eq!(candidate.template_id, None);
+    assert_eq!(candidate.template_id.as_deref(), Some("opencode"));
     assert!(!candidate.model_routed);
-    assert_eq!(candidate.connection.protocol, CliProtocol::OpenaiResponses);
+    assert_eq!(candidate.connection.protocol, CliProtocol::OpenaiChat);
     assert_eq!(
         candidate.connection.endpoint.as_str(),
         "https://proxy.invalid/zen/v1"
@@ -749,12 +743,12 @@ async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
     assert_eq!(current.unmanaged_api_candidates.len(), 1);
     let candidate = &current.unmanaged_api_candidates[0];
     assert_eq!(candidate.source_provider_id, "zhipuai-coding-plan");
-    assert_eq!(candidate.suggested_name, "GLM Coding Plan");
-    assert_eq!(candidate.template_id.as_deref(), Some("glm-coding-plan"));
+    assert_eq!(candidate.suggested_name, "Zhipu AI Coding Plan");
     assert_eq!(
-        candidate.connection.template_endpoint_id.as_deref(),
-        Some("openai-chat")
+        candidate.template_id.as_deref(),
+        Some("zhipuai-coding-plan")
     );
+    assert_eq!(candidate.connection.template_endpoint_id, None);
     assert_eq!(candidate.connection.credential_slot_id, "api-key");
     assert_eq!(candidate.connection.protocol, CliProtocol::OpenaiChat);
     assert_eq!(candidate.connection.auth_type, ConnectionAuthType::Bearer);
@@ -1209,12 +1203,38 @@ async fn opencode_recognizes_a_relation_specific_native_provider_package() {
     let current = adapter.read_current(&paths, &host).await.unwrap();
     let candidate = &current.unmanaged_api_candidates[0];
 
-    assert_eq!(candidate.template_id.as_deref(), Some("openrouter-api"));
+    assert_eq!(candidate.template_id.as_deref(), Some("openrouter"));
+    assert!(!candidate.model_routed);
+    assert_eq!(candidate.connection.template_endpoint_id, None);
     assert_eq!(candidate.connection.protocol, CliProtocol::OpenaiChat);
     assert_eq!(
         candidate.connection.endpoint.as_str(),
         "https://openrouter.ai/api/v1"
     );
+
+    let provider = ProviderProfile {
+        id: Uuid::new_v4(),
+        name: candidate.suggested_name.clone(),
+        template_id: candidate.template_id.clone(),
+        revision: 1,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        data: ProviderData::Api(ApiProviderData {
+            connections: vec![candidate.connection.clone()],
+        }),
+    };
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: provider.id,
+        connection_id: candidate.connection.id,
+        model: "fixture-model".into(),
+    };
+    let plan = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
+    assert!(config.contains("@openrouter/ai-sdk-provider"));
 }
 
 #[tokio::test]
