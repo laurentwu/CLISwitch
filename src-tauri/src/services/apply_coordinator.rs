@@ -16,9 +16,9 @@ use uuid::Uuid;
 use crate::{
     adapters::{AdapterPaths, AdapterWritePlan, HostEnvironment},
     domain::{
-        AppSettings, ApplyItemState, ApplyPreview, ApplyPreviewItem, ApplyRunItem,
-        ApplyRunSnapshot, CliId, ConfigurationTarget, FieldChange, ProviderData, ProviderProfile,
-        RestorePreview,
+        AppSettings, ApplyItemState, ApplyPreview, ApplyPreviewFile, ApplyPreviewItem,
+        ApplyRunItem, ApplyRunSnapshot, CliId, ConfigurationTarget, FieldChange, ProviderData,
+        ProviderProfile, RestorePreview,
     },
     error::{AppError, AppResult},
     filesystem::{
@@ -130,6 +130,28 @@ impl ApplyCoordinator {
         expected_revision: i64,
         settings: &AppSettings,
     ) -> AppResult<ApplyPreview> {
+        self.preview_targets(configuration_id, expected_revision, settings, None)
+            .await
+    }
+
+    pub async fn preview_target(
+        &self,
+        configuration_id: Uuid,
+        expected_revision: i64,
+        settings: &AppSettings,
+        target: ConfigurationTarget,
+    ) -> AppResult<ApplyPreview> {
+        self.preview_targets(configuration_id, expected_revision, settings, Some(target))
+            .await
+    }
+
+    async fn preview_targets(
+        &self,
+        configuration_id: Uuid,
+        expected_revision: i64,
+        settings: &AppSettings,
+        target_override: Option<ConfigurationTarget>,
+    ) -> AppResult<ApplyPreview> {
         self.evict_expired().await;
         let configuration = self.repository.get_configuration(configuration_id).await?;
         if configuration.revision != expected_revision {
@@ -138,9 +160,12 @@ impl ApplyCoordinator {
             ));
         }
         let environment = HostEnvironment::capture()?;
-        let mut public_items = Vec::with_capacity(configuration.targets.len());
+        let targets = target_override
+            .map(|target| vec![target])
+            .unwrap_or_else(|| configuration.targets.clone());
+        let mut public_items = Vec::with_capacity(targets.len());
         let mut prepared_items = HashMap::new();
-        for target in &configuration.targets {
+        for target in &targets {
             let cli_id = target.cli_id();
             let provider = self.repository.get_provider(target.provider_id()).await?;
             let adapter = self.registry.get(cli_id);
@@ -170,6 +195,7 @@ impl ApplyCoordinator {
                         protocol,
                         model: target.model().into(),
                         changes: Vec::new(),
+                        files: Vec::new(),
                         warning: Some(self.redactor.sanitize(error.to_string())),
                     });
                     continue;
@@ -184,6 +210,7 @@ impl ApplyCoordinator {
                     protocol,
                     model: target.model().into(),
                     changes: Vec::new(),
+                    files: Vec::new(),
                     warning: Some("CLI is not installed; this target will be skipped".into()),
                 });
                 continue;
@@ -205,6 +232,7 @@ impl ApplyCoordinator {
                         protocol,
                         model: target.model().into(),
                         changes: Vec::new(),
+                        files: Vec::new(),
                         warning: Some(warning.into()),
                     });
                     continue;
@@ -221,6 +249,7 @@ impl ApplyCoordinator {
                         protocol,
                         model: target.model().into(),
                         changes: Vec::new(),
+                        files: Vec::new(),
                         warning: Some(self.redactor.sanitize(message)),
                     });
                     continue;
@@ -234,6 +263,7 @@ impl ApplyCoordinator {
                         protocol,
                         model: target.model().into(),
                         changes: Vec::new(),
+                        files: Vec::new(),
                         warning: Some(self.redactor.sanitize(error.to_string())),
                     });
                     continue;
@@ -250,6 +280,7 @@ impl ApplyCoordinator {
                         protocol,
                         model: target.model().into(),
                         changes: Vec::new(),
+                        files: Vec::new(),
                         warning: Some(self.redactor.sanitize(error.to_string())),
                     });
                     continue;
@@ -283,6 +314,7 @@ impl ApplyCoordinator {
             .into_iter()
             .filter(|change| change.before != change.after)
             .collect();
+            let files = preview_files(&plan).await;
             public_items.push(ApplyPreviewItem {
                 cli_id,
                 state: if unchanged {
@@ -295,6 +327,7 @@ impl ApplyCoordinator {
                 protocol,
                 model: target.model().into(),
                 changes,
+                files,
                 warning: plan
                     .warning
                     .clone()
@@ -335,6 +368,14 @@ impl ApplyCoordinator {
 
     pub async fn start(&self, preview_id: Uuid) -> AppResult<ApplyRunSnapshot> {
         let write_guard = self.try_mutation_guard()?;
+        self.start_with_guard(preview_id, write_guard).await
+    }
+
+    pub async fn start_with_guard(
+        &self,
+        preview_id: Uuid,
+        write_guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> AppResult<ApplyRunSnapshot> {
         let prepared = self
             .previews
             .write()
@@ -810,6 +851,24 @@ async fn all_files_unchanged(plan: &AdapterWritePlan) -> AppResult<bool> {
     Ok(true)
 }
 
+async fn preview_files(plan: &AdapterWritePlan) -> Vec<ApplyPreviewFile> {
+    let mut files = Vec::with_capacity(plan.files.len());
+    for file in &plan.files {
+        let source_content = match tokio::fs::read(&file.path).await {
+            Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => None,
+        };
+        files.push(ApplyPreviewFile {
+            path: file.path.clone(),
+            existed: source_content.is_some(),
+            source_content,
+            target_content: String::from_utf8_lossy(&file.target_content).into_owned(),
+        });
+    }
+    files
+}
+
 fn target_protocol(
     target: &ConfigurationTarget,
     provider: &ProviderProfile,
@@ -936,6 +995,7 @@ mod tests {
             protocol: Some(CliProtocol::OpenaiResponses),
             model: "model-a".into(),
             changes: Vec::new(),
+            files: Vec::new(),
             warning: None,
         }
     }
@@ -997,6 +1057,154 @@ mod tests {
             warning: None,
         };
         assert!(all_files_unchanged(&plan).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn preview_file_snapshot_includes_source_and_target_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let existing = temp.path().join("existing.toml");
+        let missing = temp.path().join("new.toml");
+        tokio::fs::write(&existing, b"model = \"old\"\n")
+            .await
+            .unwrap();
+        let plan = AdapterWritePlan {
+            cli_id: CliId::Codex,
+            files: vec![
+                FileWritePlan {
+                    path: existing.clone(),
+                    allowed_root: temp.path().to_path_buf(),
+                    source_digest: file_digest(&existing).await.unwrap(),
+                    target_content: b"model = \"new\"\n".to_vec(),
+                    contains_credentials: false,
+                    opaque_content: false,
+                },
+                FileWritePlan {
+                    path: missing,
+                    allowed_root: temp.path().to_path_buf(),
+                    source_digest: Some("stale-digest".into()),
+                    target_content: b"model = \"new\"\n".to_vec(),
+                    contains_credentials: false,
+                    opaque_content: false,
+                },
+            ],
+            warning: None,
+        };
+
+        let files = preview_files(&plan).await;
+
+        assert_eq!(
+            files[0].source_content.as_deref(),
+            Some("model = \"old\"\n")
+        );
+        assert!(files[0].existed);
+        assert_eq!(files[0].target_content, "model = \"new\"\n");
+        assert_eq!(files[1].source_content, None);
+        assert!(!files[1].existed);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn single_target_preview_only_includes_requested_cli() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp, _paths, repository, coordinator) = fixture().await;
+        let provider = api_provider();
+        repository.insert_provider(&provider, None).await.unwrap();
+        let configuration = configuration(vec![
+            api_target(CliId::Codex, &provider),
+            api_target(CliId::Opencode, &provider),
+        ]);
+        repository
+            .insert_configuration(&configuration)
+            .await
+            .unwrap();
+
+        let executable = temp.path().join("codex-fixture");
+        tokio::fs::write(&executable, b"#!/bin/sh\necho codex 1.0\n")
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        let config_directory = temp.path().join("codex-config");
+        tokio::fs::create_dir_all(&config_directory).await.unwrap();
+        let mut settings = repository.get_settings().await.unwrap();
+        for location in &mut settings.manual_locations {
+            if location.cli_id == CliId::Codex {
+                location.executable_path = Some(executable.clone());
+                location.config_directory = Some(config_directory.clone());
+            }
+        }
+
+        let preview = coordinator
+            .preview_target(
+                configuration.id,
+                configuration.revision,
+                &settings,
+                api_target(CliId::Codex, &provider),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(preview.items.len(), 1);
+        assert_eq!(preview.items[0].cli_id, CliId::Codex);
+    }
+
+    #[tokio::test]
+    async fn background_run_retains_the_mutation_guard_until_finished() {
+        let (_temp, _paths, repository, coordinator) = fixture().await;
+        let configuration = configuration(Vec::new());
+        repository
+            .insert_configuration(&configuration)
+            .await
+            .unwrap();
+        let settings = repository.get_settings().await.unwrap();
+        let preview_id = Uuid::new_v4();
+        let now = Utc::now();
+        coordinator.previews.write().await.insert(
+            preview_id,
+            PreparedPreview {
+                public: ApplyPreview {
+                    id: preview_id,
+                    configuration_id: configuration.id,
+                    configuration_revision: configuration.revision,
+                    created_at: now,
+                    expires_at: now + PREVIEW_TTL,
+                    items: Vec::new(),
+                },
+                settings_revision: settings.revision,
+                items: HashMap::new(),
+            },
+        );
+
+        let guard = coordinator.try_mutation_guard().unwrap();
+        let run = coordinator
+            .start_with_guard(preview_id, guard)
+            .await
+            .unwrap();
+        assert!(coordinator.try_mutation_guard().is_err());
+
+        for _ in 0..100 {
+            if coordinator
+                .snapshot(run.id)
+                .await
+                .unwrap()
+                .finished_at
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(
+            coordinator
+                .snapshot(run.id)
+                .await
+                .unwrap()
+                .finished_at
+                .is_some()
+        );
+        assert!(coordinator.try_mutation_guard().is_ok());
     }
 
     #[cfg(unix)]

@@ -733,6 +733,98 @@ small {
   color: var(--success);
   text-decoration: none;
 }
+.preview-files {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+.preview-file-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.preview-file-tabs button {
+  flex: 0 0 auto;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--surface-2);
+  cursor: pointer;
+  font-size: 0.78rem;
+  text-align: left;
+}
+.preview-file-tabs button:hover,
+.preview-file-tabs .preview-file-tab-active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.preview-file {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.preview-file-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.preview-file-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-file-panes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.preview-file-panes > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.preview-file-panes h3,
+.preview-file > h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.preview-code,
+.preview-diff {
+  max-height: 300px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+}
+.preview-diff {
+  max-height: 360px;
+}
+.preview-diff-line {
+  display: block;
+  min-height: 1.5em;
+}
+.preview-diff-removed {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger), transparent 88%);
+}
+.preview-diff-added {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success), transparent 88%);
+}
 .state-good {
   color: var(--success);
 }
@@ -896,6 +988,9 @@ small {
     grid-template-columns: 210px minmax(0, 1fr);
   }
   .two-columns {
+    grid-template-columns: 1fr;
+  }
+  .preview-file-panes {
     grid-template-columns: 1fr;
   }
   .target-grid {

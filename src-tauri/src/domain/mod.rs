@@ -886,6 +886,15 @@ pub struct FieldChange {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ApplyPreviewFile {
+    pub path: PathBuf,
+    pub existed: bool,
+    pub source_content: Option<String>,
+    pub target_content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApplyPreviewItem {
     pub cli_id: CliId,
     pub state: ApplyItemState,
@@ -894,6 +903,8 @@ pub struct ApplyPreviewItem {
     pub protocol: Option<CliProtocol>,
     pub model: String,
     pub changes: Vec<FieldChange>,
+    #[serde(default)]
+    pub files: Vec<ApplyPreviewFile>,
     pub warning: Option<String>,
 }
 

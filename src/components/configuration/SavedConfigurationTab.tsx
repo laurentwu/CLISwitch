@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Copy, Play, Save, Trash2 } from "lucide-react";
+import { Copy, Eye, Play, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
 import { providerDisplayName, providerSupportsCli } from "../../shared/catalog";
@@ -17,39 +17,38 @@ import type {
 import { CLI_IDS } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { Badge, Button, Card, Field, Input, Modal, Select, type ErrorReporter } from "../ui";
-import { ApplyPreviewDialog } from "./ApplyPreviewDialog";
 import { CliTargetRow, makeTarget } from "./CliTargetRow";
 
 export function SavedConfigurationTab({
   configuration,
   matchStatus,
-  latestApply,
   providers,
   catalog,
   configurations,
   scan,
   onDeleted,
   onError,
+  onPreview,
+  onApplyRun,
 }: {
   configuration: SavedConfiguration;
   matchStatus?: string;
-  latestApply?: ApplyRunSnapshot;
   providers: PublicProvider[];
   catalog: ProviderCatalog;
   configurations: SavedConfiguration[];
   scan?: ScanSnapshot;
   onDeleted: () => void;
   onError: ErrorReporter;
+  onPreview?: (target: ConfigurationTarget) => void;
+  onApplyRun?: (run: ApplyRunSnapshot) => void;
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const setDirty = useUiStore((state) => state.setDirty);
   const dirty = useUiStore((state) => state.dirty);
   const setSaveCurrent = useUiStore((state) => state.setSaveCurrent);
-  const resumableApply = latestApply && !latestApply.finishedAt ? latestApply : undefined;
   const [name, setName] = useState(configuration.name);
   const [targets, setTargets] = useState<ConfigurationTarget[]>(configuration.targets);
-  const [applyOpen, setApplyOpen] = useState(Boolean(resumableApply));
   const [syncProvider, setSyncProvider] = useState("");
   const [duplicateOpen, setDuplicateOpen] = useState(false);
   const [duplicateName, setDuplicateName] = useState("");
@@ -76,6 +75,23 @@ export function SavedConfigurationTab({
       setDirty(false);
     },
     onError: (error) => onError(error, "save"),
+  });
+  const apply = useMutation({
+    mutationFn: async () => {
+      const saved = dirty ? await save.mutateAsync() : configuration;
+      let run: ApplyRunSnapshot;
+      try {
+        run = await command<ApplyRunSnapshot>("apply_configuration", {
+          configurationId: saved.id,
+          expectedRevision: saved.revision,
+        });
+      } catch (error) {
+        onError(error, "apply");
+        throw error;
+      }
+      onApplyRun?.(run);
+      return run;
+    },
   });
   useEffect(() => {
     setSaveCurrent(async () => {
@@ -217,8 +233,12 @@ export function SavedConfigurationTab({
                 </span>
               ) : null}
             </Button>
-            <Button disabled={!targetsValid} onClick={() => setApplyOpen(true)}>
-              <Play size={16} /> {t("config.apply")}
+            <Button
+              disabled={!targetsValid || Boolean(nameIssue) || save.isPending || apply.isPending}
+              onClick={() => apply.mutate()}
+            >
+              {apply.isPending ? <span className="spinner" /> : <Play size={16} />}{" "}
+              {t("config.apply")}
             </Button>
           </div>
         </div>
@@ -262,7 +282,19 @@ export function SavedConfigurationTab({
                     {t("config.included")}: {cliId}
                   </span>
                 </label>
-                <Badge>{t(`status.${detected?.status ?? "not-scanned"}`)}</Badge>
+                <div className="row-actions">
+                  <Badge>{t(`status.${detected?.status ?? "not-scanned"}`)}</Badge>
+                  <Button
+                    variant="secondary"
+                    disabled={!target}
+                    onClick={() => {
+                      if (!target) return;
+                      onPreview?.(target);
+                    }}
+                  >
+                    <Eye size={16} /> {t("config.preview")}
+                  </Button>
+                </div>
               </div>
               {target ? (
                 <CliTargetRow
@@ -277,12 +309,6 @@ export function SavedConfigurationTab({
           );
         })}
       </div>
-      <ApplyPreviewDialog
-        configuration={configuration}
-        initialRun={resumableApply}
-        open={applyOpen}
-        onClose={() => setApplyOpen(false)}
-      />
       <Modal
         open={duplicateOpen}
         title={t("config.duplicateTitle")}
