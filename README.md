@@ -17,7 +17,7 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 - Provider-level transport mapping, model ID/name suggestions, deprecated-model filtering, and manual model IDs. Custom providers remain available for endpoints outside the catalog.
 - Anthropic OAuth for Claude Code and Codex OAuth for Codex CLI, using installed official CLIs or offline auth-file import.
 - Full plaintext viewing, copying, and editing of API keys and OAuth source content.
-- Preview-before-apply, optimistic digest conflict checks, sequential per-CLI writes, atomic replacement, verification, rollback, cancellation, and retry of failed items only.
+- Per-CLI file previews, save-before-apply, optimistic digest conflict checks, sequential per-CLI writes, atomic replacement, verification, rollback, cancellation, and retry of failed items only.
 - Credential-bearing backups with tombstones and the latest five versions retained per source file.
 - Chinese and English UI, light/dark/system themes, single-instance behavior, and persisted window state.
 - No telemetry, automatic updater, remote scripts, or generic shell/filesystem IPC.

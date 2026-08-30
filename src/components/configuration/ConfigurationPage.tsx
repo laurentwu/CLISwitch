@@ -5,6 +5,8 @@ import { command } from "../../shared/ipc";
 import { validateEntityName } from "../../shared/names";
 import type {
   AppSnapshot,
+  ApplyRunSnapshot,
+  ConfigurationTarget,
   PublicProvider,
   SavedConfiguration,
   ScanSnapshot,
@@ -13,6 +15,7 @@ import { useUiStore } from "../../stores/ui";
 import { Button, ErrorAlert, Field, Input, Modal, type ErrorReporter } from "../ui";
 import { ConfigurationTabs } from "./ConfigurationTabs";
 import { CurrentConfigurationTab } from "./CurrentConfigurationTab";
+import { ApplyPreviewDialog } from "./ApplyPreviewDialog";
 import { SavedConfigurationTab } from "./SavedConfigurationTab";
 
 export function ConfigurationPage({
@@ -32,6 +35,12 @@ export function ConfigurationPage({
   const setDirty = useUiStore((state) => state.setDirty);
   const [addOpen, setAddOpen] = useState(false);
   const [name, setName] = useState("");
+  const [applyDialog, setApplyDialog] = useState<{
+    configurationId: string;
+    target?: ConfigurationTarget;
+    run?: ApplyRunSnapshot;
+  }>();
+  const [dismissedApplyId, setDismissedApplyId] = useState<string>();
   const configurations = useQuery({
     queryKey: ["configurations"],
     queryFn: () => command<SavedConfiguration[]>("list_configurations"),
@@ -52,6 +61,21 @@ export function ConfigurationPage({
     if (active !== "current" && !configurations.data.some((item) => item.id === active))
       setActive("current");
   }, [active, configurations.data, setActive]);
+  const selected = configurations.data.find((item) => item.id === active);
+  const latestApply = selected
+    ? snapshot.latestApply?.configurationId === selected.id
+      ? snapshot.latestApply
+      : undefined
+    : undefined;
+  const resumableApply =
+    latestApply && !latestApply.finishedAt && latestApply.id !== dismissedApplyId
+      ? latestApply
+      : undefined;
+  const visibleApplyDialog =
+    applyDialog ??
+    (selected && resumableApply
+      ? { configurationId: selected.id, run: resumableApply }
+      : undefined);
   const create = useMutation({
     mutationFn: () =>
       command<SavedConfiguration>("create_configuration", {
@@ -71,7 +95,6 @@ export function ConfigurationPage({
     onError: (error) => onError(error, "create"),
   });
   const nameIssue = validateEntityName(name, configurations.data);
-  const selected = configurations.data.find((item) => item.id === active);
   return (
     <div className="page">
       <header className="page-header">
@@ -127,15 +150,34 @@ export function ConfigurationPage({
           key={`${selected.id}:${selected.revision}`}
           configuration={selected}
           matchStatus={snapshot.configurationStatuses[selected.id]}
-          latestApply={
-            snapshot.latestApply?.configurationId === selected.id ? snapshot.latestApply : undefined
-          }
           providers={providers.data}
           catalog={snapshot.catalog}
           configurations={configurations.data}
           scan={scan.data}
           onDeleted={() => setActive("current")}
           onError={onError}
+          onPreview={(target) => {
+            setApplyDialog({ configurationId: selected.id, target });
+          }}
+          onApplyRun={(run) => {
+            setDismissedApplyId(undefined);
+            setApplyDialog({ configurationId: run.configurationId, run });
+          }}
+        />
+      ) : null}
+      {selected && visibleApplyDialog?.configurationId === selected.id ? (
+        <ApplyPreviewDialog
+          key={`${selected.id}:${selected.revision}:${visibleApplyDialog.target?.cliId ?? "apply"}:${visibleApplyDialog.run?.id ?? "none"}`}
+          configuration={selected}
+          target={visibleApplyDialog.target}
+          initialRun={visibleApplyDialog.run}
+          open
+          onClose={() => {
+            if (visibleApplyDialog.run) {
+              setDismissedApplyId(visibleApplyDialog.run.id);
+            }
+            setApplyDialog(undefined);
+          }}
         />
       ) : null}
       <Modal

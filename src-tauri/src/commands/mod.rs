@@ -828,14 +828,69 @@ pub async fn preview_apply(
 }
 
 #[tauri::command]
+pub async fn preview_cli_apply(
+    state: State<'_, AppState>,
+    configuration_id: Uuid,
+    expected_revision: i64,
+    target: ConfigurationTarget,
+) -> AppResult<crate::domain::ApplyPreview> {
+    let _mutation_guard = state.apply.try_mutation_guard()?;
+    let settings = state.repository.get_settings().await?;
+    if let Err(error) = state.oauth.refresh_active_bindings(&settings).await {
+        tracing::warn!(
+            operation = "oauth-refresh-before-cli-preview",
+            error = %state.redactor.sanitize(error.to_string()),
+            "OAuth refresh failed; continuing with an independent CLI preview"
+        );
+    }
+    state.cli_manager.scan(&settings).await;
+    state
+        .apply
+        .preview_target(configuration_id, expected_revision, &settings, target)
+        .await
+}
+
+#[tauri::command]
+pub async fn apply_configuration(
+    state: State<'_, AppState>,
+    configuration_id: Uuid,
+    expected_revision: i64,
+) -> AppResult<crate::domain::ApplyRunSnapshot> {
+    ensure_apply_allowed(state.oauth.has_active_sessions().await)?;
+    let mutation_guard = state.apply.try_mutation_guard()?;
+    let settings = state.repository.get_settings().await?;
+    if let Err(error) = state.oauth.refresh_active_bindings(&settings).await {
+        tracing::warn!(
+            operation = "oauth-refresh-before-apply",
+            error = %state.redactor.sanitize(error.to_string()),
+            "OAuth refresh failed; continuing with an independent apply"
+        );
+    }
+    state.cli_manager.scan(&settings).await;
+    let preview = state
+        .apply
+        .preview(configuration_id, expected_revision, &settings)
+        .await?;
+    state
+        .apply
+        .start_with_guard(preview.id, mutation_guard)
+        .await
+}
+
+#[tauri::command]
 pub async fn start_apply(
     state: State<'_, AppState>,
     preview_id: Uuid,
 ) -> AppResult<crate::domain::ApplyRunSnapshot> {
-    if state.oauth.has_active_sessions().await {
+    ensure_apply_allowed(state.oauth.has_active_sessions().await)?;
+    state.apply.start(preview_id).await
+}
+
+fn ensure_apply_allowed(oauth_active: bool) -> AppResult<()> {
+    if oauth_active {
         return Err(AppError::Blocked("an OAuth login session is active".into()));
     }
-    state.apply.start(preview_id).await
+    Ok(())
 }
 
 #[tauri::command]
@@ -1167,6 +1222,8 @@ macro_rules! cliswitch_invoke_handler {
             $crate::commands::delete_configuration,
             $crate::commands::save_current_as_configuration,
             $crate::commands::preview_apply,
+            $crate::commands::preview_cli_apply,
+            $crate::commands::apply_configuration,
             $crate::commands::start_apply,
             $crate::commands::cancel_apply,
             $crate::commands::retry_apply_items,
@@ -1292,6 +1349,15 @@ mod tests {
             Some("removed-from-catalog"),
             None,
             CliProtocol::OpenaiChat,
+        ));
+    }
+
+    #[test]
+    fn applying_is_blocked_while_oauth_session_is_active() {
+        assert!(ensure_apply_allowed(false).is_ok());
+        assert!(matches!(
+            ensure_apply_allowed(true),
+            Err(AppError::Blocked(message)) if message == "an OAuth login session is active"
         ));
     }
 }

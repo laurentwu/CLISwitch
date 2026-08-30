@@ -193,6 +193,13 @@ export interface FieldChange {
   after?: string | null;
 }
 
+export interface ApplyPreviewFile {
+  path: string;
+  existed: boolean;
+  sourceContent?: string | null;
+  targetContent: string;
+}
+
 export interface ApplyPreviewItem {
   cliId: CliId;
   state: ApplyItemState;
@@ -201,6 +208,7 @@ export interface ApplyPreviewItem {
   protocol?: CliProtocol | null;
   model: string;
   changes: FieldChange[];
+  files: ApplyPreviewFile[];
   warning?: string | null;
 }
 
