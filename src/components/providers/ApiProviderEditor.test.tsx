@@ -41,7 +41,7 @@ const catalog: ProviderCatalog = {
   relations: [],
 };
 
-const modelsDevCatalog: ProviderCatalog = {
+const cliAdapterCatalog: ProviderCatalog = {
   ...catalog,
   providerTemplates: [
     ...catalog.providerTemplates,
@@ -49,11 +49,11 @@ const modelsDevCatalog: ProviderCatalog = {
       mode: "api",
       id: "dynamic-demo",
       name: "Dynamic Demo",
-      category: "models.dev",
+      category: "cli-adapter",
       credentialSlots: [{ id: "api-key", name: "API Key" }],
       endpoints: [
         {
-          id: "default",
+          id: "openai-compatible",
           name: "OpenAI Chat Completions",
           protocol: "openai-chat",
           baseUrl: "https://dynamic.example/v1",
@@ -69,35 +69,27 @@ const modelsDevCatalog: ProviderCatalog = {
     {
       id: "dynamic-demo",
       name: "Dynamic Demo",
-      npm: "@ai-sdk/openai-compatible",
       env: ["DYNAMIC_API_KEY"],
-      api: "https://dynamic.example/v1",
-      doc: "https://dynamic.example/docs",
-      protocol: "openai-chat",
-      authType: "bearer",
-      endpoint: "https://dynamic.example/v1",
       selectable: true,
       supportedClis: ["opencode"],
-      models: [
-        { id: "dynamic-model", name: "Dynamic Model", selectable: true },
+      endpoints: [
         {
-          id: "disabled-model",
-          name: "Disabled Model",
-          selectable: false,
-          disabledReason: "model requires an override",
+          id: "openai-compatible",
+          protocol: "openai-chat",
+          endpoint: "https://dynamic.example/v1",
+          selectable: true,
+          supportedClis: ["opencode"],
         },
       ],
     },
     {
       id: "disabled-demo",
       name: "Disabled Demo",
-      npm: "unsupported-package",
       env: ["DISABLED_API_KEY"],
-      doc: "",
       selectable: false,
       disabledReason: "provider adapter is unsupported",
       supportedClis: [],
-      models: [],
+      endpoints: [],
     },
   ],
 };
@@ -126,13 +118,13 @@ describe("ApiProviderEditor", () => {
     expect(screen.getAllByDisplayValue("glm-suggested")).toHaveLength(3);
   });
 
-  it("creates a models.dev provider with a provider-level connection and catalog model", async () => {
+  it("creates a CLIAdapter provider with an endpoint identity and manual model", async () => {
     commandMock.mockResolvedValue({});
     render(
       <QueryClientProvider client={new QueryClient()}>
         <ApiProviderEditor
           providers={[]}
-          catalog={modelsDevCatalog}
+          catalog={cliAdapterCatalog}
           onClose={vi.fn()}
           onError={vi.fn()}
         />
@@ -148,11 +140,10 @@ describe("ApiProviderEditor", () => {
 
     fireEvent.change(templateSelect, { target: { value: "dynamic-demo" } });
 
-    expect(screen.getByRole("combobox", { name: /默认模型/ })).toHaveValue("dynamic-model");
-    expect(
-      document.querySelector('datalist#models-0 option[value="dynamic-model"]'),
-    ).not.toBeNull();
-    expect(document.querySelector('datalist#models-0 option[value="disabled-model"]')).toBeNull();
+    const model = screen.getByRole("combobox", { name: /默认模型/ });
+    expect(model).toHaveValue("");
+    expect(document.querySelector("datalist#models-0 option")).toBeNull();
+    fireEvent.change(model, { target: { value: "manual-model" } });
     fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
       target: { value: "fixture-key" },
     });
@@ -168,7 +159,61 @@ describe("ApiProviderEditor", () => {
     expect(draft.connections[0]).toMatchObject({
       protocol: "openai-chat",
       endpoint: "https://dynamic.example/v1",
-      defaultModel: "dynamic-model",
+      defaultModel: "manual-model",
+    });
+    expect(draft.connections[0].templateEndpointId).toBe("openai-compatible");
+  });
+
+  it("edits a provider from a changed catalog contract as resolved custom connections", async () => {
+    const detail: ApiProviderDetail = {
+      id: "provider-1",
+      name: "Saved dynamic provider",
+      profileType: "api",
+      templateId: "dynamic-demo",
+      revision: 1,
+      createdAt: "2026-08-23T00:00:00Z",
+      updatedAt: "2026-08-23T00:00:00Z",
+      connections: [
+        {
+          id: "connection-1",
+          templateEndpointId: "old-chat",
+          credentialSlotId: "api-key",
+          protocol: "openai-chat",
+          endpoint: "https://old.example.test/v1",
+          authType: "bearer",
+          apiKey: "fixture-key",
+          defaultModel: "saved-model",
+          verification: { status: "never-tested" },
+        },
+      ],
+    };
+    commandMock.mockResolvedValue({});
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApiProviderEditor
+          detail={detail}
+          providers={[]}
+          catalog={cliAdapterCatalog}
+          onClose={vi.fn()}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByDisplayValue("https://old.example.test/v1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith("update_provider", expect.anything()),
+    );
+    const updateCall = commandMock.mock.calls.find(([name]) => name === "update_provider");
+    const draft = updateCall?.[1]?.draft;
+    expect(draft.templateId).toBeUndefined();
+    expect(draft.connections).toHaveLength(1);
+    expect(draft.connections[0]).toMatchObject({
+      id: "connection-1",
+      endpoint: "https://old.example.test/v1",
+      protocol: "openai-chat",
     });
     expect(draft.connections[0].templateEndpointId).toBeUndefined();
   });

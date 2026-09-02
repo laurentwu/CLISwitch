@@ -1,0 +1,149 @@
+[
+  {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "env": [
+      "DEEPSEEK_API_KEY"
+    ],
+    "endpoints": [
+      {
+        "protocol": "anthropic-messages",
+        "url": "https://api.deepseek.com/anthropic"
+      },
+      {
+        "protocol": "openai-compatible",
+        "url": "https://api.deepseek.com"
+      },
+      {
+        "protocol": "responses",
+        "url": "https://api.deepseek.com"
+      }
+    ]
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode Zen",
+    "env": [
+      "OPENCODE_API_KEY"
+    ],
+    "endpoints": [
+      {
+        "protocol": "anthropic-messages",
+        "url": "https://opencode.ai/zen"
+      },
+      {
+        "protocol": "openai-compatible",
+        "url": "https://opencode.ai/zen/v1"
+      },
+      {
+        "protocol": "responses",
+        "url": "https://opencode.ai/zen/v1"
+      }
+    ]
+  },
+  {
+    "id": "opencode-go",
+    "name": "OpenCode Go",
+    "env": [
+      "OPENCODE_API_KEY"
+    ],
+    "endpoints": [
+      {
+        "protocol": "anthropic-messages",
+        "url": "https://opencode.ai/zen/go"
+      },
+      {
+        "protocol": "openai-compatible",
+        "url": "https://opencode.ai/zen/go/v1"
+      },
+      {
+        "protocol": "responses",
+        "url": "https://opencode.ai/zen/go/v1"
+      }
+    ]
+  },
+  {
+    "id": "zai",
+    "name": "Z.AI",
+    "env": [
+      "ZHIPU_API_KEY"
+    ],
+    "endpoints": [
+      {
+        "protocol": "anthropic-messages",
+        "url": "https://api.z.ai/api/anthropic"
+      },
+      {
+        "protocol": "openai-compatible",
+        "url": "https://api.z.ai/api/paas/v4"
+      },
+      {
+        "protocol": "responses",
+        "url": "https://api.z.ai/api/v1"
+      }
+    ]
+  },
+  {
+    "id": "zai-coding-plan",
+    "name": "Z.AI Coding Plan",
+    "env": [
+      "ZHIPU_API_KEY"
+    ],
+    "endpoints": [
+      {
+        "protocol": "anthropic-messages",
+        "url": "https://api.z.ai/api/anthropic"
+      },
+      {
+        "protocol": "openai-compatible",
+        "url": "https://api.z.ai/api/coding/paas/v4"
+      },
+      {
+        "protocol": "responses",
+        "url": "https://api.z.ai/api/v1"
+      }
+    ]
+  },
+  {
+    "id": "zhipuai",
+    "name": "Zhipu AI",
+    "env": [
+      "ZHIPU_API_KEY"
+    ],
+    "endpoints": [
+      {
+        "protocol": "anthropic-messages",
+        "url": "https://open.bigmodel.cn/api/anthropic"
+      },
+      {
+        "protocol": "openai-compatible",
+        "url": "https://open.bigmodel.cn/api/paas/v4"
+      },
+      {
+        "protocol": "responses",
+        "url": "https://open.bigmodel.cn/api/v1"
+      }
+    ]
+  },
+  {
+    "id": "zhipuai-coding-plan",
+    "name": "Zhipu AI Coding Plan",
+    "env": [
+      "ZHIPU_API_KEY"
+    ],
+    "endpoints": [
+      {
+        "protocol": "anthropic-messages",
+        "url": "https://open.bigmodel.cn/api/anthropic"
+      },
+      {
+        "protocol": "openai-compatible",
+        "url": "https://open.bigmodel.cn/api/coding/paas/v4"
+      },
+      {
+        "protocol": "responses",
+        "url": "https://open.bigmodel.cn/api/v1"
+      }
+    ]
+  }
+]

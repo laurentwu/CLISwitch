@@ -222,7 +222,6 @@ export function SettingsPage({
             <h2>
               <Database size={18} /> {t("settings.catalogTitle")}
             </h2>
-            <p>{t("settings.catalogHint")}</p>
           </div>
           <Button
             variant="secondary"
@@ -246,7 +245,6 @@ export function SettingsPage({
             <span>
               {t("settings.catalogCounts", {
                 providers: catalogStatus.data.providerCount,
-                models: catalogStatus.data.modelCount,
               })}
             </span>
             <span>

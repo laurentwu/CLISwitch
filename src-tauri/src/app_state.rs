@@ -154,7 +154,7 @@ impl AppState {
             {
                 provider.template_name = Some(info.name.clone());
                 provider.template_mode = Some("api".into());
-                provider.template_category = Some("models.dev".into());
+                provider.template_category = Some("cli-adapter".into());
             }
         }
         let configurations = self.repository.list_configurations().await?;

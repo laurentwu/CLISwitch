@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArchiveRestore, RefreshCw, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
-import { catalogModels, catalogProviderInfo, providerDisplayName } from "../../shared/catalog";
+import { catalogProviderInfo, providerDisplayName } from "../../shared/catalog";
 import { validateEntityName } from "../../shared/names";
 import type {
   CliId,
@@ -286,14 +286,7 @@ export function CurrentConfigurationTab({
             />
             <datalist id="candidate-models">
               {candidate.availableModels.map((model) => (
-                <option
-                  key={model}
-                  value={model}
-                  label={
-                    catalogModels(catalog, candidate.templateId).find((item) => item.id === model)
-                      ?.name
-                  }
-                />
+                <option key={model} value={model} />
               ))}
             </datalist>
           </Field>

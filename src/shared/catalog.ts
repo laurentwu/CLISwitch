@@ -1,7 +1,6 @@
 import type {
   ApiCliProviderRelation,
   ApiProviderTemplate,
-  CatalogModelInfo,
   CatalogProviderInfo,
   CliId,
   ProviderCatalog,
@@ -19,13 +18,6 @@ export function catalogProviderInfo(
 ): CatalogProviderInfo | undefined {
   if (!providerId) return undefined;
   return catalogProviderInfos(catalog).find((provider) => provider.id === providerId);
-}
-
-export function catalogModels(
-  catalog: ProviderCatalog,
-  providerId?: string | null,
-): CatalogModelInfo[] {
-  return catalogProviderInfo(catalog, providerId)?.models ?? [];
 }
 
 export function providerDisplayName(
@@ -69,12 +61,25 @@ export function connectionsForCli(
   if (provider.kind !== "api") return [];
   const dynamic = catalogProviderInfo(catalog, provider.templateId);
   if (dynamic) {
-    if (!dynamic.selectable || !dynamic.protocol || !dynamic.supportedClis.includes(cliId))
-      return [];
-    const protocols = new Set([dynamic.protocol]);
-    return provider.connections.filter((connection) => protocols.has(connection.protocol));
+    if (!dynamic.selectable || !dynamic.supportedClis.includes(cliId)) return [];
+    const endpointIds = new Set(
+      apiRelations(catalog, cliId, dynamic.id).map((relation) => relation.endpointId),
+    );
+    const cliProtocols = catalog.clis.find((cli) => cli.id === cliId)?.protocols ?? [];
+    return provider.connections.filter((connection) =>
+      connection.templateEndpointId
+        ? endpointIds.has(connection.templateEndpointId)
+        : cliProtocols.includes(connection.protocol),
+    );
   }
   if (provider.templateId) {
+    // A saved provider can outlive the catalog snapshot which supplied its template. Preserve
+    // those resolved connections using the fixed CLI protocol contract; current templates still
+    // require their explicit endpoint relations below.
+    if (!apiTemplate(catalog, provider.templateId)) {
+      const protocols = catalog.clis.find((cli) => cli.id === cliId)?.protocols ?? [];
+      return provider.connections.filter((connection) => protocols.includes(connection.protocol));
+    }
     const endpointIds = new Set(
       apiRelations(catalog, cliId, provider.templateId).map((relation) => relation.endpointId),
     );

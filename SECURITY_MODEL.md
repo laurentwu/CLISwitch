@@ -2,13 +2,13 @@
 
 ## Trust boundary
 
-CLISwitch is a single-user desktop configuration manager. Its trusted components are the packaged local WebView frontend and the Rust backend. It does not expose a network server, accept remote WebView content, load remote scripts, provide generic command execution, or provide arbitrary filesystem IPC. Production Content Security Policy denies network access from the WebView. Backend network requests are limited to user-triggered model listing/connection tests, a manual GitHub release check, and a manual provider-database download from the fixed `https://models.dev/api.json` URL; official CLI child processes perform OAuth login.
+CLISwitch is a single-user desktop configuration manager. Its trusted components are the packaged local WebView frontend and the Rust backend. It does not expose a network server, accept remote WebView content, load remote scripts, provide generic command execution, or provide arbitrary filesystem IPC. Production Content Security Policy denies network access from the WebView. Backend network requests are limited to user-triggered model listing/connection tests, a manual GitHub release check, and a manual provider-database download from the fixed `https://laurentwu.github.io/CLIAdapter/providers.json` URL; official CLI child processes perform OAuth login.
 
-The models.dev document is untrusted data. Downloads reject redirects, enforce a bounded body,
-validate provider/model identity and URL structure, and become active only after a successful
-private atomic cache write. npm package names are matched against fixed built-in adapters; no
-package, script, request header, or model-level endpoint override from the document is executed.
-Provider endpoints require HTTPS, except HTTP loopback addresses used by local model servers.
+The CLIAdapter provider document is untrusted data. Downloads reject redirects, enforce a bounded
+body, validate provider identity, protocol counts and URL structure, and become active only after a
+successful private atomic cache write. Protocol names are matched against fixed built-in adapters;
+no package, script, request header, or model configuration from the document is executed. Remote
+provider endpoints require HTTPS.
 
 CLISwitch is not a secret vault, sandbox, malware defense, or enterprise policy bypass. A process running as the same OS user, an administrator, malware, backup software, or a debugging/instrumentation tool can read its secrets.
 

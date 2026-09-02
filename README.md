@@ -12,9 +12,9 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 - A horizontal `Current configuration / named configurations / +` workspace.
 - Local discovery with explicit executable and config-directory overrides.
 - Endpoint + key providers with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages connections.
-- Provider and model templates sourced from a full bundled [models.dev](https://models.dev) JSON snapshot, with a private local cache and a manual update action in Settings.
-- Every upstream provider is visible by name and ID. Only providers which match the fixed protocol, endpoint, and security policy are selectable; unsupported npm packages are never loaded or executed.
-- Provider-level transport mapping, model ID/name suggestions, deprecated-model filtering, and manual model IDs. Custom providers remain available for endpoints outside the catalog.
+- Provider templates sourced from a bundled [CLIAdapter](https://github.com/laurentwu/CLIAdapter) snapshot, with a private local cache and a manual update action in Settings.
+- Every upstream provider is visible by name and ID. A provider contributes only the one to three protocol endpoints it declares, and only endpoints which pass the fixed protocol and security policy are selectable.
+- Models are not merged from an external catalog: each endpoint requires a manually entered model ID before saving. A saved connection can still request its live `/models` list. Custom providers remain available for endpoints outside the catalog.
 - Anthropic OAuth for Claude Code and Codex OAuth for Codex CLI, using installed official CLIs or offline auth-file import.
 - Full plaintext viewing, copying, and editing of API keys and OAuth source content.
 - Per-CLI file previews, save-before-apply, optimistic digest conflict checks, sequential per-CLI writes, atomic replacement, verification, rollback, cancellation, and retry of failed items only.
@@ -34,8 +34,9 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-Refresh the checked-in models.dev release snapshot with `pnpm catalog:update`. The updater uses the
-fixed upstream URL, validates provider/model identities, and records a digest sidecar.
+Refresh the checked-in CLIAdapter provider snapshot with `pnpm catalog:update`. The updater uses the
+fixed upstream URL, validates provider identities and declared protocol endpoints, and records a
+digest sidecar.
 
 Common verification commands:
 

@@ -22,10 +22,10 @@ const catalog: ProviderCatalog = {
       credentialSlots: [{ id: "api-key", name: "API Key" }],
       endpoints: [
         {
-          id: "chat",
-          name: "Chat",
-          protocol: "openai-chat",
-          baseUrl: "https://example.test/chat",
+          id: "anthropic-messages",
+          name: "Anthropic Messages",
+          protocol: "anthropic-messages",
+          baseUrl: "https://example.test/anthropic",
           credentialSlotId: "api-key",
           authOptions: [{ id: "bearer", authType: "bearer" }],
           defaultAuthOptionId: "bearer",
@@ -47,10 +47,10 @@ const catalog: ProviderCatalog = {
   relations: [
     {
       mode: "api",
-      id: "opencode-glm-chat",
+      id: "opencode-glm-anthropic",
       cliId: "opencode",
       providerTemplateId: "glm-coding-plan",
-      endpointId: "chat",
+      endpointId: "anthropic-messages",
       authOptionId: "bearer",
       default: false,
       nativeProviderIds: [],
@@ -75,13 +75,13 @@ const provider: PublicProvider = {
   templateId: "glm-coding-plan",
   connections: [
     {
-      id: "chat",
-      templateEndpointId: "chat",
+      id: "anthropic",
+      templateEndpointId: "anthropic-messages",
       credentialSlotId: "api-key",
-      protocol: "openai-chat",
-      endpoint: "https://example.test/chat",
+      protocol: "anthropic-messages",
+      endpoint: "https://example.test/anthropic",
       authType: "bearer",
-      defaultModel: "chat-model",
+      defaultModel: "anthropic-model",
       verification: { status: "never-tested" },
     },
     {
@@ -101,7 +101,7 @@ const provider: PublicProvider = {
 };
 
 describe("makeTarget", () => {
-  it("does not silently choose one OpenCode endpoint for a multi-endpoint template", () => {
+  it("requires an explicit OpenCode endpoint when openai-compatible is not declared", () => {
     expect(makeTarget(catalog, "opencode", provider)).toMatchObject({
       connectionId: "",
       model: "",

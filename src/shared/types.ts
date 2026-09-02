@@ -424,30 +424,23 @@ export interface ProviderCatalog {
   providerInfo?: CatalogProviderInfo[];
 }
 
-export interface CatalogModelInfo {
+export interface CatalogProviderEndpointInfo {
   id: string;
-  name: string;
-  status?: string | null;
+  protocol?: CliProtocol | null;
+  endpoint?: string | null;
   selectable: boolean;
   disabledReason?: string | null;
-  context?: number | null;
-  output?: number | null;
+  supportedClis: CliId[];
 }
 
 export interface CatalogProviderInfo {
   id: string;
   name: string;
-  npm: string;
   env: string[];
-  api?: string | null;
-  doc: string;
-  protocol?: CliProtocol | null;
-  authType?: ConnectionAuthType | null;
-  endpoint?: string | null;
   selectable: boolean;
   disabledReason?: string | null;
   supportedClis: CliId[];
-  models: CatalogModelInfo[];
+  endpoints: CatalogProviderEndpointInfo[];
 }
 
 export type CatalogSource = "bundled" | "local";
@@ -460,7 +453,6 @@ export interface CatalogStatus {
   etag?: string | null;
   digest: string;
   providerCount: number;
-  modelCount: number;
   lastError?: string | null;
   updateAvailable: boolean;
 }

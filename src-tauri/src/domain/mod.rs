@@ -324,37 +324,24 @@ impl ProviderProfile {
                         .connections
                         .iter()
                         .any(|connection| connection.template_endpoint_id.is_some());
-                    let runtime = crate::catalog::runtime_catalog()?;
-                    if !has_template_endpoints
-                        && let Some(info) = runtime.dynamic_provider_info(template_id)
-                    {
-                        // models.dev identities are provider-level source references. Their
-                        // resolved connection is deliberately endpoint-ID-free, but the domain
-                        // still enforces the generated provider's fixed transport contract at
-                        // every persistence boundary.
-                        if info.selectable {
-                            if api.connections.len() != 1 {
-                                return Err(AppError::Validation(format!(
-                                    "models.dev provider {template_id} requires exactly one connection"
-                                )));
-                            }
-                            let connection = &api.connections[0];
-                            if info.protocol != Some(connection.protocol)
-                                || connection.credential_slot_id != "api-key"
-                                || (info.auth_type == Some(ConnectionAuthType::Bearer)
-                                    && connection.auth_type != ConnectionAuthType::Bearer)
-                            {
-                                return Err(AppError::Validation(format!(
-                                    "connection does not match models.dev provider {template_id}"
-                                )));
-                            }
-                        }
-                    } else if has_template_endpoints {
-                        // Legacy template instances carry endpoint identities. New models.dev
-                        // instances intentionally do not: the catalog provider ID is only a
-                        // source reference and the saved connection is a resolved transport
-                        // snapshot.
-                        let catalog = crate::catalog::legacy_catalog()?;
+                    if has_template_endpoints {
+                        let runtime = crate::catalog::runtime_catalog()?;
+                        let legacy = crate::catalog::legacy_catalog()?;
+                        let runtime_template = runtime.api_template(template_id);
+                        let legacy_template = legacy.api_template(template_id);
+                        let catalog = if runtime_template
+                            .is_some_and(|template| api_matches_template_contract(api, template))
+                        {
+                            &runtime
+                        } else if legacy_template
+                            .is_some_and(|template| api_matches_template_contract(api, template))
+                        {
+                            legacy
+                        } else if runtime_template.is_some() {
+                            &runtime
+                        } else {
+                            legacy
+                        };
                         let template = catalog.api_template(template_id).ok_or_else(|| {
                             AppError::Validation(format!(
                                 "unknown API provider template {template_id}"
@@ -510,7 +497,7 @@ impl ProviderProfile {
         }
     }
 
-    /// Adds runtime models.dev metadata to the redacted public projection. The regular `public`
+    /// Adds runtime CLIAdapter metadata to the redacted public projection. The regular `public`
     /// method intentionally remains available for library callers that only have the bundled
     /// legacy catalog.
     pub fn public_with_catalog(
@@ -524,10 +511,38 @@ impl ProviderProfile {
         {
             public.template_name = Some(info.name.clone());
             public.template_mode = Some("api".into());
-            public.template_category = Some("models.dev".into());
+            public.template_category = Some("cli-adapter".into());
         }
         public
     }
+}
+
+fn api_matches_template_contract(
+    api: &ApiProviderData,
+    template: &crate::catalog::ApiProviderTemplate,
+) -> bool {
+    if api.connections.len() != template.endpoints.len() {
+        return false;
+    }
+    let mut endpoint_ids = std::collections::HashSet::new();
+    api.connections.iter().all(|connection| {
+        let Some(endpoint_id) = connection.template_endpoint_id.as_deref() else {
+            return false;
+        };
+        endpoint_ids.insert(endpoint_id)
+            && template
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.id == endpoint_id)
+                .is_some_and(|endpoint| {
+                    connection.protocol == endpoint.protocol
+                        && connection.credential_slot_id == endpoint.credential_slot_id
+                        && endpoint
+                            .auth_options
+                            .iter()
+                            .any(|option| option.auth_type == connection.auth_type)
+                })
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1151,6 +1166,12 @@ mod tests {
         };
         api.connections.pop();
         assert_validation_contains(&incomplete, "requires all configured endpoints");
+    }
+
+    #[test]
+    fn legacy_template_id_collision_uses_the_matching_endpoint_contract() {
+        let provider = api_provider_from_template("opencode-go");
+        assert!(provider.validate().is_ok());
     }
 
     #[test]

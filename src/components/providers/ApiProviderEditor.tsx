@@ -5,7 +5,7 @@ import { z } from "zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Files, Plus, Save, Trash2, Wifi } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { apiTemplate, catalogModels, catalogProviderInfos } from "../../shared/catalog";
+import { apiTemplate, catalogProviderInfos } from "../../shared/catalog";
 import { command } from "../../shared/ipc";
 import { validateEntityName } from "../../shared/names";
 import type {
@@ -99,17 +99,9 @@ function defaultModel(endpoint: ProviderEndpointTemplate) {
   return endpoint.models.find((model) => model.default)?.id ?? endpoint.models[0]?.id ?? "";
 }
 
-function templateDefaultModel(template: ApiProviderTemplate, catalog: ProviderCatalog): string {
-  if (template.category === "models.dev") {
-    return catalogModels(catalog, template.id).find((model) => model.selectable)?.id ?? "";
-  }
-  return template.endpoints[0] ? defaultModel(template.endpoints[0]) : "";
-}
-
 function templateConnections(
   template: ApiProviderTemplate,
   existing: DraftConnection[],
-  catalog: ProviderCatalog,
 ): DraftConnection[] {
   const secrets = new Map<string, string>();
   for (const connection of existing) {
@@ -117,16 +109,13 @@ function templateConnections(
   }
   return template.endpoints.map((endpoint) => {
     return {
-      templateEndpointId: template.category === "models.dev" ? undefined : endpoint.id,
+      templateEndpointId: endpoint.id,
       credentialSlotId: endpoint.credentialSlotId,
       protocol: endpoint.protocol,
       endpoint: endpoint.baseUrl,
       authType: defaultAuth(endpoint),
       apiKey: secrets.get(endpoint.credentialSlotId) ?? "",
-      defaultModel:
-        template.category === "models.dev"
-          ? templateDefaultModel(template, catalog)
-          : defaultModel(endpoint),
+      defaultModel: defaultModel(endpoint),
     };
   });
 }
@@ -134,7 +123,6 @@ function templateConnections(
 function reconcileTemplateConnections(
   template: ApiProviderTemplate,
   existing: DraftConnection[],
-  catalog: ProviderCatalog,
 ): DraftConnection[] {
   const bySlot = new Map<string, string>();
   for (const connection of existing) {
@@ -143,24 +131,41 @@ function reconcileTemplateConnections(
   return template.endpoints.map((endpoint) => {
     const previous =
       existing.find((connection) => connection.templateEndpointId === endpoint.id) ??
-      (template.category === "models.dev" && existing.length === 1 ? existing[0] : undefined);
+      existing.find(
+        (connection) => !connection.templateEndpointId && connection.protocol === endpoint.protocol,
+      );
     const previousAuthIsValid = endpoint.authOptions.some(
       (option) => option.authType === previous?.authType,
     );
     return {
       id: previous?.id,
-      templateEndpointId: template.category === "models.dev" ? undefined : endpoint.id,
+      templateEndpointId: endpoint.id,
       credentialSlotId: endpoint.credentialSlotId,
       protocol: endpoint.protocol,
       endpoint: previous?.endpoint ?? endpoint.baseUrl,
       authType: previousAuthIsValid && previous ? previous.authType : defaultAuth(endpoint),
       apiKey: bySlot.get(endpoint.credentialSlotId) ?? previous?.apiKey ?? "",
-      defaultModel:
-        previous?.defaultModel ??
-        (template.category === "models.dev"
-          ? templateDefaultModel(template, catalog)
-          : defaultModel(endpoint)),
+      defaultModel: previous?.defaultModel ?? defaultModel(endpoint),
     };
+  });
+}
+
+function connectionsMatchTemplate(
+  template: ApiProviderTemplate,
+  connections: DraftConnection[],
+): boolean {
+  if (connections.length !== template.endpoints.length) return false;
+  const endpointIds = new Set<string>();
+  return connections.every((connection) => {
+    const endpointId = connection.templateEndpointId;
+    if (!endpointId || endpointIds.has(endpointId)) return false;
+    endpointIds.add(endpointId);
+    const endpoint = template.endpoints.find((candidate) => candidate.id === endpointId);
+    return (
+      endpoint?.protocol === connection.protocol &&
+      endpoint.credentialSlotId === connection.credentialSlotId &&
+      endpoint.authOptions.some((option) => option.authType === connection.authType)
+    );
   });
 }
 
@@ -247,16 +252,24 @@ export function ApiProviderEditor({
     defaultModel: connection.defaultModel,
   }));
   const detailTemplate = apiTemplate(catalog, detail?.templateId);
+  const detailMatchesTemplate = Boolean(
+    detailTemplate &&
+    detailConnections &&
+    connectionsMatchTemplate(detailTemplate, detailConnections),
+  );
   const form = useForm<ApiProviderDraft>({
     resolver: zodResolver(schema),
     defaultValues: detail
       ? {
           name: detail.name,
-          templateId: detail.templateId ?? "",
+          templateId: detailMatchesTemplate ? (detail.templateId ?? "") : "",
           connections:
-            detailTemplate && detailConnections
-              ? reconcileTemplateConnections(detailTemplate, detailConnections, catalog)
-              : detailConnections,
+            detailMatchesTemplate && detailTemplate && detailConnections
+              ? reconcileTemplateConnections(detailTemplate, detailConnections)
+              : detailConnections?.map((connection) => ({
+                  ...connection,
+                  templateEndpointId: undefined,
+                })),
         }
       : initialDraft
         ? {
@@ -268,7 +281,7 @@ export function ApiProviderEditor({
             name: initialName ?? initialTemplate?.name ?? "",
             templateId: initialTemplate?.id ?? "",
             connections: initialTemplate
-              ? templateConnections(initialTemplate, [], catalog)
+              ? templateConnections(initialTemplate, [])
               : startsCustom || !requireTemplateSelection
                 ? [
                     {
@@ -383,7 +396,7 @@ export function ApiProviderEditor({
     if (!template) return;
     const currentName = form.getValues("name");
     form.setValue("templateId", nextTemplateId, { shouldDirty: true });
-    fields.replace(templateConnections(template, form.getValues("connections"), catalog));
+    fields.replace(templateConnections(template, form.getValues("connections")));
     if (!currentName.trim() || currentName === selectedTemplate?.name) {
       form.setValue("name", template.name, { shouldDirty: true });
     }
@@ -521,9 +534,6 @@ export function ApiProviderEditor({
             connections.findIndex(
               (item) => item.credentialSlotId === connection?.credentialSlotId,
             ) === index;
-          const dynamicModels = catalogModels(catalog, templateId)
-            .filter((model) => model.selectable)
-            .map((model) => ({ id: model.id, name: model.name }));
           const staticModels =
             endpointTemplate?.models.map((model) => ({
               id: model.id,
@@ -534,7 +544,7 @@ export function ApiProviderEditor({
             name: model,
           }));
           const currentModel = connection?.defaultModel?.trim();
-          const suggestions = [...dynamicModels, ...staticModels, ...fetchedModels]
+          const suggestions = [...staticModels, ...fetchedModels]
             .filter(
               (model, modelIndex, all) =>
                 all.findIndex((candidate) => candidate.id === model.id) === modelIndex,

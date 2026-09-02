@@ -17,34 +17,33 @@ overrides are separate from executable overrides.
 
 ## Provider database and compatibility policy
 
-Provider and model records come from the bundled `src-tauri/catalog/models.dev.json` snapshot. A
-validated private local copy takes precedence and can be refreshed from the fixed
-`https://models.dev/api.json` URL in Settings. Every upstream record is visible by stable ID and
-display name, including records which cannot be selected by this release.
+Provider records come from the bundled `src-tauri/catalog/providers.json` snapshot. A validated
+private local copy takes precedence and can be refreshed from the fixed
+`https://laurentwu.github.io/CLIAdapter/providers.json` URL in Settings. The current snapshot has
+seven providers. Each provider declares between one and three endpoints; CLISwitch never invents a
+missing protocol connection.
 
-The upstream `npm` field is data, not executable configuration. CLISwitch has a fixed adapter
-allowlist:
+Source protocols are mapped to fixed built-in adapters:
 
-| Package                       | Wire protocol           | Supported CLIs        |
-| ----------------------------- | ----------------------- | --------------------- |
-| `@ai-sdk/openai`              | OpenAI Responses        | Codex CLI, OpenCode   |
-| `@ai-sdk/anthropic`           | Anthropic Messages      | Claude Code, OpenCode |
-| `@ai-sdk/openai-compatible`   | OpenAI Chat Completions | OpenCode              |
-| `@openrouter/ai-sdk-provider` | OpenAI Chat Completions | OpenCode              |
+| Source protocol      | Internal protocol       | Supported CLIs        | OpenCode package            |
+| -------------------- | ----------------------- | --------------------- | --------------------------- |
+| `anthropic-messages` | Anthropic Messages      | Claude Code, OpenCode | `@ai-sdk/anthropic`         |
+| `responses`          | OpenAI Responses        | Codex CLI, OpenCode   | `@ai-sdk/openai`            |
+| `openai-compatible`  | OpenAI Chat Completions | OpenCode              | `@ai-sdk/openai-compatible` |
 
-All other packages are displayed as disabled with a reason. Provider endpoints must use HTTPS;
-HTTP is accepted only for loopback local model servers. Embedded credentials, unresolved `${…}`
-placeholders, query strings, and fragments are rejected. A provider-level mapping determines the
-transport. A model-level `provider` override is only a compatibility hint: endpoint/body/header
-overrides or a different wire shape are shown as unavailable instead of silently routing the model
-through another provider. Deprecated models are hidden from suggestions; ordinary and custom
-providers still accept a manually entered model ID.
+For OpenCode, `openai-compatible` is the native choice when it is declared. Otherwise the user
+must select one of the provider's actual compatible endpoints. Claude Code and Codex CLI likewise
+use only a declared compatible endpoint. Unknown protocols are disabled rather than inferred.
 
-The old static API provider templates are not used for new records. The pre-release destructive
-migration removes API profiles and configurations that depend on them. OAuth profiles, OAuth-only
-configurations, settings, and backups remain. OAuth templates are fixed by the CLI contract and
-are independent of models.dev. Custom providers remain available for endpoints outside the
-database.
+Provider endpoints must use HTTPS. Embedded credentials, unresolved `${…}` placeholders, query
+strings, and fragments are rejected. Models are not read or merged from the provider source: every
+declared endpoint requires a manually entered model ID before a provider can be saved. Live model
+listing remains available only for an already saved connection.
+
+The old static API provider templates are not used for new records but remain available for
+historical compatibility and tests. Refreshing the provider database never deletes or overwrites
+saved providers or configurations. OAuth templates are fixed by the CLI contract and are
+independent of CLIAdapter. Custom providers remain available for endpoints outside the database.
 
 ## Managed field mappings
 

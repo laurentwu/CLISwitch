@@ -10,8 +10,8 @@ cargo metadata --manifest-path src-tauri/Cargo.toml --locked --format-version 1 
 ```
 
 Generated license and dependency JSON files are review artifacts and are not committed because they
-contain redundant package metadata. The bundled models.dev snapshot is tracked separately below. A
-release owner must review new or changed license expressions before publishing.
+contain redundant package metadata. The bundled CLIAdapter provider snapshot is tracked separately
+below. A release owner must review new or changed license expressions before publishing.
 
 ## Principal runtime components
 
@@ -31,10 +31,11 @@ release owner must review new or changed license expressions before publishing.
 
 ## Bundled provider data
 
-`src-tauri/catalog/models.dev.json` is a generated snapshot of the models.dev provider/model
-database from <https://models.dev/api.json>. models.dev is Copyright (c) 2025 models.dev and is
-distributed under the MIT License. The snapshot is data only; CLISwitch does not bundle or execute
-the npm packages named by it. See the upstream project at <https://github.com/anomalyco/models.dev>.
+`src-tauri/catalog/providers.json` is a generated snapshot of the CLIAdapter provider database from
+<https://laurentwu.github.io/CLIAdapter/providers.json>. CLIAdapter is Copyright (c) 2026 Laurent
+Wu and is distributed under the MIT License. The snapshot is data only; CLISwitch does not bundle
+or execute remote code from it. See the upstream project at
+<https://github.com/laurentwu/CLIAdapter>.
 
 Build and test-only tools—including Vite, TypeScript, ESLint, Prettier, Vitest, WebdriverIO, and the WDIO Tauri plugins—are not intentionally shipped as production frontend code. They retain their respective permissive licenses. The dedicated E2E binary is not a release artifact.
 
