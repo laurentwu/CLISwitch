@@ -103,15 +103,26 @@ impl CliAdapter for CodexAdapter {
             (endpoint.as_deref(), runtime_catalog()?.provider_info)
         {
             let parsed = Url::parse(endpoint)?;
-            provider_info.into_iter().find(|info| {
+            let supports_endpoint = |info: &&crate::catalog::CatalogProviderInfo| {
                 info.selectable
-                    && info.protocol == Some(CliProtocol::OpenaiResponses)
-                    && (info.id == provider_id
-                        || info.endpoint.as_ref().is_some_and(|candidate| {
-                            candidate.as_str().trim_end_matches('/')
-                                == parsed.as_str().trim_end_matches('/')
-                        }))
-            })
+                    && info.endpoints.iter().any(|candidate| {
+                        candidate.selectable
+                            && candidate.protocol == Some(CliProtocol::OpenaiResponses)
+                            && candidate.endpoint.as_ref().is_some_and(|candidate| {
+                                candidate.as_str().trim_end_matches('/')
+                                    == parsed.as_str().trim_end_matches('/')
+                            })
+                    })
+            };
+            provider_info
+                .iter()
+                .find(|info| info.id == provider_id && supports_endpoint(info))
+                .cloned()
+                .or_else(|| {
+                    let mut matches = provider_info.iter().filter(supports_endpoint);
+                    let matched = matches.next()?.clone();
+                    matches.next().is_none().then_some(matched)
+                })
         } else {
             None
         };
@@ -120,7 +131,7 @@ impl CliAdapter for CodexAdapter {
                 dynamic_info.clone(),
                 ProviderConnection {
                     id: Uuid::new_v4(),
-                    template_endpoint_id: None,
+                    template_endpoint_id: dynamic_info.as_ref().map(|_| "responses".to_string()),
                     credential_slot_id: "api-key".into(),
                     protocol: CliProtocol::OpenaiResponses,
                     endpoint: Url::parse(endpoint)?,
@@ -154,19 +165,7 @@ impl CliAdapter for CodexAdapter {
         let unmanaged_api_candidates = candidate
             .into_iter()
             .map(|(dynamic_info, connection)| {
-                let mut available_models = dynamic_info
-                    .as_ref()
-                    .map(|info| {
-                        info.models
-                            .iter()
-                            .filter(|model| model.selectable)
-                            .map(|model| model.id.clone())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if !available_models.contains(&connection.default_model) {
-                    available_models.push(connection.default_model.clone());
-                }
+                let available_models = vec![connection.default_model.clone()];
                 AdapterApiCandidate {
                     source_provider_id: dynamic_info
                         .as_ref()

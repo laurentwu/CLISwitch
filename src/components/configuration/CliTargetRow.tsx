@@ -1,6 +1,5 @@
 import { useTranslation } from "react-i18next";
 import {
-  catalogModels,
   catalogProviderInfo,
   connectionDisplayName,
   connectionsForCli,
@@ -55,9 +54,6 @@ export function CliTargetRow({
   const compatible = compatibleProviders(catalog, cliId, providers);
   const selected = providers.find((provider) => provider.id === target.providerId);
   const connections = selected?.kind === "api" ? connectionsForCli(catalog, cliId, selected) : [];
-  const modelSuggestions = catalogModels(catalog, selected?.templateId).filter(
-    (model) => model.selectable,
-  );
   return (
     <div className="target-grid">
       <strong>{cliId}</strong>
@@ -111,21 +107,9 @@ export function CliTargetRow({
       )}
       <Field label={t("config.model")}>
         <Input
-          list={
-            modelSuggestions.length
-              ? `catalog-models-${cliId}-${selected?.id ?? "none"}`
-              : undefined
-          }
           value={target.model}
           onChange={(event) => onChange({ ...target, model: event.target.value })}
         />
-        {modelSuggestions.length ? (
-          <datalist id={`catalog-models-${cliId}-${selected?.id ?? "none"}`}>
-            {modelSuggestions.map((model) => (
-              <option key={model.id} value={model.id} label={model.name} />
-            ))}
-          </datalist>
-        ) : null}
       </Field>
     </div>
   );

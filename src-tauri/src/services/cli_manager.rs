@@ -567,7 +567,7 @@ impl CliManager {
                     .transpose()?
                     .unwrap_or(false);
                 let connections = match template_id.as_deref() {
-                    Some(template_id) if legacy_template && !dynamic_template => {
+                    Some(template_id) if legacy_template || dynamic_template => {
                         materialize_template_connections(template_id, &detected, selected_model)?
                     }
                     Some(_) | None => {
@@ -703,8 +703,11 @@ fn materialize_template_connections(
     detected: &crate::domain::ProviderConnection,
     selected_model: &str,
 ) -> AppResult<Vec<crate::domain::ProviderConnection>> {
-    let template = legacy_catalog()?
+    let runtime = runtime_catalog()?;
+    let legacy = legacy_catalog()?;
+    let template = runtime
         .api_template(template_id)
+        .or_else(|| legacy.api_template(template_id))
         .ok_or_else(|| AppError::Validation(format!("unknown provider template {template_id}")))?;
     materialize_template_connections_from_template(template_id, template, detected, selected_model)
 }
@@ -715,9 +718,18 @@ fn materialize_template_connections_from_template(
     detected: &crate::domain::ProviderConnection,
     selected_model: &str,
 ) -> AppResult<Vec<crate::domain::ProviderConnection>> {
-    let detected_endpoint_id = detected.template_endpoint_id.as_deref().ok_or_else(|| {
-        AppError::Validation("detected template provider has no endpoint identity".into())
-    })?;
+    let inferred_endpoint_id = template
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.protocol == detected.protocol)
+        .map(|endpoint| endpoint.id.as_str());
+    let detected_endpoint_id = detected
+        .template_endpoint_id
+        .as_deref()
+        .or(inferred_endpoint_id)
+        .ok_or_else(|| {
+            AppError::Validation("detected template provider has no endpoint identity".into())
+        })?;
     let detected_endpoint = template
         .endpoints
         .iter()
@@ -1290,9 +1302,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opencode_models_dev_candidate_uses_one_provider_level_transport() {
+    async fn opencode_cli_adapter_candidate_materializes_declared_transports() {
         let fixture = opencode_scan_fixture().await;
-        write_json_fixture(&fixture.config_file, &serde_json::json!({})).await;
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({ "model": "opencode/gpt-5.6-sol" }),
+        )
+        .await;
         write_json_fixture(
             &fixture.auth_file,
             &serde_json::json!({
@@ -1317,13 +1333,8 @@ mod tests {
                 .map(|endpoint| endpoint.as_str()),
             Some("https://opencode.ai/zen/v1")
         );
-        assert!(candidate.default_model.is_some());
-        assert!(
-            candidate
-                .available_models
-                .iter()
-                .any(|model| model == "glm-5")
-        );
+        assert_eq!(candidate.default_model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(candidate.available_models, ["gpt-5.6-sol"]);
         let saved = fixture
             .manager
             .save_unmanaged_candidate(
@@ -1341,14 +1352,22 @@ mod tests {
         assert_eq!(saved.template_id.as_deref(), Some("opencode"));
         let saved_id = saved.id;
         let ProviderData::Api(api) = &saved.data else {
-            panic!("model-routed OpenCode candidate should save as an API provider");
+            panic!("CLIAdapter OpenCode candidate should save as an API provider");
         };
-        assert_eq!(api.connections.len(), 1);
-        let chat = &api.connections[0];
-        assert_eq!(chat.template_endpoint_id, None);
+        assert_eq!(api.connections.len(), 3);
+        let chat = api
+            .connections
+            .iter()
+            .find(|connection| {
+                connection.template_endpoint_id.as_deref() == Some("openai-compatible")
+            })
+            .unwrap();
         assert_eq!(chat.protocol, CliProtocol::OpenaiChat);
         assert_eq!(chat.default_model, "glm-5");
         assert_eq!(chat.endpoint.as_str(), "https://opencode.ai/zen/v1");
+        assert!(api.connections.iter().all(|connection| {
+            connection.default_model == "glm-5" && connection.template_endpoint_id.is_some()
+        }));
 
         let namespaced_provider_id = format!("cliswitch_{saved_id}");
         write_json_fixture(
@@ -1389,9 +1408,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opencode_models_dev_candidate_exposes_unsupported_models_as_hints() {
+    async fn opencode_cli_adapter_candidate_accepts_manual_model_ids() {
         let fixture = opencode_scan_fixture().await;
-        write_json_fixture(&fixture.config_file, &serde_json::json!({})).await;
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({ "model": "opencode/gemini-3.7-flash" }),
+        )
+        .await;
         write_json_fixture(
             &fixture.auth_file,
             &serde_json::json!({
@@ -1412,15 +1435,9 @@ mod tests {
             .iter()
             .find(|candidate| candidate.id == candidate_id)
             .unwrap();
-        assert!(
-            !candidate
-                .available_models
-                .iter()
-                .any(|model| model == "gemini-3.7-flash")
-        );
-        // Model-level overrides are compatibility hints, not routing rules. A user may still
-        // enter an ID supplied by a private gateway; the provider-level Chat transport remains
-        // stable and the saved model is preserved verbatim.
+        assert_eq!(candidate.available_models, ["gemini-3.7-flash"]);
+        // The source contains no model catalog. A manually supplied model is preserved verbatim
+        // on every protocol endpoint materialized from the provider declaration.
         let saved = fixture
             .manager
             .save_unmanaged_candidate(
@@ -1437,9 +1454,14 @@ mod tests {
             .unwrap();
         assert_eq!(saved.template_id.as_deref(), Some("opencode"));
         let ProviderData::Api(api) = saved.data else {
-            panic!("models.dev candidate should save as an API provider");
+            panic!("CLIAdapter candidate should save as an API provider");
         };
-        assert_eq!(api.connections[0].default_model, "outside-catalog-model");
+        assert_eq!(api.connections.len(), 3);
+        assert!(
+            api.connections
+                .iter()
+                .all(|connection| connection.default_model == "outside-catalog-model")
+        );
     }
 
     #[tokio::test]

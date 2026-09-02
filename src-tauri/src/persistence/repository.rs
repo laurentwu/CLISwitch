@@ -936,13 +936,10 @@ fn dynamic_target_supported(
     endpoint_id: Option<&str>,
     protocol: CliProtocol,
 ) -> bool {
-    let Some(info) = catalog.dynamic_provider_info(template_id) else {
-        return false;
-    };
-    info.selectable
-        && info.protocol == Some(protocol)
-        && info.supported_clis.contains(&cli_id)
-        && endpoint_id.is_none_or(str::is_empty)
+    match endpoint_id.filter(|id| !id.is_empty()) {
+        Some(endpoint_id) => catalog.supports_api_endpoint(cli_id, template_id, endpoint_id),
+        None => catalog.supports_protocol(cli_id, protocol),
+    }
 }
 
 async fn validate_targets(

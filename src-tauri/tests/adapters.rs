@@ -129,6 +129,74 @@ async fn claude_patch_preserves_comments_order_and_unmanaged_fields() {
 }
 
 #[tokio::test]
+async fn claude_cli_adapter_apply_preserves_selected_bearer_auth() {
+    let temp = TempDir::new().unwrap();
+    let adapter = ClaudeCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "env": {
+            "ANTHROPIC_API_KEY": "stale-api-key",
+            "ANTHROPIC_AUTH_TOKEN": "stale-auth-token"
+          }
+        }"#,
+    )
+    .await;
+    let catalog = runtime_catalog().unwrap();
+    let template = catalog.api_template("deepseek").unwrap();
+    let connections = template
+        .endpoints
+        .iter()
+        .map(|endpoint| ProviderConnection {
+            id: Uuid::new_v4(),
+            template_endpoint_id: Some(endpoint.id.clone()),
+            credential_slot_id: endpoint.credential_slot_id.clone(),
+            protocol: endpoint.protocol,
+            endpoint: endpoint.base_url.clone(),
+            auth_type: if endpoint.protocol == CliProtocol::AnthropicMessages {
+                ConnectionAuthType::Bearer
+            } else {
+                endpoint.default_auth_type().unwrap()
+            },
+            api_key: "fixture-bearer-token".into(),
+            default_model: "manual-model".into(),
+            verification: VerificationInfo::default(),
+        })
+        .collect::<Vec<_>>();
+    let connection_id = connections
+        .iter()
+        .find(|connection| connection.protocol == CliProtocol::AnthropicMessages)
+        .unwrap()
+        .id;
+    let now = Utc::now();
+    let provider = ProviderProfile {
+        id: Uuid::new_v4(),
+        name: "DeepSeek bearer".into(),
+        template_id: Some("deepseek".into()),
+        revision: 1,
+        created_at: now,
+        updated_at: now,
+        data: ProviderData::Api(ApiProviderData { connections }),
+    };
+    provider.validate().unwrap();
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::ClaudeCode,
+        provider_id: provider.id,
+        connection_id,
+        model: "manual-model".into(),
+    };
+
+    let plan = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    let output = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
+    assert!(output.contains(r#""ANTHROPIC_AUTH_TOKEN": "fixture-bearer-token""#));
+    assert!(!output.contains("ANTHROPIC_API_KEY"));
+}
+
+#[tokio::test]
 async fn claude_explicit_api_settings_take_priority_over_a_stale_oauth_file() {
     let temp = TempDir::new().unwrap();
     let adapter = ClaudeCodeAdapter;
@@ -166,7 +234,7 @@ async fn claude_recognizes_minimax_region_and_credential_kind_from_endpoint_and_
             "https://api.minimaxi.com/anthropic/v1/",
             "ANTHROPIC_AUTH_TOKEN",
             "sk-api-china-fixture",
-            "minimax-cn",
+            "minimax-cn-api",
             ConnectionAuthType::Bearer,
         ),
     ] {
@@ -192,15 +260,52 @@ async fn claude_recognizes_minimax_region_and_credential_kind_from_endpoint_and_
         assert_eq!(current.unmanaged_api_candidates.len(), 1);
         let candidate = &current.unmanaged_api_candidates[0];
         assert_eq!(candidate.template_id.as_deref(), Some(template_id));
-        assert_eq!(candidate.connection.template_endpoint_id.as_deref(), None);
+        assert_eq!(
+            candidate.connection.template_endpoint_id.as_deref(),
+            Some("anthropic")
+        );
         assert_eq!(candidate.connection.auth_type, expected_auth_type);
         assert_eq!(candidate.connection.endpoint.as_str(), base_url);
         assert_eq!(
             current.current.provider_name.as_deref(),
-            runtime_catalog()
+            legacy_catalog()
                 .unwrap()
-                .dynamic_provider_info(template_id)
-                .map(|provider| provider.name.as_str())
+                .api_template(template_id)
+                .map(|template| template.name.as_str())
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_disambiguates_cli_adapter_provider_pairs_by_key_kind() {
+    for (key, expected_template_id) in [
+        ("sk-api-zai-fixture", "zai"),
+        ("sk-cp-zai-fixture", "zai-coding-plan"),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = ClaudeCodeAdapter;
+        let host = environment(temp.path());
+        let paths = adapter.resolve_paths(&host, None);
+        write_fixture(
+            &paths.config_file,
+            &format!(
+                r#"{{
+                  "env": {{
+                    "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+                    "ANTHROPIC_API_KEY": "{key}"
+                  }},
+                  "model": "manual-model"
+                }}"#
+            ),
+        )
+        .await;
+
+        let current = adapter.read_current(&paths, &host).await.unwrap();
+        let candidate = &current.unmanaged_api_candidates[0];
+        assert_eq!(candidate.template_id.as_deref(), Some(expected_template_id));
+        assert_eq!(
+            candidate.connection.template_endpoint_id.as_deref(),
+            Some("anthropic-messages")
         );
     }
 }
@@ -361,6 +466,45 @@ async fn codex_writes_responses_file_mapping_and_preserves_unmanaged_toml() {
 }
 
 #[tokio::test]
+async fn codex_recognizes_exact_and_unique_cli_adapter_responses_endpoints() {
+    for (provider_id, endpoint, expected_template_id) in [
+        (
+            "zai-coding-plan",
+            "https://api.z.ai/api/v1",
+            "zai-coding-plan",
+        ),
+        ("private-alias", "https://api.deepseek.com", "deepseek"),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = CodexAdapter;
+        let host = environment(temp.path());
+        let paths = adapter.resolve_paths(&host, None);
+        write_fixture(
+            &paths.config_file,
+            &format!(
+                r#"model = "manual-model"
+model_provider = "{provider_id}"
+
+[model_providers.{provider_id}]
+base_url = "{endpoint}"
+wire_api = "responses"
+experimental_bearer_token = "fixture-key"
+"#
+            ),
+        )
+        .await;
+
+        let current = adapter.read_current(&paths, &host).await.unwrap();
+        let candidate = &current.unmanaged_api_candidates[0];
+        assert_eq!(candidate.template_id.as_deref(), Some(expected_template_id));
+        assert_eq!(
+            candidate.connection.template_endpoint_id.as_deref(),
+            Some("responses")
+        );
+    }
+}
+
+#[tokio::test]
 async fn opencode_stable_schema_maps_each_protocol_to_the_correct_package() {
     for (protocol, package) in [
         (CliProtocol::OpenaiChat, "@ai-sdk/openai-compatible"),
@@ -477,7 +621,7 @@ async fn opencode_materializes_the_explicitly_selected_glm_endpoint() {
 }
 
 #[tokio::test]
-async fn opencode_models_dev_providers_use_one_provider_level_transport() {
+async fn opencode_cli_adapter_providers_use_the_declared_chat_transport() {
     for (
         provider_id,
         model_id,
@@ -534,14 +678,13 @@ async fn opencode_models_dev_providers_use_one_provider_level_transport() {
         assert_eq!(candidate.template_id.as_deref(), Some(provider_id));
         assert!(!candidate.model_routed);
         assert_eq!(candidate.default_model.as_deref(), Some(model_id));
+        assert_eq!(
+            candidate.connection.template_endpoint_id.as_deref(),
+            Some("openai-compatible")
+        );
         assert_eq!(candidate.connection.protocol, expected_protocol);
         assert_eq!(candidate.connection.endpoint.as_str(), expected_endpoint);
-        assert!(
-            candidate
-                .available_models
-                .iter()
-                .any(|model| model == model_id)
-        );
+        assert_eq!(candidate.available_models, [model_id]);
 
         let provider = ProviderProfile {
             id: Uuid::new_v4(),
@@ -568,8 +711,7 @@ async fn opencode_models_dev_providers_use_one_provider_level_transport() {
         assert!(config.contains(expected_package));
         assert!(config.contains(expected_endpoint));
 
-        // Model selection is a hint for a provider-level models.dev identity. It must not route
-        // the same saved connection to a different transport when a user types another model.
+        // A manually entered model ID must not route the saved connection to another protocol.
         let wrong_route_target = ConfigurationTarget::Api {
             cli_id: CliId::Opencode,
             provider_id: provider.id,
@@ -586,7 +728,7 @@ async fn opencode_models_dev_providers_use_one_provider_level_transport() {
 }
 
 #[tokio::test]
-async fn opencode_models_dev_credentials_without_a_current_model_use_a_catalog_default() {
+async fn opencode_cli_adapter_credentials_without_a_model_are_not_importable() {
     let temp = TempDir::new().unwrap();
     let adapter = OpenCodeAdapter;
     let host = environment(temp.path());
@@ -603,24 +745,21 @@ async fn opencode_models_dev_credentials_without_a_current_model_use_a_catalog_d
 
     let current = adapter.read_current(&paths, &host).await.unwrap();
     assert_eq!(current.current.model, None);
-    assert_eq!(current.unmanaged_api_candidates.len(), 2);
-    for candidate in &current.unmanaged_api_candidates {
-        assert!(!candidate.model_routed);
-        assert!(candidate.default_model.is_some());
-        assert!(!candidate.available_models.is_empty());
-        assert_eq!(
-            candidate.connection.default_model.as_str(),
-            candidate.default_model.as_deref().unwrap()
-        );
-    }
-    assert!(current.current.diagnostics.iter().all(|message| {
-        !message.contains("cannot be saved without")
-            && !message.contains("a configured or current model")
+    assert!(current.unmanaged_api_candidates.is_empty());
+    assert!(current.current.diagnostics.iter().any(|message| {
+        message.contains("opencode")
+            && message.contains("cannot be saved without")
+            && message.contains("a configured or current model")
+    }));
+    assert!(current.current.diagnostics.iter().any(|message| {
+        message.contains("opencode-go")
+            && message.contains("cannot be saved without")
+            && message.contains("a configured or current model")
     }));
 }
 
 #[tokio::test]
-async fn opencode_models_dev_model_overrides_are_reported_as_hints() {
+async fn opencode_cli_adapter_accepts_a_configured_manual_model() {
     let temp = TempDir::new().unwrap();
     let adapter = OpenCodeAdapter;
     let host = environment(temp.path());
@@ -637,19 +776,18 @@ async fn opencode_models_dev_model_overrides_are_reported_as_hints() {
     .await;
 
     let current = adapter.read_current(&paths, &host).await.unwrap();
-    assert!(current.current.diagnostics.iter().any(|message| {
-        message.contains("gemini-3.7-flash")
-            && message.contains("unavailable")
-            && message.contains("different provider adapter")
+    assert!(current.current.diagnostics.iter().all(|message| {
+        !message.contains("gemini-3.7-flash") || !message.contains("unavailable")
     }));
     let candidate = &current.unmanaged_api_candidates[0];
     assert!(!candidate.model_routed);
     assert_eq!(candidate.template_id.as_deref(), Some("opencode"));
     assert_eq!(candidate.default_model.as_deref(), Some("gemini-3.7-flash"));
+    assert_eq!(candidate.available_models, ["gemini-3.7-flash"]);
 }
 
 #[tokio::test]
-async fn opencode_models_dev_base_url_override_keeps_provider_transport() {
+async fn opencode_cli_adapter_base_url_override_keeps_provider_transport() {
     let temp = TempDir::new().unwrap();
     let adapter = OpenCodeAdapter;
     let host = environment(temp.path());
@@ -748,7 +886,10 @@ async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
         candidate.template_id.as_deref(),
         Some("zhipuai-coding-plan")
     );
-    assert_eq!(candidate.connection.template_endpoint_id, None);
+    assert_eq!(
+        candidate.connection.template_endpoint_id.as_deref(),
+        Some("openai-compatible")
+    );
     assert_eq!(candidate.connection.credential_slot_id, "api-key");
     assert_eq!(candidate.connection.protocol, CliProtocol::OpenaiChat);
     assert_eq!(candidate.connection.auth_type, ConnectionAuthType::Bearer);
@@ -757,7 +898,7 @@ async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
         "https://open.bigmodel.cn/api/coding/paas/v4"
     );
     assert_eq!(candidate.available_models[0], "glm-5.3");
-    assert!(candidate.available_models.contains(&"glm-4.7".into()));
+    assert_eq!(candidate.available_models, ["glm-5.3"]);
     assert!(candidate.is_current);
     assert!(current.current.diagnostics.is_empty());
     let state_source = current
@@ -1162,8 +1303,14 @@ async fn opencode_explicit_provider_fields_override_the_relation_defaults() {
     let candidate = &current.unmanaged_api_candidates[0];
 
     assert_eq!(candidate.suggested_name, "Private Zhipu gateway");
-    assert_eq!(candidate.template_id, None);
-    assert_eq!(candidate.connection.template_endpoint_id, None);
+    assert_eq!(
+        candidate.template_id.as_deref(),
+        Some("zhipuai-coding-plan")
+    );
+    assert_eq!(
+        candidate.connection.template_endpoint_id.as_deref(),
+        Some("anthropic-messages")
+    );
     assert_eq!(
         candidate.connection.protocol,
         CliProtocol::AnthropicMessages
@@ -1203,9 +1350,12 @@ async fn opencode_recognizes_a_relation_specific_native_provider_package() {
     let current = adapter.read_current(&paths, &host).await.unwrap();
     let candidate = &current.unmanaged_api_candidates[0];
 
-    assert_eq!(candidate.template_id.as_deref(), Some("openrouter"));
+    assert_eq!(candidate.template_id.as_deref(), Some("openrouter-api"));
     assert!(!candidate.model_routed);
-    assert_eq!(candidate.connection.template_endpoint_id, None);
+    assert_eq!(
+        candidate.connection.template_endpoint_id.as_deref(),
+        Some("chat")
+    );
     assert_eq!(candidate.connection.protocol, CliProtocol::OpenaiChat);
     assert_eq!(
         candidate.connection.endpoint.as_str(),

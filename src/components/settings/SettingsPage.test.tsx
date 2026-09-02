@@ -36,13 +36,12 @@ const snapshot: AppSnapshot = {
 
 const bundledStatus: CatalogStatus = {
   source: "bundled",
-  cachePath: "/tmp/cliswitch/models.dev.json",
-  metadataPath: "/tmp/cliswitch/models.dev.meta.json",
+  cachePath: "/tmp/cliswitch/providers.json",
+  metadataPath: "/tmp/cliswitch/providers.meta.json",
   fetchedAt: null,
   etag: null,
   digest: "bundled-digest",
-  providerCount: 203,
-  modelCount: 7343,
+  providerCount: 7,
   lastError: null,
   updateAvailable: false,
 };
@@ -61,8 +60,7 @@ describe("SettingsPage provider database", () => {
       fetchedAt: "2026-08-26T20:00:00Z",
       etag: "fixture-etag",
       digest: "local-digest",
-      providerCount: 204,
-      modelCount: 7350,
+      providerCount: 8,
     };
     commandMock.mockImplementation((name: string) => {
       if (name === "get_catalog_status") return Promise.resolve(bundledStatus);
@@ -79,13 +77,14 @@ describe("SettingsPage provider database", () => {
       </QueryClientProvider>,
     );
 
-    expect(await screen.findByText("203 个 provider，7343 个模型")).toBeInTheDocument();
+    expect(await screen.findByText("7 个 provider")).toBeInTheDocument();
+    expect(screen.queryByText(/models\.dev|数据来自/)).not.toBeInTheDocument();
     expect(screen.getByText(/当前来源/)).toHaveTextContent("内置快照");
 
     fireEvent.click(screen.getByRole("button", { name: "更新数据库" }));
 
     await waitFor(() => {
-      expect(screen.getByText("204 个 provider，7350 个模型")).toBeInTheDocument();
+      expect(screen.getByText("8 个 provider")).toBeInTheDocument();
       expect(screen.getByText(/当前来源/)).toHaveTextContent("本地缓存");
       expect(screen.getByRole("status")).toHaveTextContent("Provider 数据库已更新");
     });

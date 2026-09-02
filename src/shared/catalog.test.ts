@@ -5,12 +5,7 @@ import type {
   PublicProvider,
   PublicProviderConnection,
 } from "./types";
-import {
-  catalogModels,
-  connectionsForCli,
-  preferredConnectionForCli,
-  providerSupportsCli,
-} from "./catalog";
+import { connectionsForCli, preferredConnectionForCli, providerSupportsCli } from "./catalog";
 
 const endpoint = (id: string, protocol: CliProtocol) => ({
   id,
@@ -172,6 +167,23 @@ describe("provider catalog selectors", () => {
     expect(preferredConnectionForCli(catalog, "codex", custom)?.id).toBe("custom-responses");
   });
 
+  it("keeps connections from a saved provider whose source template left the catalog", () => {
+    const stale: PublicProvider = {
+      ...templatedApiProvider,
+      id: "stale-api",
+      templateId: "previous-catalog-provider",
+      connections: [
+        connection("stale-chat", "openai-chat"),
+        connection("stale-responses", "openai-responses"),
+      ],
+    };
+
+    expect(connectionsForCli(catalog, "codex", stale).map((candidate) => candidate.id)).toEqual([
+      "stale-responses",
+    ]);
+    expect(providerSupportsCli(catalog, "opencode", stale)).toBe(true);
+  });
+
   it("matches auth templates by relation and legacy OAuth providers by CLI auth mode", () => {
     const templatedOAuth: PublicProvider = {
       id: "templated-oauth",
@@ -197,34 +209,58 @@ describe("provider catalog selectors", () => {
     expect(providerSupportsCli(catalog, "claude-code", legacyOAuth)).toBe(false);
   });
 
-  it("uses providerInfo for models.dev compatibility and model suggestions", () => {
+  it("uses CLIAdapter provider metadata and explicit endpoint relations", () => {
     const dynamicCatalog: ProviderCatalog = {
       ...catalog,
+      providerTemplates: [
+        ...catalog.providerTemplates,
+        {
+          mode: "api",
+          id: "dynamic-chat",
+          name: "Dynamic Chat",
+          category: "cli-adapter",
+          credentialSlots: [{ id: "api-key", name: "API Key" }],
+          endpoints: [endpoint("openai-compatible", "openai-chat")],
+        },
+      ],
+      relations: [
+        ...catalog.relations,
+        {
+          mode: "api",
+          id: "opencode-dynamic-chat",
+          cliId: "opencode",
+          providerTemplateId: "dynamic-chat",
+          endpointId: "openai-compatible",
+          authOptionId: "bearer",
+          default: true,
+          nativeProviderIds: ["dynamic-chat"],
+        },
+      ],
       providerInfo: [
         {
           id: "dynamic-chat",
           name: "Dynamic Chat",
-          npm: "@ai-sdk/openai-compatible",
           env: ["DYNAMIC_API_KEY"],
-          api: "https://dynamic.example/v1",
-          doc: "",
-          protocol: "openai-chat",
-          authType: "bearer",
-          endpoint: "https://dynamic.example/v1",
           selectable: true,
           supportedClis: ["opencode"],
-          models: [{ id: "dynamic-model", name: "Dynamic Model", selectable: true }],
+          endpoints: [
+            {
+              id: "openai-compatible",
+              protocol: "openai-chat",
+              endpoint: "https://dynamic.example/v1",
+              selectable: true,
+              supportedClis: ["opencode"],
+            },
+          ],
         },
         {
           id: "disabled-chat",
           name: "Disabled Chat",
-          npm: "unsupported",
           env: [],
-          doc: "",
           selectable: false,
           disabledReason: "provider adapter is unsupported",
           supportedClis: [],
-          models: [],
+          endpoints: [],
         },
       ],
     };
@@ -233,8 +269,8 @@ describe("provider catalog selectors", () => {
       id: "dynamic-provider",
       templateId: "dynamic-chat",
       connections: [
-        connection("dynamic-chat-connection", "openai-chat"),
-        connection("dynamic-responses-connection", "openai-responses"),
+        connection("dynamic-chat-connection", "openai-chat", "openai-compatible"),
+        connection("dynamic-responses-connection", "openai-responses", "responses"),
       ],
     };
     const disabledProvider: PublicProvider = {
@@ -252,8 +288,5 @@ describe("provider catalog selectors", () => {
     expect(providerSupportsCli(dynamicCatalog, "codex", dynamicProvider)).toBe(false);
     expect(connectionsForCli(dynamicCatalog, "opencode", disabledProvider)).toEqual([]);
     expect(providerSupportsCli(dynamicCatalog, "opencode", disabledProvider)).toBe(false);
-    expect(catalogModels(dynamicCatalog, "dynamic-chat")).toEqual([
-      { id: "dynamic-model", name: "Dynamic Model", selectable: true },
-    ]);
   });
 });

@@ -12,7 +12,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check:production-boundary": "node scripts/check-production-boundary.mjs",
-    "catalog:update": "node scripts/update-models-dev.mjs",
+    "catalog:update": "node scripts/update-providers.mjs",
     "build:e2e": "tsc -b && vite build --mode e2e",
     "preview": "vite preview",
     "tauri": "tauri",

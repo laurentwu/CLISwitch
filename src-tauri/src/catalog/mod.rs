@@ -47,91 +47,47 @@ pub struct ProviderCatalog {
     pub provider_info: Option<Vec<CatalogProviderInfo>>,
 }
 
-pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+pub const CLI_ADAPTER_PROVIDERS_URL: &str = "https://laurentwu.github.io/CLIAdapter/providers.json";
 
-/// A normalized, lossless-enough representation of the fields CLISwitch consumes from
-/// models.dev. Unknown upstream fields are retained in `extra` so a cache refresh does not turn
-/// into an accidental schema downgrade when models.dev adds metadata.
+/// A normalized representation of the provider endpoint document published by CLIAdapter.
+/// Unknown fields are retained so a cache refresh does not discard forward-compatible metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelsDevCatalog {
-    pub providers: Vec<ModelsDevProvider>,
+pub struct CliAdapterCatalog {
+    pub providers: Vec<CliAdapterProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelsDevProvider {
-    /// The provider map key is the stable identity. Older snapshots did not always repeat it in
-    /// the object, so normalization fills an omitted value from that key below.
-    #[serde(default)]
+pub struct CliAdapterProvider {
     pub id: String,
+    pub name: String,
     #[serde(default)]
     pub env: Vec<String>,
-    pub npm: String,
     #[serde(default)]
-    pub api: Option<String>,
-    pub name: String,
-    #[serde(default)]
-    pub doc: String,
-    #[serde(default)]
-    pub models: BTreeMap<String, ModelsDevModel>,
+    pub endpoints: Vec<CliAdapterEndpoint>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelsDevModel {
-    /// The model map key is the stable identity; see [`ModelsDevCatalog::from_api_json`].
-    #[serde(default)]
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub status: Option<String>,
-    #[serde(default)]
-    pub provider: Option<ModelsDevModelProvider>,
-    #[serde(default)]
-    pub limit: Option<ModelsDevModelLimit>,
+pub struct CliAdapterEndpoint {
+    pub protocol: String,
+    pub url: String,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelsDevModelProvider {
-    #[serde(default)]
-    pub npm: Option<String>,
-    #[serde(default)]
-    pub api: Option<String>,
-    #[serde(default)]
-    pub shape: Option<String>,
-    #[serde(default)]
-    pub body: Option<BTreeMap<String, serde_json::Value>>,
-    #[serde(default)]
-    pub headers: Option<BTreeMap<String, String>>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelsDevModelLimit {
-    #[serde(default)]
-    pub context: Option<u64>,
-    #[serde(default)]
-    pub input: Option<u64>,
-    #[serde(default)]
-    pub output: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CatalogModelInfo {
+pub struct CatalogProviderEndpointInfo {
     pub id: String,
-    pub name: String,
-    pub status: Option<String>,
+    pub protocol: Option<CliProtocol>,
+    pub endpoint: Option<Url>,
     pub selectable: bool,
     pub disabled_reason: Option<String>,
-    pub context: Option<u64>,
-    pub output: Option<u64>,
+    pub supported_clis: Vec<CliId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,24 +95,11 @@ pub struct CatalogModelInfo {
 pub struct CatalogProviderInfo {
     pub id: String,
     pub name: String,
-    pub npm: String,
     pub env: Vec<String>,
-    pub api: Option<String>,
-    pub doc: String,
-    pub protocol: Option<CliProtocol>,
-    pub auth_type: Option<ConnectionAuthType>,
-    pub endpoint: Option<Url>,
     pub selectable: bool,
     pub disabled_reason: Option<String>,
     pub supported_clis: Vec<CliId>,
-    pub models: Vec<CatalogModelInfo>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AdapterRule {
-    protocol: CliProtocol,
-    auth_type: ConnectionAuthType,
-    default_endpoint: Option<&'static str>,
+    pub endpoints: Vec<CatalogProviderEndpointInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,74 +298,58 @@ pub struct AuthCliProviderRelation {
     pub auth_mode_id: String,
 }
 
-impl ModelsDevCatalog {
-    pub fn from_api_json(bytes: &[u8]) -> AppResult<Self> {
-        let mut providers = serde_json::from_slice::<BTreeMap<String, ModelsDevProvider>>(bytes)?;
+impl CliAdapterCatalog {
+    pub fn from_json(bytes: &[u8]) -> AppResult<Self> {
+        let mut providers = serde_json::from_slice::<Vec<CliAdapterProvider>>(bytes)?;
         if providers.is_empty() {
-            return invalid("models.dev catalog contains no providers".into());
+            return invalid("CLIAdapter catalog contains no providers".into());
         }
-        let mut normalized = Vec::with_capacity(providers.len());
-        for (map_id, provider) in providers.iter_mut() {
-            if provider.id.trim().is_empty() {
-                provider.id = map_id.clone();
-            }
-            if provider.id != *map_id {
+        let mut provider_ids = HashSet::new();
+        for provider in &providers {
+            ensure_source_identifier("CLIAdapter provider ID", &provider.id)?;
+            ensure_nonempty("CLIAdapter provider name", &provider.name)?;
+            if !provider_ids.insert(provider.id.as_str()) {
                 return invalid(format!(
-                    "models.dev provider key {map_id} does not match id {}",
+                    "CLIAdapter catalog repeats provider {}",
                     provider.id
                 ));
             }
-            ensure_source_identifier("models.dev provider ID", &provider.id)?;
-            ensure_nonempty("models.dev provider name", &provider.name)?;
-            ensure_nonempty("models.dev provider npm", &provider.npm)?;
-            for environment_name in &provider.env {
-                ensure_nonempty("models.dev environment name", environment_name)?;
-            }
             ensure_unique_nonempty_strings(
-                "models.dev environment name",
+                "CLIAdapter environment name",
                 provider.env.iter().map(String::as_str),
             )?;
-            let mut model_ids = HashSet::new();
-            for (map_model_id, model) in &mut provider.models {
-                if model.id.trim().is_empty() {
-                    model.id = map_model_id.clone();
-                }
-                if model.id != *map_model_id {
-                    return invalid(format!(
-                        "models.dev provider {} model key {map_model_id} does not match id {}",
-                        provider.id, model.id
-                    ));
-                }
-                ensure_source_identifier("models.dev model ID", &model.id)?;
-                ensure_nonempty("models.dev model name", &model.name)?;
-                if !model_ids.insert(model.id.as_str()) {
-                    return invalid(format!(
-                        "models.dev provider {} repeats model {}",
-                        provider.id, model.id
-                    ));
-                }
-                // Status values are upstream-extensible. Unknown values remain in the snapshot
-                // and are exposed as disabled hints by `resolve_model`, so one new status cannot
-                // invalidate an otherwise usable downloaded database.
+            if provider.endpoints.is_empty() || provider.endpoints.len() > 3 {
+                return invalid(format!(
+                    "CLIAdapter provider {} must declare between one and three endpoints",
+                    provider.id
+                ));
             }
-            normalized.push(provider.clone());
+            let mut protocols = HashSet::new();
+            for endpoint in &provider.endpoints {
+                ensure_identifier("CLIAdapter endpoint protocol", &endpoint.protocol)?;
+                ensure_nonempty("CLIAdapter endpoint URL", &endpoint.url)?;
+                if !protocols.insert(endpoint.protocol.as_str()) {
+                    return invalid(format!(
+                        "CLIAdapter provider {} repeats protocol {}",
+                        provider.id, endpoint.protocol
+                    ));
+                }
+            }
         }
-        normalized.sort_by(|left, right| {
+        providers.sort_by(|left, right| {
             left.name
                 .to_lowercase()
                 .cmp(&right.name.to_lowercase())
                 .then_with(|| left.id.cmp(&right.id))
         });
-        Ok(Self {
-            providers: normalized,
-        })
+        Ok(Self { providers })
     }
 
     pub fn bundled() -> AppResult<Self> {
-        Self::from_api_json(include_bytes!("../../catalog/models.dev.json"))
+        Self::from_json(include_bytes!("../../catalog/providers.json"))
     }
 
-    pub fn provider(&self, provider_id: &str) -> Option<&ModelsDevProvider> {
+    pub fn provider(&self, provider_id: &str) -> Option<&CliAdapterProvider> {
         self.providers
             .iter()
             .find(|provider| provider.id == provider_id)
@@ -432,44 +359,31 @@ impl ModelsDevCatalog {
         self.providers.len()
     }
 
-    pub fn model_count(&self) -> usize {
-        self.providers
-            .iter()
-            .map(|provider| provider.models.len())
-            .sum()
-    }
-
     pub fn provider_info(&self) -> Vec<CatalogProviderInfo> {
         self.providers.iter().map(resolve_provider).collect()
     }
 }
 
-fn adapter_rule(npm: &str) -> Option<AdapterRule> {
+/// Returns the protocol represented by one of the built-in OpenCode packages. Package names are
+/// fixed application data and never loaded or executed.
+pub(crate) fn fixed_adapter_protocol(npm: &str) -> Option<CliProtocol> {
     match npm {
-        "@ai-sdk/openai" => Some(AdapterRule {
-            protocol: CliProtocol::OpenaiResponses,
-            auth_type: ConnectionAuthType::Bearer,
-            default_endpoint: Some("https://api.openai.com/v1"),
-        }),
-        "@ai-sdk/anthropic" => Some(AdapterRule {
-            protocol: CliProtocol::AnthropicMessages,
-            auth_type: ConnectionAuthType::ApiKey,
-            default_endpoint: Some("https://api.anthropic.com"),
-        }),
-        "@ai-sdk/openai-compatible" | "@openrouter/ai-sdk-provider" => Some(AdapterRule {
-            protocol: CliProtocol::OpenaiChat,
-            auth_type: ConnectionAuthType::Bearer,
-            default_endpoint: None,
-        }),
+        "@ai-sdk/openai" => Some(CliProtocol::OpenaiResponses),
+        "@ai-sdk/anthropic" => Some(CliProtocol::AnthropicMessages),
+        "@ai-sdk/openai-compatible" | "@openrouter/ai-sdk-provider" => {
+            Some(CliProtocol::OpenaiChat)
+        }
         _ => None,
     }
 }
 
-/// Returns the protocol represented by one of the built-in models.dev adapters. The upstream
-/// package names are data only; callers use this helper to recognize an entry and then select a
-/// fixed, compiled-in transport implementation.
-pub(crate) fn fixed_adapter_protocol(npm: &str) -> Option<CliProtocol> {
-    adapter_rule(npm).map(|rule| rule.protocol)
+fn cli_adapter_protocol(protocol: &str) -> Option<CliProtocol> {
+    match protocol {
+        "anthropic-messages" => Some(CliProtocol::AnthropicMessages),
+        "openai-compatible" => Some(CliProtocol::OpenaiChat),
+        "responses" => Some(CliProtocol::OpenaiResponses),
+        _ => None,
+    }
 }
 
 fn supported_clis(protocol: CliProtocol) -> Vec<CliId> {
@@ -480,127 +394,102 @@ fn supported_clis(protocol: CliProtocol) -> Vec<CliId> {
     }
 }
 
-fn resolve_provider(provider: &ModelsDevProvider) -> CatalogProviderInfo {
-    let rule = adapter_rule(&provider.npm);
-    let endpoint_result = rule.and_then(|rule| {
-        provider
-            .api
-            .as_deref()
-            .filter(|api| !api.trim().is_empty())
-            .or(rule.default_endpoint)
-            .map(resolve_catalog_endpoint)
-    });
-    let (endpoint, endpoint_error) = match endpoint_result {
-        Some(Ok(endpoint)) => (Some(endpoint), None),
-        Some(Err(error)) => (None, Some(error)),
-        None => (
-            None,
-            rule.map(|_| "models.dev does not provide a usable API endpoint".to_string()),
-        ),
-    };
-    let disabled_reason = match rule {
-        None => Some(format!("unsupported provider package {}", provider.npm)),
-        Some(_) if provider.env.is_empty() => {
-            Some("models.dev provider has no credential environment name".into())
-        }
-        Some(_) if provider.env.len() != 1 => Some(format!(
-            "models.dev provider requires {} credential environment names; CLISwitch supports one API key",
-            provider.env.len()
-        )),
-        Some(_) => endpoint_error,
-    };
-    let mut models = provider
-        .models
-        .values()
-        .map(|model| resolve_model(provider, rule, model))
+fn endpoint_auth_options(protocol: CliProtocol) -> Vec<EndpointAuthOption> {
+    if protocol == CliProtocol::AnthropicMessages {
+        vec![
+            EndpointAuthOption {
+                id: "api-key".into(),
+                auth_type: ConnectionAuthType::ApiKey,
+            },
+            EndpointAuthOption {
+                id: "bearer".into(),
+                auth_type: ConnectionAuthType::Bearer,
+            },
+        ]
+    } else {
+        vec![EndpointAuthOption {
+            id: "bearer".into(),
+            auth_type: ConnectionAuthType::Bearer,
+        }]
+    }
+}
+
+fn default_auth_option_id(protocol: CliProtocol) -> &'static str {
+    if protocol == CliProtocol::AnthropicMessages {
+        "api-key"
+    } else {
+        "bearer"
+    }
+}
+
+fn resolve_provider(provider: &CliAdapterProvider) -> CatalogProviderInfo {
+    let mut endpoints = provider
+        .endpoints
+        .iter()
+        .map(|source| {
+            let protocol = cli_adapter_protocol(&source.protocol);
+            let endpoint_result = resolve_catalog_endpoint(&source.url).and_then(|endpoint| {
+                if endpoint.scheme() == "https" {
+                    Ok(endpoint)
+                } else {
+                    Err("CLIAdapter provider endpoint must use HTTPS".into())
+                }
+            });
+            let disabled_reason = match (&protocol, &endpoint_result) {
+                (None, _) => Some(format!("unsupported provider protocol {}", source.protocol)),
+                (Some(_), Err(error)) => Some(error.clone()),
+                (Some(_), Ok(_)) => None,
+            };
+            let selectable = disabled_reason.is_none();
+            CatalogProviderEndpointInfo {
+                id: source.protocol.clone(),
+                protocol,
+                endpoint: endpoint_result.ok(),
+                selectable,
+                disabled_reason,
+                supported_clis: if selectable {
+                    protocol.map_or_else(Vec::new, supported_clis)
+                } else {
+                    Vec::new()
+                },
+            }
+        })
         .collect::<Vec<_>>();
-    models.sort_by(|left, right| {
-        left.name
-            .to_lowercase()
-            .cmp(&right.name.to_lowercase())
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    let supported_clis = if disabled_reason.is_none() {
-        rule.map_or_else(Vec::new, |rule| supported_clis(rule.protocol))
+    endpoints.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let disabled_reason = if provider.env.is_empty() {
+        Some("CLIAdapter provider has no credential environment name".into())
+    } else if provider.env.len() != 1 {
+        Some(format!(
+            "CLIAdapter provider requires {} credential environment names; CLISwitch supports one API key",
+            provider.env.len()
+        ))
+    } else if !endpoints.iter().any(|endpoint| endpoint.selectable) {
+        Some("CLIAdapter provider has no supported, safe endpoint".into())
+    } else {
+        None
+    };
+    let selectable = disabled_reason.is_none();
+    let supported_clis = if selectable {
+        CliId::ALL
+            .into_iter()
+            .filter(|cli_id| {
+                endpoints
+                    .iter()
+                    .any(|endpoint| endpoint.selectable && endpoint.supported_clis.contains(cli_id))
+            })
+            .collect()
     } else {
         Vec::new()
     };
     CatalogProviderInfo {
         id: provider.id.clone(),
         name: provider.name.clone(),
-        npm: provider.npm.clone(),
         env: provider.env.clone(),
-        // Do not echo an unsafe or unresolved upstream URL to the renderer. The raw value is
-        // still used to produce a disabled reason, but only a URL which passes the same endpoint
-        // policy as a saved connection is exposed as metadata.
-        api: provider
-            .api
-            .as_deref()
-            .filter(|api| resolve_catalog_endpoint(api).is_ok())
-            .map(str::to_string),
-        doc: provider.doc.clone(),
-        protocol: rule.map(|rule| rule.protocol),
-        auth_type: rule.map(|rule| rule.auth_type),
-        endpoint,
-        selectable: disabled_reason.is_none(),
+        selectable,
         disabled_reason,
         supported_clis,
-        models,
-    }
-}
-
-fn resolve_model(
-    provider: &ModelsDevProvider,
-    rule: Option<AdapterRule>,
-    model: &ModelsDevModel,
-) -> CatalogModelInfo {
-    let mut disabled_reason = match model.status.as_deref() {
-        Some("deprecated") => Some("model is deprecated".to_string()),
-        Some("alpha" | "beta") | None => None,
-        Some(_) => Some("model has an unknown status".to_string()),
-    };
-    if disabled_reason.is_none()
-        && let (Some(rule), Some(override_provider)) = (rule, model.provider.as_ref())
-    {
-        if override_provider.npm.as_deref().is_some_and(|npm| {
-            adapter_rule(npm).map(|candidate| candidate.protocol) != Some(rule.protocol)
-        }) {
-            disabled_reason = Some("model requires a different provider adapter".into());
-        } else if override_provider.shape.as_deref().is_some_and(|shape| {
-            matches!(
-                (shape, rule.protocol),
-                ("responses", CliProtocol::OpenaiChat)
-                    | ("completions", CliProtocol::OpenaiResponses)
-            )
-        }) {
-            disabled_reason = Some("model requires a different wire protocol".into());
-        } else if override_provider.api.is_some()
-            || override_provider
-                .body
-                .as_ref()
-                .is_some_and(|body| !body.is_empty())
-            || override_provider
-                .headers
-                .as_ref()
-                .is_some_and(|headers| !headers.is_empty())
-        {
-            // models.dev can describe per-model endpoint/body/header overrides. CLISwitch keeps
-            // routing at provider scope, so these entries remain visible as hints but cannot be
-            // selected until a provider-level adapter can represent the override safely.
-            disabled_reason = Some("model has a provider-specific request override".into());
-        }
-    }
-    if disabled_reason.is_none() && adapter_rule(&provider.npm).is_none() {
-        disabled_reason = Some("provider adapter is unsupported".into());
-    }
-    CatalogModelInfo {
-        id: model.id.clone(),
-        name: model.name.clone(),
-        status: model.status.clone(),
-        selectable: disabled_reason.is_none(),
-        disabled_reason,
-        context: model.limit.as_ref().and_then(|limit| limit.context),
-        output: model.limit.as_ref().and_then(|limit| limit.output),
+        endpoints,
     }
 }
 
@@ -629,16 +518,13 @@ pub(crate) fn resolve_catalog_endpoint(raw: &str) -> Result<Url, String> {
 }
 
 impl ProviderCatalog {
-    /// Loads the bundled models.dev snapshot and builds the runtime catalog used by the app.
-    ///
-    /// The compatibility catalog is intentionally derived from the upstream snapshot at load
-    /// time; callers which need the pre-migration fixtures must use [`Self::load_legacy`].
+    /// Loads the bundled CLIAdapter snapshot and builds the runtime catalog used by the app.
     pub fn load_embedded() -> AppResult<Self> {
         Self::load_runtime_embedded()
     }
 
-    /// Loads the retired hand-maintained catalog. It remains available only for migration and
-    /// regression fixtures while persisted API profiles move to models.dev identities.
+    /// Loads the retired hand-maintained catalog. It remains available for migration, historical
+    /// import/validation, and regression fixtures; new provider creation uses CLIAdapter.
     pub fn load_legacy() -> AppResult<Self> {
         let cli_file: CliCatalogFile =
             parse_catalog_file("clis.jsonc", include_str!("../../catalog/clis.jsonc"))?;
@@ -672,104 +558,103 @@ impl ProviderCatalog {
         Ok(catalog)
     }
 
-    /// Builds the runtime catalog from a models.dev snapshot. The legacy template fields are
-    /// populated only for providers which pass the fixed adapter policy; the raw upstream data
-    /// and resolved disabled reasons are exposed through `provider_info`; the raw snapshot stays
-    /// backend-only so a full upstream document is not duplicated in every IPC snapshot.
-    pub fn from_models_dev(models: ModelsDevCatalog) -> AppResult<Self> {
+    /// Builds runtime templates from the endpoints which CLIAdapter actually declares. Model
+    /// metadata is deliberately absent: users enter a model ID and may fetch suggestions from a
+    /// saved connection later.
+    pub fn from_cli_adapter(source: CliAdapterCatalog) -> AppResult<Self> {
         let cli_file: CliCatalogFile =
             parse_catalog_file("clis.jsonc", include_str!("../../catalog/clis.jsonc"))?;
-        let mut provider_info = models.provider_info();
+        let mut provider_info = source.provider_info();
         let mut provider_templates = Vec::new();
         let mut relations = Vec::new();
         let mut relation_ids = HashSet::new();
         for info in &provider_info {
-            // Disabled upstream entries remain visible through `provider_info`, but must not
-            // become selectable templates. In particular, a known adapter without any
-            // credential environment name has a protocol and endpoint yet cannot safely be
-            // materialized into a provider instance.
             if !info.selectable {
                 continue;
             }
-            let (Some(protocol), Some(endpoint)) = (info.protocol, info.endpoint.clone()) else {
-                continue;
-            };
+            let endpoints = info
+                .endpoints
+                .iter()
+                .filter(|endpoint| endpoint.selectable)
+                .filter_map(|endpoint| {
+                    let (Some(protocol), Some(base_url)) =
+                        (endpoint.protocol, endpoint.endpoint.clone())
+                    else {
+                        return None;
+                    };
+                    Some(ProviderEndpointTemplate {
+                        id: endpoint.id.clone(),
+                        name: protocol.to_string(),
+                        protocol,
+                        base_url,
+                        credential_slot_id: "api-key".into(),
+                        auth_options: endpoint_auth_options(protocol),
+                        default_auth_option_id: default_auth_option_id(protocol).into(),
+                        models: Vec::new(),
+                    })
+                })
+                .collect::<Vec<_>>();
             let template = ApiProviderTemplate {
                 id: info.id.clone(),
                 name: info.name.clone(),
-                category: "models.dev".into(),
+                category: "cli-adapter".into(),
                 model_routing: false,
                 credential_slots: vec![CredentialSlotTemplate {
                     id: "api-key".into(),
                     name: "API Key".into(),
                 }],
-                endpoints: vec![ProviderEndpointTemplate {
-                    id: "default".into(),
-                    name: protocol.to_string(),
-                    protocol,
-                    base_url: endpoint,
-                    credential_slot_id: "api-key".into(),
-                    auth_options: if protocol == CliProtocol::AnthropicMessages {
-                        vec![
-                            EndpointAuthOption {
-                                id: "api-key".into(),
-                                auth_type: ConnectionAuthType::ApiKey,
-                            },
-                            EndpointAuthOption {
-                                id: "bearer".into(),
-                                auth_type: ConnectionAuthType::Bearer,
-                            },
-                        ]
-                    } else {
-                        vec![EndpointAuthOption {
-                            id: "bearer".into(),
-                            auth_type: ConnectionAuthType::Bearer,
-                        }]
-                    },
-                    default_auth_option_id: if protocol == CliProtocol::AnthropicMessages {
-                        "api-key".into()
-                    } else {
-                        "bearer".into()
-                    },
-                    // Model metadata is carried once in `provider_info`. Keeping generated
-                    // endpoint templates model-free avoids duplicating a several-megabyte
-                    // upstream snapshot in every IPC app snapshot.
-                    models: Vec::new(),
-                }],
+                endpoints,
                 unsupported_models: Vec::new(),
             };
             provider_templates.push(ProviderTemplate::Api(template));
-            for cli_id in supported_clis(protocol) {
-                let relation_base =
-                    format!("models-dev-{}-{}", sanitize_identifier(&info.id), cli_id);
-                let mut relation_id = relation_base.clone();
-                let mut suffix = 2;
-                while !relation_ids.insert(relation_id.clone()) {
-                    relation_id = format!("{relation_base}-{suffix}");
-                    suffix += 1;
+            for endpoint in info.endpoints.iter().filter(|endpoint| endpoint.selectable) {
+                let Some(protocol) = endpoint.protocol else {
+                    continue;
+                };
+                for cli_id in supported_clis(protocol) {
+                    let provider_package = cli_file
+                        .clis
+                        .iter()
+                        .find(|cli| cli.id == cli_id)
+                        .and_then(|cli| {
+                            cli.protocol_adapters
+                                .iter()
+                                .find(|adapter| adapter.protocol == protocol)
+                        })
+                        .map(|adapter| adapter.provider_package.clone());
+                    let preferred_opencode =
+                        cli_id == CliId::Opencode && protocol == CliProtocol::OpenaiChat;
+                    let relation_base = format!(
+                        "cli-adapter-{}-{}-{}",
+                        sanitize_identifier(&info.id),
+                        cli_id,
+                        endpoint.id
+                    );
+                    let mut relation_id = relation_base.clone();
+                    let mut suffix = 2;
+                    while !relation_ids.insert(relation_id.clone()) {
+                        relation_id = format!("{relation_base}-{suffix}");
+                        suffix += 1;
+                    }
+                    relations.push(CliProviderRelation::Api(ApiCliProviderRelation {
+                        id: relation_id,
+                        cli_id,
+                        provider_template_id: info.id.clone(),
+                        endpoint_id: endpoint.id.clone(),
+                        auth_option_id: default_auth_option_id(protocol).into(),
+                        base_url: None,
+                        provider_package,
+                        default: cli_id != CliId::Opencode || preferred_opencode,
+                        native_provider_ids: if preferred_opencode {
+                            vec![info.id.clone()]
+                        } else {
+                            Vec::new()
+                        },
+                    }));
                 }
-                relations.push(CliProviderRelation::Api(ApiCliProviderRelation {
-                    id: relation_id,
-                    cli_id,
-                    provider_template_id: info.id.clone(),
-                    endpoint_id: "default".into(),
-                    auth_option_id: if protocol == CliProtocol::AnthropicMessages {
-                        "api-key".into()
-                    } else {
-                        "bearer".into()
-                    },
-                    base_url: None,
-                    // The package is retained only after the fixed adapter allowlist has
-                    // resolved it. Adapters may use it as a declarative OpenCode package hint;
-                    // no upstream package is ever loaded or executed.
-                    provider_package: Some(info.npm.clone()),
-                    default: true,
-                    native_provider_ids: vec![info.id.clone()],
-                }));
             }
         }
-        // OAuth is deliberately not sourced from models.dev. These two fixed modes are part of
-        // the CLI support contract and have no provider package in the upstream database.
+        // OAuth remains fixed by the CLI contract and independent of the provider endpoint feed.
         provider_templates.extend([
             ProviderTemplate::Auth(AuthProviderTemplate {
                 id: "anthropic-auth".into(),
@@ -784,21 +669,18 @@ impl ProviderCatalog {
         ]);
         relations.extend([
             CliProviderRelation::Auth(AuthCliProviderRelation {
-                id: "models-dev-anthropic-auth".into(),
+                id: "cli-adapter-anthropic-auth".into(),
                 cli_id: CliId::ClaudeCode,
                 provider_template_id: "anthropic-auth".into(),
                 auth_mode_id: "anthropic-oauth".into(),
             }),
             CliProviderRelation::Auth(AuthCliProviderRelation {
-                id: "models-dev-codex-auth".into(),
+                id: "cli-adapter-codex-auth".into(),
                 cli_id: CliId::Codex,
                 provider_template_id: "codex-auth".into(),
                 auth_mode_id: "codex-oauth".into(),
             }),
         ]);
-        // A provider may have a valid adapter but an unrepresentable credential shape or no
-        // selectable model. Keep its information in the UI; generated endpoint templates are
-        // omitted for every disabled entry.
         provider_info.sort_by(|left, right| {
             left.name
                 .to_lowercase()
@@ -817,7 +699,7 @@ impl ProviderCatalog {
     }
 
     pub fn load_runtime_embedded() -> AppResult<Self> {
-        Self::from_models_dev(ModelsDevCatalog::bundled()?)
+        Self::from_cli_adapter(CliAdapterCatalog::bundled()?)
     }
 
     pub fn dynamic_provider_info(&self, provider_id: &str) -> Option<&CatalogProviderInfo> {
@@ -825,12 +707,6 @@ impl ProviderCatalog {
             .as_ref()?
             .iter()
             .find(|provider| provider.id == provider_id)
-    }
-
-    pub fn dynamic_models(&self, provider_id: &str) -> Vec<CatalogModelInfo> {
-        self.dynamic_provider_info(provider_id)
-            .map(|provider| provider.models.clone())
-            .unwrap_or_default()
     }
 
     fn validate_runtime(&self) -> AppResult<()> {
@@ -847,7 +723,7 @@ impl ProviderCatalog {
             }
             match template {
                 ProviderTemplate::Api(template) => {
-                    ensure_source_identifier("models.dev provider template", &template.id)?;
+                    ensure_source_identifier("CLIAdapter provider template", &template.id)?;
                     validate_api_template(template)?;
                 }
                 ProviderTemplate::Auth(template) => {
@@ -988,109 +864,111 @@ impl ProviderCatalog {
             .provider_templates
             .iter()
             .filter_map(|template| match template {
-                ProviderTemplate::Api(template) if template.category == "models.dev" => {
+                ProviderTemplate::Api(template) if template.category == "cli-adapter" => {
                     Some(template.id.as_str())
                 }
                 _ => None,
             })
             .collect::<HashSet<_>>();
         for info in provider_info {
-            ensure_source_identifier("models.dev provider ID", &info.id)?;
-            ensure_nonempty("models.dev provider name", &info.name)?;
-            ensure_nonempty("models.dev provider npm", &info.npm)?;
+            ensure_source_identifier("CLIAdapter provider ID", &info.id)?;
+            ensure_nonempty("CLIAdapter provider name", &info.name)?;
             ensure_unique_nonempty_strings(
-                "models.dev environment name",
+                "CLIAdapter environment name",
                 info.env.iter().map(String::as_str),
             )?;
             if !info_ids.insert(info.id.as_str()) {
-                return invalid(format!("duplicate models.dev provider {}", info.id));
+                return invalid(format!("duplicate CLIAdapter provider {}", info.id));
             }
-            let mut model_ids = HashSet::new();
-            for model in &info.models {
-                ensure_source_identifier("models.dev model ID", &model.id)?;
-                ensure_nonempty("models.dev model name", &model.name)?;
-                if !model_ids.insert(model.id.as_str()) {
+            let mut endpoint_ids = HashSet::new();
+            for endpoint in &info.endpoints {
+                ensure_identifier("CLIAdapter endpoint", &endpoint.id)?;
+                if !endpoint_ids.insert(endpoint.id.as_str()) {
                     return invalid(format!(
-                        "models.dev provider {} repeats model {}",
-                        info.id, model.id
+                        "CLIAdapter provider {} repeats endpoint {}",
+                        info.id, endpoint.id
                     ));
                 }
-                if model.selectable && model.disabled_reason.is_some() {
+                if endpoint.selectable {
+                    let protocol = endpoint.protocol.ok_or_else(|| {
+                        AppError::Serialization(format!(
+                            "selectable CLIAdapter endpoint {} has no protocol",
+                            endpoint.id
+                        ))
+                    })?;
+                    if endpoint.endpoint.is_none() || endpoint.disabled_reason.is_some() {
+                        return invalid(format!(
+                            "selectable CLIAdapter endpoint {} is incomplete",
+                            endpoint.id
+                        ));
+                    }
+                    if endpoint.supported_clis != supported_clis(protocol) {
+                        return invalid(format!(
+                            "CLIAdapter endpoint {} has an invalid CLI compatibility list",
+                            endpoint.id
+                        ));
+                    }
+                } else if endpoint.disabled_reason.is_none() || !endpoint.supported_clis.is_empty()
+                {
                     return invalid(format!(
-                        "selectable models.dev model {} has a disabled reason",
-                        model.id
-                    ));
-                }
-                if !model.selectable && model.disabled_reason.is_none() {
-                    return invalid(format!(
-                        "disabled models.dev model {} has no reason",
-                        model.id
+                        "disabled CLIAdapter endpoint {} has inconsistent metadata",
+                        endpoint.id
                     ));
                 }
             }
             let template = self.api_template(&info.id);
             if info.selectable {
-                let protocol = info.protocol.ok_or_else(|| {
-                    AppError::Serialization(format!(
-                        "selectable models.dev provider {} has no protocol",
-                        info.id
-                    ))
-                })?;
-                let endpoint = info.endpoint.as_ref().ok_or_else(|| {
-                    AppError::Serialization(format!(
-                        "selectable models.dev provider {} has no endpoint",
-                        info.id
-                    ))
-                })?;
-                let auth_type = info.auth_type.ok_or_else(|| {
-                    AppError::Serialization(format!(
-                        "selectable models.dev provider {} has no auth type",
-                        info.id
-                    ))
-                })?;
                 if !dynamic_template_ids.contains(info.id.as_str()) {
                     return invalid(format!(
-                        "selectable models.dev provider {} has no generated template",
-                        info.id
-                    ));
-                }
-                if info.supported_clis != supported_clis(protocol) {
-                    return invalid(format!(
-                        "models.dev provider {} has an invalid CLI compatibility list",
+                        "selectable CLIAdapter provider {} has no generated template",
                         info.id
                     ));
                 }
                 let Some(template) = template else {
                     return invalid(format!(
-                        "selectable models.dev provider {} has no generated template",
+                        "selectable CLIAdapter provider {} has no generated template",
                         info.id
                     ));
                 };
-                let generated_endpoint = template.endpoints.first().ok_or_else(|| {
-                    AppError::Serialization(format!(
-                        "models.dev provider {} has no generated endpoint",
-                        info.id
-                    ))
-                })?;
-                if generated_endpoint.protocol != protocol
-                    || generated_endpoint.base_url != *endpoint
-                    || generated_endpoint
-                        .default_auth_type()
-                        .is_none_or(|value| value != auth_type)
-                {
+                let selectable_endpoints = info
+                    .endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.selectable)
+                    .collect::<Vec<_>>();
+                if template.endpoints.len() != selectable_endpoints.len() {
                     return invalid(format!(
-                        "generated template for models.dev provider {} disagrees with metadata",
+                        "generated template for CLIAdapter provider {} omits endpoints",
                         info.id
                     ));
                 }
+                for endpoint in selectable_endpoints {
+                    let generated = template
+                        .endpoints
+                        .iter()
+                        .find(|candidate| candidate.id == endpoint.id)
+                        .ok_or_else(|| {
+                            AppError::Serialization(format!(
+                                "generated template for CLIAdapter provider {} omits endpoint {}",
+                                info.id, endpoint.id
+                            ))
+                        })?;
+                    if generated.protocol != endpoint.protocol.unwrap()
+                        || Some(&generated.base_url) != endpoint.endpoint.as_ref()
+                    {
+                        return invalid(format!(
+                            "generated template for CLIAdapter provider {} disagrees with endpoint {}",
+                            info.id, endpoint.id
+                        ));
+                    }
+                }
             } else if template.is_some() {
                 return invalid(format!(
-                    "disabled models.dev provider {} has a generated template",
+                    "disabled CLIAdapter provider {} has a generated template",
                     info.id
                 ));
             } else if !info.supported_clis.is_empty() {
                 return invalid(format!(
-                    "disabled models.dev provider {} has supported CLIs",
+                    "disabled CLIAdapter provider {} has supported CLIs",
                     info.id
                 ));
             }
@@ -1098,7 +976,7 @@ impl ProviderCatalog {
         for template_id in dynamic_template_ids {
             if !info_ids.contains(template_id) {
                 return invalid(format!(
-                    "generated models.dev template {template_id} has no provider metadata"
+                    "generated CLIAdapter template {template_id} has no provider metadata"
                 ));
             }
         }
@@ -1705,9 +1583,8 @@ fn ensure_identifier(kind: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// Upstream provider and model IDs are persisted verbatim and are not required to be kebab-case
-/// (for example, models.dev currently contains `wafer.ai`). They still must be bounded, printable
-/// keys so they can safely cross the IPC boundary and be used as OpenCode object keys.
+/// Upstream provider IDs are persisted verbatim. They must be bounded printable keys so they can
+/// safely cross the IPC boundary and be used as OpenCode object keys.
 fn ensure_source_identifier(kind: &str, value: &str) -> AppResult<()> {
     ensure_nonempty(kind, value)?;
     if value.len() > 256
@@ -1806,74 +1683,111 @@ mod tests {
     }
 
     #[test]
-    fn models_dev_bundle_is_full_and_resolves_core_adapters() {
-        let models = ModelsDevCatalog::bundled().unwrap();
-        assert!(models.provider_count() >= 200);
-        assert!(models.model_count() >= 7_000);
-        let catalog = ProviderCatalog::from_models_dev(models).unwrap();
-        let openai = catalog.dynamic_provider_info("openai").unwrap();
-        assert_eq!(openai.protocol, Some(CliProtocol::OpenaiResponses));
-        assert!(openai.selectable);
-        assert!(openai.supported_clis.contains(&CliId::Codex));
-        assert!(catalog.api_template("openai").is_some());
-    }
-
-    #[test]
-    fn models_dev_model_overrides_are_hints_not_routes() {
-        let models = ModelsDevCatalog::bundled().unwrap();
-        let opencode = models.provider("opencode").unwrap();
-        let info = models
-            .provider_info()
-            .into_iter()
-            .find(|provider| provider.id == opencode.id)
-            .unwrap();
-        // The bundled upstream record describes models which need Responses or Anthropic
-        // adapters. OpenCode's provider-level Chat adapter cannot silently route those models.
+    fn cli_adapter_bundle_contains_only_curated_multi_endpoint_providers() {
+        let source = CliAdapterCatalog::bundled().unwrap();
+        assert_eq!(source.provider_count(), 7);
+        let catalog = ProviderCatalog::from_cli_adapter(source).unwrap();
+        let deepseek = catalog.dynamic_provider_info("deepseek").unwrap();
+        assert!(deepseek.selectable);
+        assert_eq!(deepseek.endpoints.len(), 3);
+        assert!(deepseek.supported_clis.contains(&CliId::ClaudeCode));
+        assert!(deepseek.supported_clis.contains(&CliId::Codex));
+        assert!(deepseek.supported_clis.contains(&CliId::Opencode));
+        let template = catalog.api_template("deepseek").unwrap();
+        assert_eq!(template.category, "cli-adapter");
+        assert_eq!(template.endpoints.len(), 3);
         assert!(
-            info.models
+            template
+                .endpoints
                 .iter()
-                .any(|model| !model.selectable && model.disabled_reason.is_some())
+                .all(|endpoint| endpoint.models.is_empty())
         );
     }
 
     #[test]
-    fn disabled_models_dev_provider_stays_visible_without_a_generated_template() {
-        let value = serde_json::json!({
-            "demo": {
-                "npm": "@ai-sdk/openai-compatible",
-                "api": "https://demo.example/v1",
-                "name": "Demo",
-                "models": { "model": { "name": "Model" } }
+    fn provider_with_one_declared_protocol_gets_only_that_connection() {
+        let value = serde_json::json!([{
+            "id": "demo",
+            "name": "Demo",
+            "env": ["DEMO_API_KEY"],
+            "endpoints": [{ "protocol": "responses", "url": "https://demo.example/v1" }]
+        }]);
+        let source = CliAdapterCatalog::from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let catalog = ProviderCatalog::from_cli_adapter(source).unwrap();
+        let template = catalog.api_template("demo").unwrap();
+        assert_eq!(template.endpoints.len(), 1);
+        assert_eq!(template.endpoints[0].id, "responses");
+        assert!(catalog.supports_api_endpoint(CliId::Codex, "demo", "responses"));
+        assert!(catalog.supports_api_endpoint(CliId::Opencode, "demo", "responses"));
+        assert!(!catalog.supports_api_endpoint(CliId::ClaudeCode, "demo", "responses"));
+        assert!(
+            catalog
+                .api_relations(CliId::Opencode, "demo")
+                .all(|relation| !relation.default)
+        );
+    }
+
+    #[test]
+    fn sanitized_provider_ids_get_unique_relation_ids() {
+        let value = serde_json::json!([
+            {
+                "id": "z.ai",
+                "name": "Z dot AI",
+                "env": ["Z_DOT_AI_KEY"],
+                "endpoints": [{
+                    "protocol": "openai-compatible",
+                    "url": "https://dot.example/v1"
+                }]
             },
-            "openai": {
-                "env": ["OPENAI_API_KEY"],
-                "npm": "@ai-sdk/openai",
-                "api": "https://api.openai.com/v1",
-                "name": "OpenAI",
-                "models": { "gpt-test": { "name": "GPT Test" } }
+            {
+                "id": "z-ai",
+                "name": "Z dash AI",
+                "env": ["Z_DASH_AI_KEY"],
+                "endpoints": [{
+                    "protocol": "openai-compatible",
+                    "url": "https://dash.example/v1"
+                }]
             }
-        });
-        let models = ModelsDevCatalog::from_api_json(&serde_json::to_vec(&value).unwrap()).unwrap();
-        let catalog = ProviderCatalog::from_models_dev(models).unwrap();
+        ]);
+        let source = CliAdapterCatalog::from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let catalog = ProviderCatalog::from_cli_adapter(source).unwrap();
+        let ids = catalog
+            .relations
+            .iter()
+            .filter_map(|relation| match relation {
+                CliProviderRelation::Api(relation) => Some(relation.id.as_str()),
+                CliProviderRelation::Auth(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids.iter().any(|id| id.ends_with("-2")));
+    }
+
+    #[test]
+    fn provider_without_an_environment_name_stays_visible_but_disabled() {
+        let value = serde_json::json!([{
+            "id": "demo",
+            "name": "Demo",
+            "endpoints": [{ "protocol": "responses", "url": "https://demo.example/v1" }]
+        }]);
+        let source = CliAdapterCatalog::from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let catalog = ProviderCatalog::from_cli_adapter(source).unwrap();
         let demo = catalog.dynamic_provider_info("demo").unwrap();
         assert!(!demo.selectable);
         assert!(catalog.api_template("demo").is_none());
-        assert!(catalog.api_template("openai").is_some());
     }
 
     #[test]
     fn multi_environment_provider_is_visible_but_not_selectable() {
-        let value = serde_json::json!({
-            "demo": {
-                "env": ["DEMO_ACCOUNT", "DEMO_API_KEY"],
-                "npm": "@ai-sdk/openai-compatible",
-                "api": "https://demo.example/v1",
-                "name": "Demo",
-                "models": { "model": { "name": "Model" } }
-            }
-        });
-        let models = ModelsDevCatalog::from_api_json(&serde_json::to_vec(&value).unwrap()).unwrap();
-        let catalog = ProviderCatalog::from_models_dev(models).unwrap();
+        let value = serde_json::json!([{
+            "id": "demo",
+            "name": "Demo",
+            "env": ["DEMO_ACCOUNT", "DEMO_API_KEY"],
+            "endpoints": [{ "protocol": "openai-compatible", "url": "https://demo.example/v1" }]
+        }]);
+        let source = CliAdapterCatalog::from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let catalog = ProviderCatalog::from_cli_adapter(source).unwrap();
         let demo = catalog.dynamic_provider_info("demo").unwrap();
         assert!(!demo.selectable);
         assert!(

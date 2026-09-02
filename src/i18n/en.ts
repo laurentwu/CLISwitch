@@ -203,8 +203,6 @@ export const en = {
         "File permissions are not encryption. Same-user processes, administrators, malware, system backups, SQLite WAL files, and snapshots may read credentials; ordinary deletion is not secure erasure.",
       upToDate: "Already up to date",
       catalogTitle: "Provider database",
-      catalogHint:
-        "Data is sourced from models.dev; updates do not change saved provider connections.",
       catalogUpdate: "Update database",
       catalogUpdating: "Updating…",
       catalogUpdated: "Provider database updated",
@@ -212,7 +210,7 @@ export const en = {
       catalogSource: "Current source",
       catalogSource_bundled: "Bundled snapshot",
       catalogSource_local: "Local cache",
-      catalogCounts: "{{providers}} providers, {{models}} models",
+      catalogCounts: "{{providers}} providers",
       catalogUpdatedAt: "Last updated",
     },
     accessibility: { primaryNavigation: "Primary navigation" },
