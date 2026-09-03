@@ -34,20 +34,7 @@ impl ModelCatalogService {
         let endpoint = models_url(&connection.endpoint, connection.protocol)?;
         let bytes = self.fetch_bounded(endpoint, Some(connection)).await?;
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        let models = value
-            .get("data")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| AppError::Network("model response does not contain data[]".into()))?
-            .iter()
-            .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        if models.is_empty() {
-            return Err(AppError::Network(
-                "model response contained no model IDs".into(),
-            ));
-        }
-        Ok(models)
+        model_ids(&value)
     }
 
     pub async fn test_connection(&self, connection: &ProviderConnection) -> AppResult<()> {
@@ -115,6 +102,36 @@ impl ModelCatalogService {
         }
         Err(AppError::Network("redirect loop".into()))
     }
+}
+
+fn model_ids(value: &serde_json::Value) -> AppResult<Vec<String>> {
+    let data = value.get("data").and_then(serde_json::Value::as_array);
+    let catalog = value.get("models").and_then(serde_json::Value::as_array);
+    if data.is_none() && catalog.is_none() {
+        return Err(AppError::Network(
+            "model response does not contain data[] or models[]".into(),
+        ));
+    }
+
+    let models = data
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
+        .chain(
+            catalog
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item.get("slug").and_then(serde_json::Value::as_str)),
+        )
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        return Err(AppError::Network(
+            "model response contained no model IDs".into(),
+        ));
+    }
+    Ok(models)
 }
 
 fn models_url(base: &Url, protocol: CliProtocol) -> AppResult<Url> {
@@ -243,6 +260,58 @@ mod tests {
                 .unwrap()
                 .as_str(),
             "https://example.test/v1/models"
+        );
+    }
+
+    #[test]
+    fn parses_openai_model_list() {
+        let models = model_ids(&serde_json::json!({
+            "data": [
+                { "id": "first-model" },
+                { "missing": "id" },
+                { "id": "" },
+                { "id": "second-model" }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(models, ["first-model", "second-model"]);
+    }
+
+    #[test]
+    fn parses_codex_model_catalog() {
+        let models = model_ids(&serde_json::json!({
+            "models": [
+                { "slug": "glm-5.3", "display_name": "glm-5.3" },
+                { "slug": "glm-5.3-flash", "display_name": "glm-5.3-flash" },
+                { "slug": "glm-5-turbo", "display_name": "glm-5-turbo" }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(models, ["glm-5.3", "glm-5.3-flash", "glm-5-turbo"]);
+    }
+
+    #[test]
+    fn rejects_model_lists_without_valid_ids() {
+        let error = model_ids(&serde_json::json!({
+            "models": [{ "slug": "" }, { "missing": "slug" }]
+        }))
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "network operation failed: model response contained no model IDs"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_model_list_shape() {
+        let error = model_ids(&serde_json::json!({ "items": [] })).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "network operation failed: model response does not contain data[] or models[]"
         );
     }
 

@@ -41,7 +41,8 @@ complete unmanaged API endpoint remains savable when its CLI configuration has n
 dialog can request the candidate's live `/models` list or accept a manually entered model ID, and a
 non-empty selection is still required before saving. Live listing uses only the short-lived scan
 candidate ID or an already saved connection ID; endpoint and credential values are not accepted
-from that dialog.
+from that dialog. Both OpenAI-style `data[].id` responses and Codex model-catalog
+`models[].slug` responses are supported; entries without a non-empty identifier are ignored.
 
 The old static API provider templates are not used for new records but remain available for
 historical compatibility and tests. Refreshing the provider database never deletes or overwrites
