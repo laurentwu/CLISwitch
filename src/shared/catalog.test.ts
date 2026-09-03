@@ -5,7 +5,12 @@ import type {
   PublicProvider,
   PublicProviderConnection,
 } from "./types";
-import { connectionsForCli, preferredConnectionForCli, providerSupportsCli } from "./catalog";
+import {
+  connectionDisplayName,
+  connectionsForCli,
+  preferredConnectionForCli,
+  providerSupportsCli,
+} from "./catalog";
 
 const endpoint = (id: string, protocol: CliProtocol) => ({
   id,
@@ -135,6 +140,21 @@ const templatedApiProvider: PublicProvider = {
 };
 
 describe("provider catalog selectors", () => {
+  it("uses the template endpoint name as the connection label", () => {
+    expect(
+      connectionDisplayName(catalog, templatedApiProvider, templatedApiProvider.connections[1]),
+    ).toBe("chat");
+  });
+
+  it("falls back to the protocol when the endpoint name is unavailable", () => {
+    const custom: PublicProvider = {
+      ...templatedApiProvider,
+      templateId: null,
+    };
+
+    expect(connectionDisplayName(catalog, custom, custom.connections[1])).toBe("openai-chat");
+  });
+
   it("filters templated connections through explicit CLI relations and honors the default", () => {
     expect(
       connectionsForCli(catalog, "claude-code", templatedApiProvider).map(
