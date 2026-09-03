@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useFieldArray, useForm, useWatch } from "react-hook-form";
+import { useFieldArray, useForm, useWatch, type FieldPath } from "react-hook-form";
 import { z } from "zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Files, Plus, Save, Trash2, Wifi } from "lucide-react";
@@ -16,6 +16,7 @@ import type {
   ProviderCatalog,
   ProviderEndpointTemplate,
   PublicProvider,
+  TransientConnectionDraft,
 } from "../../shared/types";
 import { useNotificationStore } from "../../stores/notifications";
 import { useUiStore } from "../../stores/ui";
@@ -55,6 +56,17 @@ const connectionSchema = z.object({
   apiKey: z.string().min(1),
   defaultModel: z.string().trim().min(1),
 });
+
+const transientConnectionSchema = connectionSchema
+  .omit({ defaultModel: true })
+  .refine(
+    (connection) =>
+      connection.protocol === "anthropic-messages" || connection.authType === "bearer",
+    {
+      message: "OpenAI-compatible protocols require bearer authentication",
+      path: ["authType"],
+    },
+  );
 
 const schema = z
   .object({
@@ -406,48 +418,84 @@ export function ApiProviderEditor({
   const creationTemplateValue =
     selectedTemplate?.id ?? (connections.length ? CUSTOM_PROVIDER_TEMPLATE : "");
 
-  const test = async (connectionId?: string) => {
-    if (!detail || !connectionId) {
-      pushNotification({
-        tone: "warning",
-        title: t("providers.saveBeforeTest"),
-        dedupeKey: "connection-test-unsaved",
+  const transientDraft = (index: number): TransientConnectionDraft | undefined => {
+    const connection = form.getValues(`connections.${index}`);
+    const fieldsToValidate = [
+      "credentialSlotId",
+      "protocol",
+      "endpoint",
+      "authType",
+      "apiKey",
+    ] as const;
+    fieldsToValidate.forEach((fieldName) => form.clearErrors(`connections.${index}.${fieldName}`));
+    const result = transientConnectionSchema.safeParse(connection);
+    if (!result.success) {
+      result.error.issues.forEach((issue) => {
+        const fieldName = issue.path[0];
+        if (typeof fieldName !== "string") return;
+        form.setError(`connections.${index}.${fieldName}` as FieldPath<ApiProviderDraft>, {
+          type: "validate",
+          message: issue.message,
+        });
       });
-      return;
+      return undefined;
     }
+    return {
+      templateId: templateId || undefined,
+      connection: {
+        ...connection,
+        credentialSlotId: result.data.credentialSlotId,
+      },
+    };
+  };
+
+  const test = async (connectionId: string | undefined, index: number) => {
+    const draft = !detail || !connectionId ? transientDraft(index) : undefined;
+    if ((!detail || !connectionId) && !draft) return;
     try {
-      await command("test_connection", { providerId: detail.id, connectionId });
+      if (detail && connectionId) {
+        await command("test_connection", { providerId: detail.id, connectionId });
+      } else {
+        await command("test_draft_connection", { draft });
+      }
       pushNotification({
         tone: "success",
         title: t("providers.testSucceeded"),
-        dedupeKey: `connection-test-success\0${detail.id}\0${connectionId}`,
+        dedupeKey: `connection-test-success\0${detail?.id ?? "draft"}\0${connectionId ?? index}`,
       });
     } catch (error) {
       onError(error, "connectionTest");
     } finally {
-      await queryClient.invalidateQueries({ queryKey: ["providers"] });
-      await queryClient.invalidateQueries({ queryKey: ["provider-secret", detail.id] });
+      if (detail && connectionId) {
+        await queryClient.invalidateQueries({ queryKey: ["providers"] });
+        await queryClient.invalidateQueries({ queryKey: ["provider-secret", detail.id] });
+      }
     }
   };
 
   const loadModels = async (connectionId: string | undefined, index: number, fieldId: string) => {
-    if (!detail || !connectionId) {
-      setNotice({ tone: "warning", message: t("providers.saveBeforeModels") });
-      return;
-    }
+    const draft = !detail || !connectionId ? transientDraft(index) : undefined;
+    if ((!detail || !connectionId) && !draft) return;
     try {
-      const values = await command<string[]>("list_models", {
-        providerId: detail.id,
-        connectionId,
-      });
+      const values =
+        detail && connectionId
+          ? await command<string[]>("list_models", {
+              providerId: detail.id,
+              connectionId,
+            })
+          : await command<string[]>("list_draft_models", { draft });
+      if (!form.getValues(`connections.${index}.defaultModel`) && values[0]) {
+        form.setValue(`connections.${index}.defaultModel`, values[0], {
+          shouldDirty: true,
+          shouldValidate: true,
+        });
+      }
       setModelOptions((current) => ({ ...current, [fieldId]: values }));
       pushNotification({
         tone: "success",
         title: t("providers.fetchModelsSucceeded"),
-        dedupeKey: `fetch-models-success\0${detail.id}\0${connectionId}`,
+        dedupeKey: `fetch-models-success\0${detail?.id ?? "draft"}\0${connectionId ?? index}`,
       });
-      if (!form.getValues(`connections.${index}.defaultModel`) && values[0])
-        form.setValue(`connections.${index}.defaultModel`, values[0], { shouldDirty: true });
     } catch (error) {
       onError(error, "fetchModels");
     }
@@ -710,7 +758,7 @@ export function ApiProviderEditor({
                 <Button
                   type="button"
                   variant="secondary"
-                  onClick={() => test(form.getValues(`connections.${index}.id`))}
+                  onClick={() => test(form.getValues(`connections.${index}.id`), index)}
                 >
                   <Wifi size={15} /> {t("providers.test")}
                 </Button>

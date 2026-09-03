@@ -154,7 +154,8 @@ describe("ApiProviderEditor", () => {
     expect(screen.getAllByDisplayValue("glm-suggested")).toHaveLength(3);
   });
 
-  it("reports that an unsaved provider cannot be tested in a global toast", () => {
+  it("tests an unsaved provider with the current connection draft", async () => {
+    commandMock.mockResolvedValue(undefined);
     const { container } = render(
       <QueryClientProvider client={new QueryClient()}>
         <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />
@@ -162,11 +163,77 @@ describe("ApiProviderEditor", () => {
       </QueryClientProvider>,
     );
 
+    fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
+      target: { value: "unsaved-secret" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
 
-    expect(screen.getByRole("alert")).toHaveTextContent("请先保存供应商，再测试连接。");
+    expect(await screen.findByRole("status")).toHaveTextContent("连接成功；未发送任何 prompt。");
+    expect(commandMock).toHaveBeenCalledWith("test_draft_connection", {
+      draft: {
+        templateId: undefined,
+        connection: expect.objectContaining({
+          credentialSlotId: "custom-api-key-1",
+          protocol: "openai-responses",
+          endpoint: "https://api.example.com/v1",
+          authType: "bearer",
+          apiKey: "unsaved-secret",
+          defaultModel: "",
+        }),
+      },
+    });
+    expect(commandMock).not.toHaveBeenCalledWith("create_provider", expect.anything());
     expect(container.querySelector(".editor > .alert")).toBeNull();
+  });
+
+  it("does not send an invalid unsaved connection to the backend", async () => {
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
+
+    await waitFor(() =>
+      expect(container.querySelector(".editor > .alert")).toHaveTextContent(
+        "请修正无效或重复的接入方式字段。",
+      ),
+    );
     expect(commandMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches models for an unsaved provider and selects the first result", async () => {
+    commandMock.mockResolvedValue(["fetched-first", "fetched-second"]);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />
+        <NotificationViewport />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
+      target: { value: "unsaved-secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: /默认模型/ })).toHaveValue("fetched-first"),
+    );
+    expect(commandMock).toHaveBeenCalledWith("list_draft_models", {
+      draft: {
+        templateId: undefined,
+        connection: expect.objectContaining({
+          apiKey: "unsaved-secret",
+          defaultModel: "",
+        }),
+      },
+    });
+    expect(
+      document.querySelector('datalist#models-0 option[value="fetched-second"]'),
+    ).not.toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("获取模型成功");
+    expect(commandMock).not.toHaveBeenCalledWith("create_provider", expect.anything());
   });
 
   it("reports a successful connection test in a global toast", async () => {
