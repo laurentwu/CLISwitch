@@ -215,4 +215,121 @@ describe("SavedConfigurationTab", () => {
     expect(onError).toHaveBeenCalledWith(saveError, "save");
     expect(commandMock).not.toHaveBeenCalledWith("apply_configuration", expect.anything());
   });
+
+  it("distinguishes saved instances that use the same catalog provider", () => {
+    const providerId = "zhipuai-coding-plan";
+    const catalogProvider: ProviderCatalog = {
+      ...targetCatalog,
+      providerTemplates: [
+        {
+          mode: "api",
+          id: providerId,
+          name: "Zhipu AI Coding Plan",
+          category: "cli-adapter",
+          credentialSlots: [{ id: "api-key", name: "API Key" }],
+          endpoints: [
+            {
+              id: "responses",
+              name: "OpenAI Responses",
+              protocol: "openai-responses",
+              baseUrl: "https://open.bigmodel.cn/api/v1",
+              credentialSlotId: "api-key",
+              authOptions: [{ id: "bearer", authType: "bearer" }],
+              defaultAuthOptionId: "bearer",
+              models: [],
+            },
+          ],
+        },
+      ],
+      relations: [
+        {
+          mode: "api",
+          id: "codex-zhipuai-coding-plan-responses",
+          cliId: "codex",
+          providerTemplateId: providerId,
+          endpointId: "responses",
+          authOptionId: "bearer",
+          default: true,
+          nativeProviderIds: [],
+        },
+      ],
+      providerInfo: [
+        {
+          id: providerId,
+          name: "Zhipu AI Coding Plan",
+          env: ["ZHIPU_API_KEY"],
+          selectable: true,
+          supportedClis: ["codex"],
+          endpoints: [
+            {
+              id: "responses",
+              protocol: "openai-responses",
+              endpoint: "https://open.bigmodel.cn/api/v1",
+              selectable: true,
+              supportedClis: ["codex"],
+            },
+          ],
+        },
+      ],
+    };
+    const standardProvider: PublicProvider = {
+      ...provider,
+      name: "Zhipu AI Coding Plan",
+      templateId: providerId,
+      connections: [
+        {
+          ...provider.connections[0],
+          templateEndpointId: "responses",
+        },
+      ],
+    };
+    const flashProvider: PublicProvider = {
+      ...standardProvider,
+      id: "provider-flash",
+      name: "Zhipu AI Coding Plan Flash",
+      connections: [
+        {
+          ...standardProvider.connections[0],
+          id: "connection-flash",
+        },
+      ],
+    };
+    const namedConfiguration: SavedConfiguration = {
+      ...targetConfiguration,
+      targets: [
+        {
+          ...target,
+          providerId: standardProvider.id,
+        },
+      ],
+    };
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SavedConfigurationTab
+          configuration={namedConfiguration}
+          providers={[standardProvider, flashProvider]}
+          catalog={catalogProvider}
+          configurations={[namedConfiguration]}
+          onDeleted={vi.fn()}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(
+      screen.getAllByRole("option", {
+        name: "Zhipu AI Coding Plan (zhipuai-coding-plan)",
+      }),
+    ).toHaveLength(2);
+    expect(
+      screen.getAllByRole("option", {
+        name: "Zhipu AI Coding Plan Flash (zhipuai-coding-plan)",
+      }),
+    ).toHaveLength(2);
+
+    const targetProvider = screen.getByRole("combobox", { name: "供应商" });
+    fireEvent.change(targetProvider, { target: { value: flashProvider.id } });
+    expect(targetProvider).toHaveValue(flashProvider.id);
+  });
 });

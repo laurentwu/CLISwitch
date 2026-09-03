@@ -1,9 +1,9 @@
 import { useTranslation } from "react-i18next";
 import {
-  catalogProviderInfo,
   connectionDisplayName,
   connectionsForCli,
   preferredConnectionForCli,
+  providerInstanceDisplayName,
   providerSupportsCli,
 } from "../../shared/catalog";
 import type {
@@ -68,9 +68,7 @@ export function CliTargetRow({
         >
           {compatible.map((provider) => (
             <option key={provider.id} value={provider.id}>
-              {catalogProviderInfo(catalog, provider.templateId)
-                ? `${catalogProviderInfo(catalog, provider.templateId)?.name} (${provider.templateId})`
-                : provider.name}
+              {providerInstanceDisplayName(catalog, provider)}
             </option>
           ))}
         </Select>

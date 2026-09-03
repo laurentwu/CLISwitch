@@ -30,6 +30,16 @@ export function providerDisplayName(
   return `${provider.name} (${provider.id})`;
 }
 
+export function providerInstanceDisplayName(
+  catalog: ProviderCatalog,
+  provider: Pick<PublicProvider, "name" | "templateId">,
+): string {
+  if (!provider.templateId || !catalogProviderInfo(catalog, provider.templateId)) {
+    return provider.name;
+  }
+  return `${provider.name} (${provider.templateId})`;
+}
+
 export function apiTemplate(
   catalog: ProviderCatalog,
   templateId?: string | null,
