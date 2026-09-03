@@ -1055,6 +1055,7 @@ impl FromStr for AppTheme {
 pub struct AppSettings {
     pub language: AppLanguage,
     pub theme: AppTheme,
+    pub ui_zoom_percent: u16,
     pub scan_on_startup: bool,
     pub plaintext_risk_accepted: bool,
     pub revision: i64,
@@ -1066,6 +1067,7 @@ impl Default for AppSettings {
         Self {
             language: AppLanguage::ZhCn,
             theme: AppTheme::System,
+            ui_zoom_percent: 100,
             scan_on_startup: true,
             plaintext_risk_accepted: false,
             revision: 1,
@@ -1078,6 +1080,18 @@ impl Default for AppSettings {
                 })
                 .collect(),
         }
+    }
+}
+
+pub const UI_ZOOM_PERCENTAGES: [u16; 9] = [100, 125, 150, 175, 200, 225, 250, 275, 300];
+
+pub fn validate_ui_zoom_percent(value: u16) -> AppResult<()> {
+    if UI_ZOOM_PERCENTAGES.contains(&value) {
+        Ok(())
+    } else {
+        Err(AppError::Validation(format!(
+            "UI zoom must be one of 100, 125, 150, 175, 200, 225, 250, 275, or 300; got {value}"
+        )))
     }
 }
 
@@ -1146,6 +1160,16 @@ mod tests {
         );
         assert!(normalize_name(" ").is_err());
         assert!(normalize_name(&"a".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn ui_zoom_accepts_only_supported_steps() {
+        for value in UI_ZOOM_PERCENTAGES {
+            assert!(validate_ui_zoom_percent(value).is_ok());
+        }
+        for value in [0, 99, 110, 301, u16::MAX] {
+            assert!(validate_ui_zoom_percent(value).is_err());
+        }
     }
 
     #[test]

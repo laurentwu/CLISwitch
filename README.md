@@ -19,7 +19,7 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 - Full plaintext viewing, copying, and editing of API keys and OAuth source content.
 - Per-CLI file previews, save-before-apply, optimistic digest conflict checks, sequential per-CLI writes, atomic replacement, verification, rollback, cancellation, and retry of failed items only.
 - Credential-bearing backups with tombstones and the latest five versions retained per source file.
-- Chinese and English UI, light/dark/system themes, single-instance behavior, and persisted window state.
+- Chinese and English UI, light/dark/system themes, 100%–300% interface zoom, single-instance behavior, and persisted window state.
 - No telemetry, automatic updater, remote scripts, or generic shell/filesystem IPC.
 
 The exact supported schemas and field mappings are recorded in [CLI_SUPPORT.md](CLI_SUPPORT.md). CLISwitch manages user-level configuration only; project configuration, environment variables, and enterprise policy can override it.

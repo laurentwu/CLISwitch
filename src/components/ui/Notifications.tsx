@@ -33,6 +33,7 @@ export type ErrorOperation =
   | "open"
   | "updateCheck"
   | "catalogUpdate"
+  | "zoom"
   | "close"
   | "background";
 

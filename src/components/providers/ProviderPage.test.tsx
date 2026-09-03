@@ -56,6 +56,7 @@ const snapshot: AppSnapshot = {
   settings: {
     language: "zh-cn",
     theme: "system",
+    uiZoomPercent: 100,
     scanOnStartup: false,
     plaintextRiskAccepted: false,
     revision: 1,
