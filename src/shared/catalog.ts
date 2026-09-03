@@ -141,5 +141,5 @@ export function connectionDisplayName(
   const endpoint = apiTemplate(catalog, provider.templateId)?.endpoints.find(
     (candidate) => candidate.id === connection.templateEndpointId,
   );
-  return endpoint ? `${endpoint.name} · ${connection.protocol}` : connection.protocol;
+  return endpoint?.name ?? connection.protocol;
 }
