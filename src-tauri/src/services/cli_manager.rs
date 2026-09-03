@@ -5,7 +5,10 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
-    adapters::{ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter},
+    adapters::{
+        ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter,
+        opencode::model_routed_model_is_supported,
+    },
     catalog::{ApiProviderTemplate, legacy_catalog, runtime_catalog},
     domain::{
         ApiProviderData, AppSettings, CliId, CurrentCliConfiguration, DetectedCli,
@@ -19,6 +22,7 @@ use crate::{
     services::{
         discovery::discover_executable,
         minimax::normalize_provider_credential_kind,
+        model_catalog::ModelCatalogService,
         oauth::{OAuthService, read_oauth_auth_file},
         redaction::Redactor,
     },
@@ -366,28 +370,35 @@ impl CliManager {
                         if let UnmanagedCandidateData::Api { connection, .. } = &data {
                             self.redactor.register(&connection.api_key);
                         }
-                        let (protocol, endpoint, auth_type, available_models, default_model) =
-                            match &data {
-                                UnmanagedCandidateData::Api {
-                                    connection,
-                                    available_models,
-                                    default_model,
-                                    model_routed,
-                                    ..
-                                } => {
-                                    let route_known = !*model_routed || default_model.is_some();
-                                    (
-                                        route_known.then_some(connection.protocol),
-                                        route_known.then(|| connection.endpoint.clone()),
-                                        route_known.then_some(connection.auth_type),
-                                        available_models.clone(),
-                                        default_model.clone(),
-                                    )
-                                }
-                                UnmanagedCandidateData::Oauth { .. } => {
-                                    (None, None, None, Vec::new(), None)
-                                }
-                            };
+                        let (
+                            protocol,
+                            endpoint,
+                            auth_type,
+                            available_models,
+                            default_model,
+                            requires_model,
+                        ) = match &data {
+                            UnmanagedCandidateData::Api {
+                                connection,
+                                available_models,
+                                default_model,
+                                model_routed,
+                                ..
+                            } => {
+                                let route_known = !*model_routed || default_model.is_some();
+                                (
+                                    route_known.then_some(connection.protocol),
+                                    route_known.then(|| connection.endpoint.clone()),
+                                    route_known.then_some(connection.auth_type),
+                                    available_models.clone(),
+                                    default_model.clone(),
+                                    true,
+                                )
+                            }
+                            UnmanagedCandidateData::Oauth { .. } => {
+                                (None, None, None, Vec::new(), None, false)
+                            }
+                        };
                         let candidate_id = Uuid::new_v4();
                         let candidate_template_id = match &data {
                             UnmanagedCandidateData::Api { template_id, .. } => template_id.clone(),
@@ -431,6 +442,7 @@ impl CliManager {
                             auth_type,
                             available_models,
                             default_model,
+                            requires_model,
                         });
                     }
                     items.push(DetectedCli {
@@ -504,28 +516,7 @@ impl CliManager {
                 "plaintext credential risk must be accepted before saving a secret".into(),
             ));
         }
-        let entry = self
-            .candidates
-            .read()
-            .await
-            .get(&candidate_id)
-            .cloned()
-            .ok_or_else(|| AppError::Conflict("candidate expired; scan again".into()))?;
-        if entry.created_at.elapsed() > CANDIDATE_TTL
-            || entry.candidate.snapshot_id != snapshot_id
-            || entry.candidate.id != candidate_id
-        {
-            return Err(AppError::Conflict(
-                "candidate snapshot is no longer valid".into(),
-            ));
-        }
-        for (path, expected) in &entry.candidate.source_digests {
-            if &file_digest(path).await? != expected {
-                return Err(AppError::Conflict(
-                    "candidate source changed after the scan".into(),
-                ));
-            }
-        }
+        let entry = self.validated_candidate(snapshot_id, candidate_id).await?;
         let provider = match &entry.candidate.data {
             UnmanagedCandidateData::Api {
                 template_id,
@@ -605,6 +596,62 @@ impl CliManager {
         Ok(provider)
     }
 
+    pub async fn list_unmanaged_candidate_models(
+        &self,
+        models: &ModelCatalogService,
+        snapshot_id: Uuid,
+        candidate_id: Uuid,
+    ) -> AppResult<Vec<String>> {
+        let entry = self.validated_candidate(snapshot_id, candidate_id).await?;
+        let UnmanagedCandidateData::Api {
+            template_id,
+            connection,
+            model_routed,
+            ..
+        } = &entry.candidate.data
+        else {
+            return Err(AppError::Validation(
+                "OAuth candidates do not provide model listings".into(),
+            ));
+        };
+        connection.validate_without_default_model()?;
+        filter_candidate_models(
+            template_id.as_deref(),
+            *model_routed,
+            models.list_models(connection).await?,
+        )
+    }
+
+    async fn validated_candidate(
+        &self,
+        snapshot_id: Uuid,
+        candidate_id: Uuid,
+    ) -> AppResult<CandidateEntry> {
+        let entry = self
+            .candidates
+            .read()
+            .await
+            .get(&candidate_id)
+            .cloned()
+            .ok_or_else(|| AppError::Conflict("candidate expired; scan again".into()))?;
+        if entry.created_at.elapsed() > CANDIDATE_TTL
+            || entry.candidate.snapshot_id != snapshot_id
+            || entry.candidate.id != candidate_id
+        {
+            return Err(AppError::Conflict(
+                "candidate snapshot is no longer valid".into(),
+            ));
+        }
+        for (path, expected) in &entry.candidate.source_digests {
+            if &file_digest(path).await? != expected {
+                return Err(AppError::Conflict(
+                    "candidate source changed after the scan".into(),
+                ));
+            }
+        }
+        Ok(entry)
+    }
+
     async fn evict_expired_candidates(&self) {
         self.candidates
             .write()
@@ -654,6 +701,26 @@ impl CliManager {
         }
         None
     }
+}
+
+fn filter_candidate_models(
+    template_id: Option<&str>,
+    model_routed: bool,
+    mut available: Vec<String>,
+) -> AppResult<Vec<String>> {
+    if !model_routed {
+        return Ok(available);
+    }
+    let template_id = template_id.ok_or_else(|| {
+        AppError::Validation("model-routed candidate has no provider template".into())
+    })?;
+    available.retain(|model| model_routed_model_is_supported(template_id, model).unwrap_or(false));
+    if available.is_empty() {
+        return Err(AppError::Unsupported(
+            "model endpoint returned no models with a supported provider route".into(),
+        ));
+    }
+    Ok(available)
 }
 
 fn route_model_routed_connection(
@@ -828,6 +895,10 @@ mod tests {
         },
         filesystem::private_paths::PrivatePaths,
         services::oauth::OAuthService,
+    };
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{header, method, path},
     };
 
     struct CodexOAuthFixture {
@@ -1465,6 +1536,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn opencode_candidate_without_a_model_can_be_saved_with_user_input() {
+        let fixture = opencode_scan_fixture().await;
+        write_json_fixture(&fixture.config_file, &serde_json::json!({})).await;
+        write_json_fixture(
+            &fixture.auth_file,
+            &serde_json::json!({
+                "opencode": { "type": "api", "key": "fixture-zen-key" }
+            }),
+        )
+        .await;
+
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&scan);
+        assert_eq!(item.status, ScanStatus::Unmanaged);
+        let candidate = item
+            .provider_candidates
+            .iter()
+            .find(|candidate| candidate.source_provider_id == "opencode")
+            .unwrap();
+        assert!(candidate.requires_model);
+        assert_eq!(candidate.default_model, None);
+        assert!(candidate.available_models.is_empty());
+        assert!(
+            item.current
+                .as_ref()
+                .unwrap()
+                .diagnostics
+                .iter()
+                .all(|message| {
+                    !message.contains("cannot be saved without a configured or current model")
+                })
+        );
+
+        let saved = fixture
+            .manager
+            .save_unmanaged_candidate(
+                &fixture.oauth,
+                &fixture.settings,
+                UnmanagedCandidateSaveRequest {
+                    snapshot_id: scan.id,
+                    candidate_id: candidate.id,
+                    name: "OpenCode Zen without configured model".into(),
+                    default_model: Some("manually-selected-model".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let ProviderData::Api(api) = saved.data else {
+            panic!("OpenCode candidate should save as an API provider");
+        };
+        assert!(
+            api.connections
+                .iter()
+                .all(|connection| { connection.default_model == "manually-selected-model" })
+        );
+    }
+
+    #[tokio::test]
     async fn opencode_minimax_token_plan_save_and_apply_reconcile_on_rescan() {
         let fixture = opencode_scan_fixture().await;
         write_json_fixture(
@@ -1794,5 +1923,223 @@ mod tests {
                 .await,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn scanned_api_candidate_lists_models_without_exposing_connection_fields() {
+        let fixture = codex_oauth_fixture(br#"{}"#).await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .and(header("authorization", "Bearer fixture-secret-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    { "id": "fetched-first" },
+                    { "id": "fetched-second" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let snapshot_id = Uuid::new_v4();
+        let candidate_id = Uuid::new_v4();
+        fixture.manager.candidates.write().await.insert(
+            candidate_id,
+            CandidateEntry {
+                candidate: UnmanagedCandidate {
+                    id: candidate_id,
+                    snapshot_id,
+                    cli_id: CliId::Codex,
+                    source_provider_id: "fixture-provider".into(),
+                    suggested_name: "Fixture provider".into(),
+                    source_digests: Default::default(),
+                    data: UnmanagedCandidateData::Api {
+                        template_id: None,
+                        connection: Box::new(ProviderConnection {
+                            id: Uuid::new_v4(),
+                            template_endpoint_id: None,
+                            credential_slot_id: "api-key".into(),
+                            protocol: CliProtocol::OpenaiResponses,
+                            endpoint: url::Url::parse(&format!("{}/v1", server.uri())).unwrap(),
+                            auth_type: ConnectionAuthType::Bearer,
+                            api_key: "fixture-secret-key".into(),
+                            default_model: String::new(),
+                            verification: VerificationInfo::default(),
+                        }),
+                        available_models: Vec::new(),
+                        default_model: None,
+                        model_routed: false,
+                    },
+                },
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        let models = fixture
+            .manager
+            .list_unmanaged_candidate_models(
+                &ModelCatalogService::new().unwrap(),
+                snapshot_id,
+                candidate_id,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(models, ["fetched-first", "fetched-second"]);
+    }
+
+    #[tokio::test]
+    async fn scanned_oauth_candidate_rejects_model_listing() {
+        let fixture = codex_oauth_fixture(
+            br#"{"tokens":{"account_id":"fixture-account","access_token":"fixture-token"}}"#,
+        )
+        .await;
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let candidate = &codex_item(&scan).provider_candidates[0];
+        assert!(!candidate.requires_model);
+
+        let error = fixture
+            .manager
+            .list_unmanaged_candidate_models(
+                &ModelCatalogService::new().unwrap(),
+                scan.id,
+                candidate.id,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, AppError::Validation(_)));
+        assert!(error.to_string().contains("OAuth candidates"));
+    }
+
+    #[test]
+    fn model_routed_candidate_listing_keeps_only_supported_routes() {
+        let models = filter_candidate_models(
+            Some("opencode-zen"),
+            true,
+            vec!["gpt-5.6-sol".into(), "unknown-model".into()],
+        )
+        .unwrap();
+
+        assert_eq!(models, ["gpt-5.6-sol"]);
+    }
+
+    #[test]
+    fn model_routed_candidate_listing_rejects_an_empty_supported_set() {
+        let error =
+            filter_candidate_models(Some("opencode-zen"), true, vec!["unknown-model".into()])
+                .unwrap_err();
+
+        assert!(matches!(error, AppError::Unsupported(_)));
+        assert!(error.to_string().contains("no models with a supported"));
+    }
+
+    #[tokio::test]
+    async fn expired_candidate_rejects_model_listing() {
+        let fixture = codex_oauth_fixture(br#"{}"#).await;
+        let snapshot_id = Uuid::new_v4();
+        let candidate_id = Uuid::new_v4();
+        let mut entry = api_candidate_entry(
+            snapshot_id,
+            candidate_id,
+            url::Url::parse("https://fixture.invalid/v1").unwrap(),
+            None,
+            false,
+        );
+        entry.created_at = std::time::Instant::now() - CANDIDATE_TTL - Duration::from_secs(1);
+        fixture
+            .manager
+            .candidates
+            .write()
+            .await
+            .insert(candidate_id, entry);
+
+        let error = fixture
+            .manager
+            .list_unmanaged_candidate_models(
+                &ModelCatalogService::new().unwrap(),
+                snapshot_id,
+                candidate_id,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, AppError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn changed_candidate_source_rejects_model_listing() {
+        let fixture = codex_oauth_fixture(br#"{}"#).await;
+        let snapshot_id = Uuid::new_v4();
+        let candidate_id = Uuid::new_v4();
+        let mut entry = api_candidate_entry(
+            snapshot_id,
+            candidate_id,
+            url::Url::parse("https://fixture.invalid/v1").unwrap(),
+            None,
+            false,
+        );
+        entry.candidate.source_digests.insert(
+            fixture.auth_file.clone(),
+            file_digest(&fixture.auth_file).await.unwrap(),
+        );
+        fixture
+            .manager
+            .candidates
+            .write()
+            .await
+            .insert(candidate_id, entry);
+        tokio::fs::write(&fixture.auth_file, br#"{"changed":true}"#)
+            .await
+            .unwrap();
+
+        let error = fixture
+            .manager
+            .list_unmanaged_candidate_models(
+                &ModelCatalogService::new().unwrap(),
+                snapshot_id,
+                candidate_id,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, AppError::Conflict(_)));
+        assert!(error.to_string().contains("source changed"));
+    }
+
+    fn api_candidate_entry(
+        snapshot_id: Uuid,
+        candidate_id: Uuid,
+        endpoint: url::Url,
+        template_id: Option<&str>,
+        model_routed: bool,
+    ) -> CandidateEntry {
+        CandidateEntry {
+            candidate: UnmanagedCandidate {
+                id: candidate_id,
+                snapshot_id,
+                cli_id: CliId::Opencode,
+                source_provider_id: "fixture-provider".into(),
+                suggested_name: "Fixture provider".into(),
+                source_digests: Default::default(),
+                data: UnmanagedCandidateData::Api {
+                    template_id: template_id.map(str::to_string),
+                    connection: Box::new(ProviderConnection {
+                        id: Uuid::new_v4(),
+                        template_endpoint_id: None,
+                        credential_slot_id: "api-key".into(),
+                        protocol: CliProtocol::OpenaiResponses,
+                        endpoint,
+                        auth_type: ConnectionAuthType::Bearer,
+                        api_key: "fixture-secret-key".into(),
+                        default_model: String::new(),
+                        verification: VerificationInfo::default(),
+                    }),
+                    available_models: Vec::new(),
+                    default_model: None,
+                    model_routed,
+                },
+            },
+            created_at: std::time::Instant::now(),
+        }
     }
 }

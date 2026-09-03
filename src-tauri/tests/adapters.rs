@@ -311,6 +311,32 @@ async fn claude_disambiguates_cli_adapter_provider_pairs_by_key_kind() {
 }
 
 #[tokio::test]
+async fn claude_credentials_without_a_model_are_importable() {
+    let temp = TempDir::new().unwrap();
+    let adapter = ClaudeCodeAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "env": {
+            "ANTHROPIC_BASE_URL": "https://gateway.invalid/anthropic",
+            "ANTHROPIC_API_KEY": "fixture-key"
+          }
+        }"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+    assert_eq!(current.current.model, None);
+    assert_eq!(current.unmanaged_api_candidates.len(), 1);
+    let candidate = &current.unmanaged_api_candidates[0];
+    assert_eq!(candidate.default_model, None);
+    assert!(candidate.available_models.is_empty());
+    assert!(candidate.connection.default_model.is_empty());
+}
+
+#[tokio::test]
 async fn claude_rejects_ambiguous_api_key_and_auth_token_settings() {
     let temp = TempDir::new().unwrap();
     let adapter = ClaudeCodeAdapter;
@@ -502,6 +528,33 @@ experimental_bearer_token = "fixture-key"
             Some("responses")
         );
     }
+}
+
+#[tokio::test]
+async fn codex_credentials_without_a_model_are_importable() {
+    let temp = TempDir::new().unwrap();
+    let adapter = CodexAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"model_provider = "fixture-provider"
+
+[model_providers.fixture-provider]
+base_url = "https://gateway.invalid/v1"
+wire_api = "responses"
+experimental_bearer_token = "fixture-key"
+"#,
+    )
+    .await;
+
+    let current = adapter.read_current(&paths, &host).await.unwrap();
+    assert_eq!(current.current.model, None);
+    assert_eq!(current.unmanaged_api_candidates.len(), 1);
+    let candidate = &current.unmanaged_api_candidates[0];
+    assert_eq!(candidate.default_model, None);
+    assert!(candidate.available_models.is_empty());
+    assert!(candidate.connection.default_model.is_empty());
 }
 
 #[tokio::test]
@@ -728,7 +781,7 @@ async fn opencode_cli_adapter_providers_use_the_declared_chat_transport() {
 }
 
 #[tokio::test]
-async fn opencode_cli_adapter_credentials_without_a_model_are_not_importable() {
+async fn opencode_cli_adapter_credentials_without_a_model_are_importable() {
     let temp = TempDir::new().unwrap();
     let adapter = OpenCodeAdapter;
     let host = environment(temp.path());
@@ -745,17 +798,28 @@ async fn opencode_cli_adapter_credentials_without_a_model_are_not_importable() {
 
     let current = adapter.read_current(&paths, &host).await.unwrap();
     assert_eq!(current.current.model, None);
-    assert!(current.unmanaged_api_candidates.is_empty());
-    assert!(current.current.diagnostics.iter().any(|message| {
-        message.contains("opencode")
-            && message.contains("cannot be saved without")
-            && message.contains("a configured or current model")
-    }));
-    assert!(current.current.diagnostics.iter().any(|message| {
-        message.contains("opencode-go")
-            && message.contains("cannot be saved without")
-            && message.contains("a configured or current model")
-    }));
+    assert_eq!(current.unmanaged_api_candidates.len(), 2);
+    for provider_id in ["opencode", "opencode-go"] {
+        let candidate = current
+            .unmanaged_api_candidates
+            .iter()
+            .find(|candidate| candidate.source_provider_id == provider_id)
+            .unwrap();
+        assert_eq!(candidate.default_model, None);
+        assert!(candidate.available_models.is_empty());
+        assert!(candidate.connection.default_model.is_empty());
+        candidate
+            .connection
+            .validate_without_default_model()
+            .unwrap();
+    }
+    assert!(
+        current
+            .current
+            .diagnostics
+            .iter()
+            .all(|message| !message.contains("cannot be saved without"))
+    );
 }
 
 #[tokio::test]

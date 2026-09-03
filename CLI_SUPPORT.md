@@ -36,9 +36,12 @@ must select one of the provider's actual compatible endpoints. Claude Code and C
 use only a declared compatible endpoint. Unknown protocols are disabled rather than inferred.
 
 Provider endpoints must use HTTPS. Embedded credentials, unresolved `${…}` placeholders, query
-strings, and fragments are rejected. Models are not read or merged from the provider source: every
-declared endpoint requires a manually entered model ID before a provider can be saved. Live model
-listing remains available only for an already saved connection.
+strings, and fragments are rejected. Models are not read or merged from the provider source. A
+complete unmanaged API endpoint remains savable when its CLI configuration has no model: the save
+dialog can request the candidate's live `/models` list or accept a manually entered model ID, and a
+non-empty selection is still required before saving. Live listing uses only the short-lived scan
+candidate ID or an already saved connection ID; endpoint and credential values are not accepted
+from that dialog.
 
 The old static API provider templates are not used for new records but remain available for
 historical compatibility and tests. Refreshing the provider database never deletes or overwrites

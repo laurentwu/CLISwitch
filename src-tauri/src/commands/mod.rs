@@ -266,6 +266,18 @@ pub async fn save_unmanaged_candidate_provider(
 }
 
 #[tauri::command]
+pub async fn list_unmanaged_candidate_models(
+    state: State<'_, AppState>,
+    snapshot_id: Uuid,
+    candidate_id: Uuid,
+) -> AppResult<Vec<String>> {
+    state
+        .cli_manager
+        .list_unmanaged_candidate_models(&state.models, snapshot_id, candidate_id)
+        .await
+}
+
+#[tauri::command]
 pub async fn list_providers(state: State<'_, AppState>) -> AppResult<Vec<PublicProvider>> {
     let catalog = state.catalog_cache.catalog().await?;
     Ok(state
@@ -1283,6 +1295,7 @@ macro_rules! cliswitch_invoke_handler {
             $crate::commands::select_cli_executable,
             $crate::commands::select_cli_config_directory,
             $crate::commands::save_unmanaged_candidate_provider,
+            $crate::commands::list_unmanaged_candidate_models,
             $crate::commands::list_providers,
             $crate::commands::get_provider,
             $crate::commands::get_provider_secret_detail,

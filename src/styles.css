@@ -591,6 +591,11 @@ small {
   color: var(--muted);
   font-size: 0.78rem;
 }
+.candidate-model-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
 .input {
   width: 100%;
   min-height: 38px;

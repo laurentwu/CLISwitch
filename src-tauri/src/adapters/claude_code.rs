@@ -188,8 +188,8 @@ impl CliAdapter for ClaudeCodeAdapter {
         .iter()
         .any(|key| environment.is_present(key));
         let mut recognized_provider_name = None;
-        let candidate = match (&endpoint, &credential, &model) {
-            (Some(endpoint), Some((configured_auth_type, key)), Some(model)) => {
+        let candidate = match (&endpoint, &credential) {
+            (Some(endpoint), Some((configured_auth_type, key))) => {
                 let parsed_endpoint = Url::parse(endpoint)?;
                 let catalog = runtime_catalog()?;
                 // A CLIAdapter provider is identified by a declared Anthropic endpoint.
@@ -200,8 +200,8 @@ impl CliAdapter for ClaudeCodeAdapter {
                         source_provider_id: info.id.clone(),
                         suggested_name: info.name.clone(),
                         template_id: Some(info.id.clone()),
-                        available_models: vec![model.clone()],
-                        default_model: Some(model.clone()),
+                        available_models: model.iter().cloned().collect(),
+                        default_model: model.clone(),
                         is_current: true,
                         model_routed: false,
                         connection: ProviderConnection {
@@ -212,7 +212,7 @@ impl CliAdapter for ClaudeCodeAdapter {
                             endpoint: parsed_endpoint,
                             auth_type: *configured_auth_type,
                             api_key: key.clone(),
-                            default_model: model.clone(),
+                            default_model: model.clone().unwrap_or_default(),
                             verification: VerificationInfo::default(),
                         },
                     })
@@ -241,8 +241,8 @@ impl CliAdapter for ClaudeCodeAdapter {
                         source_provider_id: template_id.into(),
                         suggested_name: template.name.clone(),
                         template_id: Some(template_id.into()),
-                        available_models: vec![model.clone()],
-                        default_model: Some(model.clone()),
+                        available_models: model.iter().cloned().collect(),
+                        default_model: model.clone(),
                         is_current: true,
                         model_routed: false,
                         connection: ProviderConnection {
@@ -253,7 +253,7 @@ impl CliAdapter for ClaudeCodeAdapter {
                             endpoint: parsed_endpoint,
                             auth_type: *configured_auth_type,
                             api_key: key.clone(),
-                            default_model: model.clone(),
+                            default_model: model.clone().unwrap_or_default(),
                             verification: VerificationInfo::default(),
                         },
                     })
@@ -262,8 +262,8 @@ impl CliAdapter for ClaudeCodeAdapter {
                         source_provider_id: "claude-code".into(),
                         suggested_name: "Claude Code API".into(),
                         template_id: None,
-                        available_models: vec![model.clone()],
-                        default_model: Some(model.clone()),
+                        available_models: model.iter().cloned().collect(),
+                        default_model: model.clone(),
                         is_current: true,
                         model_routed: false,
                         connection: ProviderConnection {
@@ -274,7 +274,7 @@ impl CliAdapter for ClaudeCodeAdapter {
                             endpoint: parsed_endpoint,
                             auth_type: *configured_auth_type,
                             api_key: key.clone(),
-                            default_model: model.clone(),
+                            default_model: model.clone().unwrap_or_default(),
                             verification: VerificationInfo::default(),
                         },
                     })

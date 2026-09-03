@@ -17,6 +17,8 @@ CLISwitch is not a secret vault, sandbox, malware defense, or enterprise policy 
 The product decision for 0.1 is that every credential is easy to use and therefore shown in full plaintext:
 
 - API keys are stored in SQLite and returned only by ID-scoped secret-detail IPC.
+- API keys read from CLI files for short-lived scan candidates stay in the backend. Candidate model
+  listing accepts only snapshot and candidate IDs and rechecks expiry and source-file digests.
 - OAuth source content is stored in private application auth files and returned only by ID-scoped secret-detail IPC.
 - Applying a configuration can place credentials in the target CLI's own user-level files.
 - Backups intentionally contain the original credential-bearing bytes needed for recovery.

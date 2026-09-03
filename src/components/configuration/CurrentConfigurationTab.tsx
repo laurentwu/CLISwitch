@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
 import { catalogProviderInfo, providerDisplayName } from "../../shared/catalog";
 import { validateEntityName } from "../../shared/names";
+import { useNotificationStore } from "../../stores/notifications";
 import type {
   CliId,
   DetectedCli,
@@ -50,9 +51,13 @@ export function CurrentConfigurationTab({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const pushNotification = useNotificationStore((state) => state.push);
   const [candidate, setCandidate] = useState<DetectedProviderCandidate>();
   const [candidateName, setCandidateName] = useState("");
   const [candidateModel, setCandidateModel] = useState("");
+  const [candidateFetchedModels, setCandidateFetchedModels] = useState<Record<string, string[]>>(
+    {},
+  );
   const [saveOpen, setSaveOpen] = useState(false);
   const [configurationName, setConfigurationName] = useState("");
   const [backupsOpen, setBackupsOpen] = useState(false);
@@ -71,16 +76,33 @@ export function CurrentConfigurationTab({
         snapshotId: scan?.id,
         candidateId: candidate?.id,
         name: candidateName.trim(),
-        defaultModel: candidateModel || null,
+        defaultModel: candidate?.requiresModel ? candidateModel.trim() || null : null,
       }),
     onSuccess: () => {
       setCandidate(undefined);
       setCandidateName("");
       setCandidateModel("");
+      setCandidateFetchedModels({});
       void queryClient.invalidateQueries({ queryKey: ["providers"] });
       refresh.mutate();
     },
     onError: (error) => onError(error, "save"),
+  });
+  const fetchCandidateModels = useMutation({
+    mutationFn: ({ snapshotId, candidateId }: { snapshotId: string; candidateId: string }) =>
+      command<string[]>("list_unmanaged_candidate_models", {
+        snapshotId,
+        candidateId,
+      }),
+    onSuccess: (models, { candidateId }) => {
+      setCandidateFetchedModels((current) => ({ ...current, [candidateId]: models }));
+      pushNotification({
+        tone: "success",
+        title: t("providers.fetchModelsSucceeded"),
+        dedupeKey: `fetch-candidate-models-success\0${candidateId}`,
+      });
+    },
+    onError: (error) => onError(error, "fetchModels"),
   });
   const saveCurrent = useMutation({
     mutationFn: () =>
@@ -96,8 +118,11 @@ export function CurrentConfigurationTab({
     onError: (error) => onError(error, "save"),
   });
   const candidateNameIssue = validateEntityName(candidateName, providers);
-  const candidateModelRequired = Boolean(candidate?.availableModels.length);
+  const candidateModelRequired = Boolean(candidate?.requiresModel);
   const candidateModelIssue = candidateModelRequired && !candidateModel.trim();
+  const candidateModelOptions = candidate
+    ? [...new Set([...candidate.availableModels, ...(candidateFetchedModels[candidate.id] ?? [])])]
+    : [];
   const configurationNameIssue = validateEntityName(configurationName, configurations);
   const candidateTemplateName = candidate?.templateId
     ? catalogProviderInfo(catalog, candidate.templateId)
@@ -203,6 +228,7 @@ export function CurrentConfigurationTab({
                         setCandidate(providerCandidate);
                         setCandidateName(providerCandidate.suggestedName);
                         setCandidateModel(providerCandidate.defaultModel ?? "");
+                        setCandidateFetchedModels({});
                       }}
                     >
                       {t("config.manageCandidateNamed", {
@@ -228,6 +254,7 @@ export function CurrentConfigurationTab({
         onClose={() => {
           setCandidate(undefined);
           setCandidateModel("");
+          setCandidateFetchedModels({});
         }}
         footer={
           <>
@@ -236,6 +263,7 @@ export function CurrentConfigurationTab({
               onClick={() => {
                 setCandidate(undefined);
                 setCandidateModel("");
+                setCandidateFetchedModels({});
               }}
             >
               {t("common.cancel")}
@@ -269,27 +297,48 @@ export function CurrentConfigurationTab({
             onChange={(event) => setCandidateName(event.target.value)}
           />
         </Field>
-        {candidate ? (
-          <Field
-            label={t("providers.defaultModel")}
-            hint={
-              candidateModelIssue
-                ? t("validation.candidateModelRequired")
-                : t("providers.modelHint")
-            }
-          >
-            <Input
-              list="candidate-models"
-              value={candidateModel}
-              aria-invalid={candidateModelIssue}
-              onChange={(event) => setCandidateModel(event.target.value)}
-            />
+        {candidate?.requiresModel ? (
+          <div className="field">
+            <label className="field-label" htmlFor="candidate-model">
+              {t("providers.defaultModel")}
+            </label>
+            <div className="candidate-model-controls">
+              <Input
+                id="candidate-model"
+                list="candidate-models"
+                placeholder={t("providers.modelPlaceholder")}
+                value={candidateModel}
+                aria-invalid={candidateModelIssue}
+                onChange={(event) => setCandidateModel(event.target.value)}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={fetchCandidateModels.isPending}
+                onClick={() => {
+                  if (scan?.id && candidate.id) {
+                    fetchCandidateModels.mutate({
+                      snapshotId: scan.id,
+                      candidateId: candidate.id,
+                    });
+                  }
+                }}
+              >
+                {fetchCandidateModels.isPending ? <Spinner /> : <RefreshCw size={15} />}{" "}
+                {t("providers.fetchModels")}
+              </Button>
+            </div>
             <datalist id="candidate-models">
-              {candidate.availableModels.map((model) => (
+              {candidateModelOptions.map((model) => (
                 <option key={model} value={model} />
               ))}
             </datalist>
-          </Field>
+            <span className="field-hint">
+              {candidateModelIssue
+                ? t("validation.candidateModelRequired")
+                : t("providers.modelHint")}
+            </span>
+          </div>
         ) : null}
         {candidate ? (
           <dl className="detail-grid">
