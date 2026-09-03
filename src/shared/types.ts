@@ -309,19 +309,26 @@ export interface CloseState {
   applyActive: boolean;
 }
 
+export interface ApiConnectionDraft {
+  id?: string;
+  templateEndpointId?: string;
+  credentialSlotId: string;
+  protocol: CliProtocol;
+  endpoint: string;
+  authType: ConnectionAuthType;
+  apiKey: string;
+  defaultModel: string;
+}
+
+export interface TransientConnectionDraft {
+  templateId?: string;
+  connection: ApiConnectionDraft;
+}
+
 export interface ApiProviderDraft {
   name: string;
   templateId?: string;
-  connections: Array<{
-    id?: string;
-    templateEndpointId?: string;
-    credentialSlotId: string;
-    protocol: CliProtocol;
-    endpoint: string;
-    authType: ConnectionAuthType;
-    apiKey: string;
-    defaultModel: string;
-  }>;
+  connections: ApiConnectionDraft[];
 }
 
 export const CLI_IDS: CliId[] = ["claude-code", "codex", "opencode"];

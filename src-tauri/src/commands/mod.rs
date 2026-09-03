@@ -43,6 +43,13 @@ pub struct ConnectionDraft {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TransientConnectionDraft {
+    pub template_id: Option<String>,
+    pub connection: ConnectionDraft,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiProviderDraft {
     pub name: String,
     pub template_id: Option<String>,
@@ -501,6 +508,16 @@ pub async fn list_models(
 }
 
 #[tauri::command]
+pub async fn list_draft_models(
+    state: State<'_, AppState>,
+    draft: TransientConnectionDraft,
+) -> AppResult<Vec<String>> {
+    let connection = connection_from_transient_draft(draft)?;
+    state.redactor.register(&connection.api_key);
+    state.models.list_models(&connection).await
+}
+
+#[tauri::command]
 pub async fn test_connection(
     state: State<'_, AppState>,
     provider_id: Uuid,
@@ -544,6 +561,16 @@ pub async fn test_connection(
             Err(AppError::Network(message))
         }
     }
+}
+
+#[tauri::command]
+pub async fn test_draft_connection(
+    state: State<'_, AppState>,
+    draft: TransientConnectionDraft,
+) -> AppResult<()> {
+    let connection = connection_from_transient_draft(draft)?;
+    state.redactor.register(&connection.api_key);
+    state.models.test_connection(&connection).await
 }
 
 #[tauri::command]
@@ -1256,6 +1283,32 @@ fn provider_from_draft(
     provider
 }
 
+fn connection_from_transient_draft(
+    draft: TransientConnectionDraft,
+) -> AppResult<ProviderConnection> {
+    let now = Utc::now();
+    let provider = provider_from_draft(
+        Uuid::new_v4(),
+        1,
+        now,
+        now,
+        ApiProviderDraft {
+            name: "Transient provider connection".into(),
+            template_id: draft.template_id,
+            connections: vec![draft.connection],
+        },
+    );
+    let ProviderData::Api(mut api) = provider.data else {
+        unreachable!("provider_from_draft always creates an API provider")
+    };
+    let connection = api
+        .connections
+        .pop()
+        .ok_or_else(|| AppError::Validation("connection is required".into()))?;
+    connection.validate_without_default_model()?;
+    Ok(connection)
+}
+
 fn detach_api_catalog_identity(provider: &mut ProviderProfile) {
     provider.template_id = None;
     if let ProviderData::Api(api) = &mut provider.data {
@@ -1307,7 +1360,9 @@ macro_rules! cliswitch_invoke_handler {
             $crate::commands::update_oauth_raw_content,
             $crate::commands::delete_provider,
             $crate::commands::list_models,
+            $crate::commands::list_draft_models,
             $crate::commands::test_connection,
+            $crate::commands::test_draft_connection,
             $crate::commands::start_oauth_login,
             $crate::commands::cancel_oauth_login,
             $crate::commands::send_oauth_input,
@@ -1405,6 +1460,70 @@ mod tests {
                 default_model: "fixture-model".into(),
             }],
         }
+    }
+
+    #[test]
+    fn transient_connection_does_not_require_a_default_model() {
+        let draft = TransientConnectionDraft {
+            template_id: None,
+            connection: ConnectionDraft {
+                id: None,
+                template_endpoint_id: None,
+                credential_slot_id: "api-key".into(),
+                protocol: CliProtocol::OpenaiResponses,
+                endpoint: Url::parse("https://fixture.example/v1").unwrap(),
+                auth_type: ConnectionAuthType::Bearer,
+                api_key: "fixture-key".into(),
+                default_model: String::new(),
+            },
+        };
+
+        let connection = connection_from_transient_draft(draft).unwrap();
+
+        assert!(connection.default_model.is_empty());
+        assert!(connection.validate_without_default_model().is_ok());
+        assert!(connection.validate().is_err());
+    }
+
+    #[test]
+    fn transient_connection_rejects_missing_credentials() {
+        let draft = TransientConnectionDraft {
+            template_id: None,
+            connection: ConnectionDraft {
+                id: None,
+                template_endpoint_id: None,
+                credential_slot_id: "api-key".into(),
+                protocol: CliProtocol::OpenaiResponses,
+                endpoint: Url::parse("https://fixture.example/v1").unwrap(),
+                auth_type: ConnectionAuthType::Bearer,
+                api_key: String::new(),
+                default_model: String::new(),
+            },
+        };
+
+        assert!(matches!(
+            connection_from_transient_draft(draft),
+            Err(AppError::Validation(message)) if message == "API key is required"
+        ));
+    }
+
+    #[test]
+    fn transient_connection_uses_the_same_minimax_credential_normalization_as_save() {
+        let mut provider_draft = minimax_draft(
+            crate::services::minimax::GLOBAL_API_TEMPLATE_ID,
+            "sk-cp-fixture",
+            ConnectionAuthType::ApiKey,
+            Uuid::new_v4(),
+        );
+        provider_draft.connections[0].default_model.clear();
+        let draft = TransientConnectionDraft {
+            template_id: provider_draft.template_id,
+            connection: provider_draft.connections.pop().unwrap(),
+        };
+
+        let connection = connection_from_transient_draft(draft).unwrap();
+
+        assert_eq!(connection.auth_type, ConnectionAuthType::Bearer);
     }
 
     #[test]
