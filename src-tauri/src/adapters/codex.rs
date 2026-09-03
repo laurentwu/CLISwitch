@@ -126,8 +126,8 @@ impl CliAdapter for CodexAdapter {
         } else {
             None
         };
-        let candidate = match (&endpoint, &key, &model) {
-            (Some(endpoint), Some(key), Some(model)) => Some((
+        let candidate = match (&endpoint, &key) {
+            (Some(endpoint), Some(key)) => Some((
                 dynamic_info.clone(),
                 ProviderConnection {
                     id: Uuid::new_v4(),
@@ -137,7 +137,7 @@ impl CliAdapter for CodexAdapter {
                     endpoint: Url::parse(endpoint)?,
                     auth_type: ConnectionAuthType::Bearer,
                     api_key: key.clone(),
-                    default_model: model.clone(),
+                    default_model: model.clone().unwrap_or_default(),
                     verification: VerificationInfo::default(),
                 },
             )),
@@ -165,7 +165,7 @@ impl CliAdapter for CodexAdapter {
         let unmanaged_api_candidates = candidate
             .into_iter()
             .map(|(dynamic_info, connection)| {
-                let available_models = vec![connection.default_model.clone()];
+                let available_models = model.iter().cloned().collect();
                 AdapterApiCandidate {
                     source_provider_id: dynamic_info
                         .as_ref()
@@ -177,7 +177,7 @@ impl CliAdapter for CodexAdapter {
                         .unwrap_or_else(|| provider_id.clone()),
                     template_id: dynamic_info.map(|info| info.id),
                     available_models,
-                    default_model: Some(connection.default_model.clone()),
+                    default_model: model.clone(),
                     is_current: true,
                     model_routed: false,
                     connection,

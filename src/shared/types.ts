@@ -139,6 +139,7 @@ export interface DetectedProviderCandidate {
   authType?: ConnectionAuthType | null;
   availableModels: string[];
   defaultModel?: string | null;
+  requiresModel: boolean;
 }
 
 export interface DetectedCli {

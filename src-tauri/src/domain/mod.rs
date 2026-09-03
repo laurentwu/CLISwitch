@@ -226,7 +226,7 @@ pub struct ProviderConnection {
 }
 
 impl ProviderConnection {
-    pub fn validate(&self) -> AppResult<()> {
+    pub fn validate_without_default_model(&self) -> AppResult<()> {
         if self.credential_slot_id.trim().is_empty() {
             return Err(AppError::Validation(
                 "credential slot ID is required".into(),
@@ -244,6 +244,11 @@ impl ProviderConnection {
         if self.api_key.trim().is_empty() {
             return Err(AppError::Validation("API key is required".into()));
         }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> AppResult<()> {
+        self.validate_without_default_model()?;
         if self.default_model.trim().is_empty() {
             return Err(AppError::Validation("default model is required".into()));
         }
@@ -694,6 +699,7 @@ pub struct DetectedProviderCandidate {
     pub auth_type: Option<ConnectionAuthType>,
     pub available_models: Vec<String>,
     pub default_model: Option<String>,
+    pub requires_model: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

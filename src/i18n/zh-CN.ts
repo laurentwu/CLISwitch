@@ -153,6 +153,7 @@ export const zhCN = {
       endpoint: "端点",
       key: "API Key（完整明文）",
       defaultModel: "默认模型",
+      modelPlaceholder: "选择或输入模型 ID",
       authType: "认证类型",
       fetchModels: "获取模型",
       fetchModelsSucceeded: "获取模型成功",

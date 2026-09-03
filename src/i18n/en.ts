@@ -157,6 +157,7 @@ export const en = {
       endpoint: "Endpoint",
       key: "API key (full plaintext)",
       defaultModel: "Default model",
+      modelPlaceholder: "Select or enter a model ID",
       authType: "Authentication",
       fetchModels: "Fetch models",
       fetchModelsSucceeded: "Models fetched successfully",

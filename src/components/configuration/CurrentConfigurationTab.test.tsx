@@ -1,9 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { ProviderCatalog, ScanSnapshot } from "../../shared/types";
 import { CurrentConfigurationTab } from "./CurrentConfigurationTab";
+
+const commandMock = vi.hoisted(() => vi.fn());
+vi.mock("../../shared/ipc", () => ({ command: commandMock }));
 
 const catalog: ProviderCatalog = {
   schemaVersion: 1,
@@ -39,6 +42,7 @@ const codexOAuthScan: ScanSnapshot = {
           sourceProviderId: "codex",
           suggestedName: "Codex OAuth",
           availableModels: [],
+          requiresModel: false,
         },
       ],
       current: {
@@ -60,6 +64,10 @@ const codexOAuthScan: ScanSnapshot = {
 };
 
 describe("CurrentConfigurationTab", () => {
+  beforeEach(() => {
+    commandMock.mockReset();
+  });
+
   it("labels successful scan diagnostics without calling the scan a failure", () => {
     const client = new QueryClient();
     const diagnostic =
@@ -128,8 +136,9 @@ describe("CurrentConfigurationTab", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "将 Codex OAuth 保存为供应商" }));
-    expect(screen.getByRole("dialog", { name: "保存未纳管供应商" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "名称" })).toHaveValue("Codex OAuth");
+    const dialog = screen.getByRole("dialog", { name: "保存未纳管供应商" });
+    expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue("Codex OAuth");
+    expect(within(dialog).queryByRole("button", { name: "获取模型" })).not.toBeInTheDocument();
   });
 
   it("shows every detected OpenCode provider and lets the user choose its default model", () => {
@@ -165,6 +174,7 @@ describe("CurrentConfigurationTab", () => {
               authType: "bearer",
               availableModels: ["glm-current", "glm-other"],
               defaultModel: "glm-current",
+              requiresModel: true,
             },
             {
               id: "00000000-0000-4000-8000-000000000012",
@@ -175,6 +185,7 @@ describe("CurrentConfigurationTab", () => {
               authType: "bearer",
               availableModels: ["custom-model"],
               defaultModel: "custom-model",
+              requiresModel: true,
             },
           ],
         },
@@ -208,7 +219,8 @@ describe("CurrentConfigurationTab", () => {
     expect(within(dialog).queryByText("glm-coding-plan")).not.toBeInTheDocument();
   });
 
-  it("requires a model for a model-routed provider when the scan could not infer one", () => {
+  it("fetches suggestions without selecting a model for an API candidate", async () => {
+    commandMock.mockResolvedValue(["fetched-first", "fetched-second"]);
     const client = new QueryClient();
     const scan: ScanSnapshot = {
       ...codexOAuthScan,
@@ -236,8 +248,9 @@ describe("CurrentConfigurationTab", () => {
               protocol: null,
               endpoint: null,
               authType: null,
-              availableModels: ["gpt-5.6-sol"],
+              availableModels: [],
               defaultModel: null,
+              requiresModel: true,
             },
           ],
         },
@@ -274,6 +287,19 @@ describe("CurrentConfigurationTab", () => {
     const model = within(dialog).getByRole("combobox", { name: /默认模型/ });
     expect(model).toHaveValue("");
     expect(within(dialog).getByText("保存此供应商前请选择一个模型。")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "保存" })).toBeDisabled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "获取模型" }));
+    await waitFor(() =>
+      expect(
+        document.querySelector('datalist#candidate-models option[value="fetched-first"]'),
+      ).not.toBeNull(),
+    );
+    expect(commandMock).toHaveBeenCalledWith("list_unmanaged_candidate_models", {
+      snapshotId: scan.id,
+      candidateId: "00000000-0000-4000-8000-000000000020",
+    });
+    expect(model).toHaveValue("");
     expect(within(dialog).getByRole("button", { name: "保存" })).toBeDisabled();
 
     fireEvent.change(model, { target: { value: "gpt-5.6-sol" } });

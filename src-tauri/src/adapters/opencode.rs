@@ -464,7 +464,10 @@ fn provider_models(
     models
 }
 
-fn model_routed_model_is_supported(template_id: &str, model_id: &str) -> AppResult<bool> {
+pub(crate) fn model_routed_model_is_supported(
+    template_id: &str,
+    model_id: &str,
+) -> AppResult<bool> {
     let catalog = runtime_catalog()?;
     if catalog
         .model_routed_endpoint(template_id, model_id)
@@ -753,9 +756,6 @@ impl CliAdapter for OpenCodeAdapter {
             if metadata.endpoint.is_none() && !metadata.model_routed {
                 missing.push("options.baseURL or a default endpoint relation");
             }
-            if models.is_empty() {
-                missing.push("a configured or current model");
-            }
             if !missing.is_empty() {
                 diagnostics.push(format!(
                     "OpenCode provider {auth_provider_id} was recognized but cannot be saved without {}",
@@ -841,7 +841,7 @@ impl CliAdapter for OpenCodeAdapter {
                 verification: VerificationInfo::default(),
             };
             if !metadata.model_routed
-                && let Err(error) = connection.validate()
+                && let Err(error) = connection.validate_without_default_model()
             {
                 diagnostics.push(format!(
                     "OpenCode provider {auth_provider_id} cannot be saved: {error}"
