@@ -83,6 +83,7 @@ function ReadyApp() {
     queryKey: ["app-snapshot"],
     queryFn: () => command<AppSnapshot>("get_app_snapshot"),
   });
+  const savedZoomPercent = snapshot.data?.settings.uiZoomPercent;
 
   useEffect(() => {
     if (!snapshot.data) return;
@@ -92,6 +93,13 @@ function ReadyApp() {
     document.documentElement.dataset.theme = theme;
     if (theme === "system") delete document.documentElement.dataset.theme;
   }, [snapshot.data, i18n]);
+
+  useEffect(() => {
+    if (savedZoomPercent === undefined) return;
+    void command<void>("set_ui_zoom", { uiZoomPercent: savedZoomPercent }).catch((error) =>
+      reportError(error, "zoom"),
+    );
+  }, [savedZoomPercent, reportError]);
 
   useEffect(() => {
     void command("set_frontend_dirty", { dirty }).catch((error) =>

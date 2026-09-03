@@ -19,6 +19,7 @@ use crate::{
         CliProtocol, ConfigurationTarget, ConnectionAuthType, ManualCliLocation, OAuthKind,
         OAuthProviderData, ProviderConnection, ProviderData, ProviderProfile, PublicProvider,
         SavedConfiguration, VerificationInfo, VerificationStatus, normalize_name,
+        validate_ui_zoom_percent,
     },
     error::{AppError, AppResult},
     filesystem::private_paths::set_private_file_permissions,
@@ -828,9 +829,13 @@ impl Repository {
                 })
             })
             .collect::<AppResult<Vec<_>>>()?;
+        let ui_zoom_percent = u16::try_from(row.try_get::<i64, _>("ui_zoom_percent")?)
+            .map_err(|_| AppError::Validation("UI zoom is outside the supported range".into()))?;
+        validate_ui_zoom_percent(ui_zoom_percent)?;
         let mut settings = AppSettings {
             language: AppLanguage::from_str(&row.try_get::<String, _>("language")?)?,
             theme: AppTheme::from_str(&row.try_get::<String, _>("theme")?)?,
+            ui_zoom_percent,
             scan_on_startup: row.try_get::<i64, _>("scan_on_startup")? != 0,
             plaintext_risk_accepted: row.try_get::<i64, _>("plaintext_risk_accepted")? != 0,
             revision: row.try_get("revision")?,
@@ -857,10 +862,12 @@ impl Repository {
         settings: &AppSettings,
         expected_revision: i64,
     ) -> AppResult<()> {
+        validate_ui_zoom_percent(settings.ui_zoom_percent)?;
         let mut transaction = self.pool.begin().await?;
-        let result = sqlx::query("UPDATE app_settings SET language = ?, theme = ?, scan_on_startup = ?, plaintext_risk_accepted = ?, revision = revision + 1, updated_at = ? WHERE singleton = 1 AND revision = ?")
+        let result = sqlx::query("UPDATE app_settings SET language = ?, theme = ?, ui_zoom_percent = ?, scan_on_startup = ?, plaintext_risk_accepted = ?, revision = revision + 1, updated_at = ? WHERE singleton = 1 AND revision = ?")
             .bind(settings.language.to_string())
             .bind(settings.theme.to_string())
+            .bind(settings.ui_zoom_percent)
             .bind(settings.scan_on_startup)
             .bind(settings.plaintext_risk_accepted)
             .bind(Utc::now().to_rfc3339())
@@ -1185,6 +1192,57 @@ mod tests {
             .await
             .unwrap();
         (temp, paths, repository)
+    }
+
+    #[tokio::test]
+    async fn ui_zoom_migration_defaults_existing_settings_to_100() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/0001_initial.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(include_str!("../../migrations/0005_ui_zoom_percent.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let zoom: i64 =
+            sqlx::query_scalar("SELECT ui_zoom_percent FROM app_settings WHERE singleton = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(zoom, 100);
+    }
+
+    #[tokio::test]
+    async fn settings_persist_supported_ui_zoom_and_reject_other_values() {
+        let (_temp, _paths, repository) = repository().await;
+        let mut settings = repository.get_settings().await.unwrap();
+        assert_eq!(settings.ui_zoom_percent, 100);
+
+        settings.ui_zoom_percent = 175;
+        repository
+            .update_settings(&settings, settings.revision)
+            .await
+            .unwrap();
+        let mut persisted = repository.get_settings().await.unwrap();
+        assert_eq!(persisted.ui_zoom_percent, 175);
+
+        persisted.ui_zoom_percent = 110;
+        let error = repository
+            .update_settings(&persisted, persisted.revision)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AppError::Validation(_)));
+        assert_eq!(
+            repository.get_settings().await.unwrap().ui_zoom_percent,
+            175
+        );
     }
 
     #[tokio::test]

@@ -7,6 +7,8 @@ import type { AppSettings, AppSnapshot, CatalogStatus, CliId } from "../../share
 import { useUiStore } from "../../stores/ui";
 import { Alert, Button, Card, Field, Input, Select, type ErrorReporter } from "../ui";
 
+const UI_ZOOM_PERCENTAGES = [100, 125, 150, 175, 200, 225, 250, 275, 300] as const;
+
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
   const units = ["KiB", "MiB", "GiB", "TiB"];
@@ -31,6 +33,10 @@ export function SettingsPage({
   const setDirty = useUiStore((state) => state.setDirty);
   const setSaveCurrent = useUiStore((state) => state.setSaveCurrent);
   const [settings, setSettings] = useState(snapshot.settings);
+  const savedZoomRef = useRef(snapshot.settings.uiZoomPercent);
+  const appliedZoomRef = useRef(snapshot.settings.uiZoomPercent);
+  const requestedZoomRef = useRef(snapshot.settings.uiZoomPercent);
+  const zoomQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [catalogMessage, setCatalogMessage] = useState<string>();
   const [releaseMessage, setReleaseMessage] = useState<string>();
   const catalogStatus = useQuery({
@@ -55,6 +61,7 @@ export function SettingsPage({
     mutationFn: () =>
       command<AppSettings>("update_settings", { settings, expectedRevision: settings.revision }),
     onSuccess: async (value) => {
+      savedZoomRef.current = value.uiZoomPercent;
       setSettings(value);
       setDirty(false);
       document.documentElement.dataset.theme = value.theme;
@@ -82,6 +89,34 @@ export function SettingsPage({
     setSaveCurrent(saveCurrent);
     return () => setSaveCurrent(undefined);
   }, [setSaveCurrent]);
+  useEffect(
+    () => () => {
+      const savedZoom = savedZoomRef.current;
+      void zoomQueueRef.current.then(() =>
+        command<void>("set_ui_zoom", { uiZoomPercent: savedZoom }).catch((error) =>
+          onError(error, "zoom"),
+        ),
+      );
+    },
+    [onError],
+  );
+  const previewZoom = (uiZoomPercent: number) => {
+    requestedZoomRef.current = uiZoomPercent;
+    setSettings((current) => ({ ...current, uiZoomPercent }));
+    zoomQueueRef.current = zoomQueueRef.current.then(async () => {
+      try {
+        await command<void>("set_ui_zoom", { uiZoomPercent });
+        appliedZoomRef.current = uiZoomPercent;
+      } catch (error) {
+        if (requestedZoomRef.current === uiZoomPercent) {
+          const appliedZoom = appliedZoomRef.current;
+          requestedZoomRef.current = appliedZoom;
+          setSettings((current) => ({ ...current, uiZoomPercent: appliedZoom }));
+        }
+        onError(error, "zoom");
+      }
+    });
+  };
   const choose = async (cliId: CliId, kind: "executable" | "directory") => {
     try {
       const value = await command<AppSettings | null>(
@@ -122,7 +157,7 @@ export function SettingsPage({
         </Button>
       </header>
       <Card>
-        <div className="form-grid two-columns">
+        <div className="form-grid settings-preferences-grid">
           <Field label={t("settings.language")}>
             <Select
               value={settings.language}
@@ -147,6 +182,18 @@ export function SettingsPage({
               <option value="light">{t("settings.light")}</option>
               <option value="dark">{t("settings.dark")}</option>
               <option value="system">{t("settings.system")}</option>
+            </Select>
+          </Field>
+          <Field label={t("settings.uiZoom")}>
+            <Select
+              value={settings.uiZoomPercent}
+              onChange={(event) => previewZoom(Number(event.target.value))}
+            >
+              {UI_ZOOM_PERCENTAGES.map((value) => (
+                <option key={value} value={value}>
+                  {value}%
+                </option>
+              ))}
             </Select>
           </Field>
         </div>

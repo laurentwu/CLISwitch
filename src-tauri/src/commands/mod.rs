@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::atomic::Ordering};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
@@ -15,6 +15,7 @@ use crate::{
         ApiProviderData, AppSettings, BackupMetadata, CliId, CliProtocol, ConfigurationTarget,
         ConnectionAuthType, OAuthKind, ProviderConnection, ProviderData, ProviderProfile,
         PublicProvider, RestorePreview, SavedConfiguration, ScanSnapshot, VerificationInfo,
+        validate_ui_zoom_percent,
     },
     error::{AppError, AppResult},
     services::{
@@ -958,6 +959,17 @@ pub async fn update_settings(
 }
 
 #[tauri::command]
+pub fn set_ui_zoom(app: AppHandle, ui_zoom_percent: u16) -> AppResult<()> {
+    validate_ui_zoom_percent(ui_zoom_percent)?;
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| AppError::NotFound("main window".into()))?;
+    window
+        .set_zoom(f64::from(ui_zoom_percent) / 100.0)
+        .map_err(|error| AppError::Io(std::io::Error::other(error.to_string())))
+}
+
+#[tauri::command]
 pub async fn open_app_data_directory(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
     app.opener()
         .open_path(
@@ -1308,6 +1320,7 @@ macro_rules! cliswitch_invoke_handler {
             $crate::commands::restore_backup,
             $crate::commands::get_settings,
             $crate::commands::update_settings,
+            $crate::commands::set_ui_zoom,
             $crate::commands::open_app_data_directory,
             $crate::commands::check_github_release,
             $crate::commands::set_frontend_dirty,

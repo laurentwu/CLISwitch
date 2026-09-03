@@ -19,6 +19,7 @@ const snapshot: AppSnapshot = {
   settings: {
     language: "zh-cn",
     theme: "system",
+    uiZoomPercent: 100,
     scanOnStartup: false,
     plaintextRiskAccepted: false,
     revision: 1,
@@ -89,5 +90,83 @@ describe("SettingsPage provider database", () => {
       expect(screen.getByRole("status")).toHaveTextContent("Provider 数据库已更新");
     });
     expect(commandMock).toHaveBeenCalledWith("update_catalog");
+  });
+
+  it("previews a supported zoom immediately and persists it on save", async () => {
+    commandMock.mockImplementation((name: string, args?: Record<string, unknown>) => {
+      if (name === "get_catalog_status") return Promise.resolve(bundledStatus);
+      if (name === "set_ui_zoom") return Promise.resolve();
+      if (name === "update_settings") {
+        return Promise.resolve({
+          ...(args?.settings as AppSnapshot["settings"]),
+          revision: 2,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${name}`));
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsPage snapshot={snapshot} onError={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    const zoom = screen.getByRole("combobox", { name: "界面缩放" });
+    expect(Array.from((zoom as HTMLSelectElement).options, (option) => option.text)).toEqual([
+      "100%",
+      "125%",
+      "150%",
+      "175%",
+      "200%",
+      "225%",
+      "250%",
+      "275%",
+      "300%",
+    ]);
+
+    fireEvent.change(zoom, { target: { value: "175" } });
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith("set_ui_zoom", { uiZoomPercent: 175 }),
+    );
+    expect(useUiStore.getState().dirty).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith("update_settings", {
+        settings: expect.objectContaining({ uiZoomPercent: 175 }),
+        expectedRevision: 1,
+      }),
+    );
+  });
+
+  it("restores the saved zoom when an unsaved preview is discarded", async () => {
+    commandMock.mockImplementation((name: string) => {
+      if (name === "get_catalog_status") return Promise.resolve(bundledStatus);
+      if (name === "set_ui_zoom") return Promise.resolve();
+      return Promise.reject(new Error(`unexpected command: ${name}`));
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsPage snapshot={snapshot} onError={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.change(screen.getByRole("combobox", { name: "界面缩放" }), {
+      target: { value: "250" },
+    });
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith("set_ui_zoom", { uiZoomPercent: 250 }),
+    );
+
+    view.unmount();
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith("set_ui_zoom", { uiZoomPercent: 100 }),
+    );
   });
 });

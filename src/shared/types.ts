@@ -168,6 +168,7 @@ export interface ManualCliLocation {
 export interface AppSettings {
   language: "zh-cn" | "en";
   theme: "light" | "dark" | "system";
+  uiZoomPercent: number;
   scanOnStartup: boolean;
   plaintextRiskAccepted: boolean;
   revision: number;
