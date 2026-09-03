@@ -408,12 +408,20 @@ export function ApiProviderEditor({
 
   const test = async (connectionId?: string) => {
     if (!detail || !connectionId) {
-      setNotice({ tone: "warning", message: t("providers.saveBeforeTest") });
+      pushNotification({
+        tone: "warning",
+        title: t("providers.saveBeforeTest"),
+        dedupeKey: "connection-test-unsaved",
+      });
       return;
     }
     try {
       await command("test_connection", { providerId: detail.id, connectionId });
-      setNotice({ tone: "success", message: t("providers.testSucceeded") });
+      pushNotification({
+        tone: "success",
+        title: t("providers.testSucceeded"),
+        dedupeKey: `connection-test-success\0${detail.id}\0${connectionId}`,
+      });
     } catch (error) {
       onError(error, "connectionTest");
     } finally {

@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { ApiProviderDetail, ProviderCatalog } from "../../shared/types";
 import { useNotificationStore } from "../../stores/notifications";
-import { NotificationViewport } from "../ui";
+import { NotificationViewport, useErrorNotifier } from "../ui";
 import { ApiProviderEditor } from "./ApiProviderEditor";
 
 const commandMock = vi.hoisted(() => vi.fn());
@@ -94,6 +94,42 @@ const cliAdapterCatalog: ProviderCatalog = {
   ],
 };
 
+function SavedProviderEditor({ detail }: { detail: ApiProviderDetail }) {
+  const onError = useErrorNotifier();
+  return (
+    <ApiProviderEditor
+      detail={detail}
+      providers={[]}
+      catalog={catalog}
+      onClose={vi.fn()}
+      onError={onError}
+    />
+  );
+}
+
+function savedProviderDetail(): ApiProviderDetail {
+  return {
+    id: "provider-1",
+    name: "Custom provider",
+    profileType: "api",
+    revision: 1,
+    createdAt: "2026-08-23T00:00:00Z",
+    updatedAt: "2026-08-23T00:00:00Z",
+    connections: [
+      {
+        id: "connection-1",
+        credentialSlotId: "api-key",
+        protocol: "openai-responses",
+        endpoint: "https://example.test/v1",
+        authType: "bearer",
+        apiKey: "secret",
+        defaultModel: "saved-default",
+        verification: { status: "never-tested" },
+      },
+    ],
+  };
+}
+
 describe("ApiProviderEditor", () => {
   beforeEach(() => {
     commandMock.mockReset();
@@ -116,6 +152,57 @@ describe("ApiProviderEditor", () => {
     expect(screen.getByRole("heading", { name: "OpenAI Responses" })).toBeInTheDocument();
     expect(screen.getAllByRole("textbox", { name: /Coding Plan API Key/ })).toHaveLength(1);
     expect(screen.getAllByDisplayValue("glm-suggested")).toHaveLength(3);
+  });
+
+  it("reports that an unsaved provider cannot be tested in a global toast", () => {
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />
+        <NotificationViewport />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("请先保存供应商，再测试连接。");
+    expect(container.querySelector(".editor > .alert")).toBeNull();
+    expect(commandMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a successful connection test in a global toast", async () => {
+    commandMock.mockResolvedValue(undefined);
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SavedProviderEditor detail={savedProviderDetail()} />
+        <NotificationViewport />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("连接成功；未发送任何 prompt。");
+    expect(commandMock).toHaveBeenCalledWith("test_connection", {
+      providerId: "provider-1",
+      connectionId: "connection-1",
+    });
+    expect(container.querySelector(".editor > .alert")).toBeNull();
+  });
+
+  it("reports a failed connection test through the global error toast", async () => {
+    commandMock.mockRejectedValue({ code: "network", message: "upstream unavailable" });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SavedProviderEditor detail={savedProviderDetail()} />
+        <NotificationViewport />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
+
+    const notification = await screen.findByRole("alert");
+    expect(notification).toHaveTextContent("连接测试失败");
+    expect(notification).toHaveTextContent("请检查网络连接和服务地址后重试。");
+    expect(notification).toHaveTextContent("upstream unavailable");
   });
 
   it("creates a CLIAdapter provider with an endpoint identity and manual model", async () => {
