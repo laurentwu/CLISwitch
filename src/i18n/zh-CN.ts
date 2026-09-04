@@ -20,7 +20,6 @@ export const zhCN = {
       error: "操作失败",
       refresh: "刷新",
       retry: "重试",
-      discard: "放弃",
       account: "账户",
       closeLabel: "关闭对话框",
       loadingLabel: "正在加载",
@@ -92,7 +91,6 @@ export const zhCN = {
       scanDiagnostic: "扫描诊断",
       apply: "应用配置",
       sync: "同步供应商到兼容 CLI",
-      dirty: "未保存",
       locate: "快速定位",
       included: "纳入配置",
       provider: "供应商",
@@ -251,6 +249,11 @@ export const zhCN = {
       invalid: "无效",
       "not-online-verified": "未在线验证",
       "user-modified-unverified": "用户修改，未验证",
+    },
+    unsavedChanges: {
+      title: "是否保存更改？",
+      prompt: "关闭后，未保存的修改将会丢失。",
+      discard: "不保存",
     },
     close: {
       title: "确认退出",

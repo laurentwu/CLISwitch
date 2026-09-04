@@ -904,6 +904,10 @@ small {
   justify-content: flex-end;
   border-top: 1px solid var(--border);
 }
+.unsaved-dialog-discard {
+  margin-right: auto;
+  color: var(--danger);
+}
 .oauth-output {
   max-height: 250px;
   overflow: auto;
