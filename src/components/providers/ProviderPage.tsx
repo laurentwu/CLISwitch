@@ -238,7 +238,6 @@ export function ProviderPage({
               initialName={creation.initialName}
               initialRaw={creation.initialRaw}
               providers={providers.data}
-              onClose={() => select(undefined)}
               onError={onError}
               onStartFlow={(kind, mode, name) => setFlow({ kind, mode, name })}
               onChooseApiTemplate={(templateId, currentName) => {
@@ -289,7 +288,6 @@ export function ProviderPage({
               publicProvider={selected}
               catalog={snapshot.catalog}
               providers={providers.data}
-              onClose={() => select(undefined)}
               onError={onError}
               onStartFlow={(kind, mode, name, replaceProviderId) =>
                 guarded(() => setFlow({ kind, mode, replaceProviderId, name }))

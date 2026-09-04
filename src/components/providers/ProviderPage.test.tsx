@@ -167,6 +167,7 @@ describe("ProviderPage", () => {
     expect(screen.queryByRole("textbox", { name: /OAuth 原始内容/ })).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue("https://api.example.com/v1")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "添加接入方式" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "取消" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
     expect(commandMock).not.toHaveBeenCalled();
   });
@@ -269,6 +270,7 @@ describe("ProviderPage", () => {
     expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("Codex Account");
     expect(screen.getByRole("textbox", { name: /OAuth 原始内容/ })).toHaveValue("");
     expect(screen.getByRole("button", { name: "导入 auth" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "取消" })).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue("https://api.example.com/v1")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "官方登录" }));
@@ -345,7 +347,7 @@ describe("ProviderPage", () => {
       within(editorHeader!)
         .getAllByRole("button")
         .map((button) => button.textContent?.trim()),
-    ).toEqual(["删除", "复制", "取消", "保存"]);
+    ).toEqual(["删除", "复制", "保存"]);
 
     commandMock.mockClear();
     fireEvent.click(within(editorHeader!).getByRole("button", { name: "复制" }));

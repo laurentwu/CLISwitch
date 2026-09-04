@@ -30,7 +30,6 @@ export function OAuthProviderEditor({
   initialName,
   initialRaw,
   providers,
-  onClose,
   onError,
   onStartFlow,
   onChooseApiTemplate,
@@ -46,7 +45,6 @@ export function OAuthProviderEditor({
   initialName?: string;
   initialRaw?: string;
   providers: PublicProvider[];
-  onClose: () => void;
   onError: ErrorReporter;
   onStartFlow: (
     kind: OAuthKind,
@@ -201,9 +199,6 @@ export function OAuthProviderEditor({
               <Files size={16} /> {t("common.duplicate")}
             </Button>
           ) : null}
-          <Button variant="ghost" onClick={onClose}>
-            {t("common.cancel")}
-          </Button>
           <Button disabled={saveDisabled} onClick={() => save.mutate()}>
             <Save size={16} /> {t("common.save")}
           </Button>
