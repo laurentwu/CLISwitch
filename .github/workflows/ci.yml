@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   verify:
@@ -63,20 +63,16 @@ jobs:
             xvfb
 
       - run: pnpm install --frozen-lockfile
-      - if: runner.os == 'Linux'
-        run: pnpm format:check
-      - if: runner.os == 'Linux'
-        run: pnpm lint
-      - if: runner.os == 'Linux'
-        run: pnpm typecheck
-      - if: runner.os == 'Linux'
-        run: pnpm test
-      - if: runner.os == 'Linux'
-        run: pnpm build
-      - if: runner.os == 'Linux'
-        run: pnpm check:production-boundary
-      - if: runner.os == 'Linux'
-        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+      - name: Frontend and formatting checks
+        if: runner.os == 'Linux'
+        run: |
+          pnpm format:check
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm build
+          pnpm check:production-boundary
+          cargo fmt --check --manifest-path src-tauri/Cargo.toml
       - if: runner.os == 'Linux' || runner.os == 'Windows'
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-features --locked
@@ -104,11 +100,11 @@ jobs:
           }
 
       - name: Build unsigned production bundle
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         run: pnpm tauri build
 
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         with:
           name: cliswitch-${{ runner.os }}-unsigned
           if-no-files-found: error
