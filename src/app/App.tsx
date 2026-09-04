@@ -204,22 +204,23 @@ function ReadyApp() {
       </AppLayout>
       <Modal
         open={Boolean(pending)}
-        title={t("config.dirty")}
+        title={t("unsavedChanges.title")}
         onClose={() => setPending(null)}
         footer={
           <>
-            <Button variant="ghost" onClick={() => setPending(null)}>
-              {t("common.cancel")}
-            </Button>
             <Button
               variant="secondary"
+              className="unsaved-dialog-discard"
               onClick={() => {
                 setDirty(false);
                 pending?.();
                 setPending(null);
               }}
             >
-              {t("common.discard")}
+              {t("unsavedChanges.discard")}
+            </Button>
+            <Button variant="ghost" onClick={() => setPending(null)}>
+              {t("common.cancel")}
             </Button>
             <Button
               disabled={!saveCurrent}
@@ -240,7 +241,7 @@ function ReadyApp() {
           </>
         }
       >
-        <p>{t("close.prompt")}</p>
+        <p>{t("unsavedChanges.prompt")}</p>
       </Modal>
       <Modal
         open={closeConfirmationOpen}

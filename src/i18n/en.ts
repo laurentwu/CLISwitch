@@ -20,7 +20,6 @@ export const en = {
       error: "Operation failed",
       refresh: "Refresh",
       retry: "Retry",
-      discard: "Discard",
       account: "Account",
       closeLabel: "Close dialog",
       loadingLabel: "Loading",
@@ -95,7 +94,6 @@ export const en = {
       scanDiagnostic: "Scan diagnostic",
       apply: "Apply configuration",
       sync: "Sync provider to compatible CLIs",
-      dirty: "Unsaved",
       locate: "Quick navigation",
       included: "Include",
       provider: "Provider",
@@ -260,6 +258,11 @@ export const en = {
       invalid: "Invalid",
       "not-online-verified": "Not verified online",
       "user-modified-unverified": "User modified, unverified",
+    },
+    unsavedChanges: {
+      title: "Save changes?",
+      prompt: "Your unsaved changes will be lost if you close.",
+      discard: "Don't Save",
     },
     close: {
       title: "Confirm exit",
