@@ -533,9 +533,6 @@ export function ApiProviderEditor({
               <Files size={16} /> {t("common.duplicate")}
             </Button>
           ) : null}
-          <Button variant="ghost" type="button" onClick={onClose}>
-            {t("common.cancel")}
-          </Button>
           <Button
             type="submit"
             disabled={save.isPending || Boolean(nameIssue) || connections.length === 0}

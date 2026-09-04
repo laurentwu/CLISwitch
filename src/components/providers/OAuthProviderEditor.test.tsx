@@ -60,7 +60,6 @@ describe("OAuthProviderEditor", () => {
           publicProvider={publicProvider}
           catalog={catalog}
           providers={[publicProvider]}
-          onClose={vi.fn()}
           onError={vi.fn()}
           onStartFlow={vi.fn()}
         />
@@ -81,7 +80,6 @@ describe("OAuthProviderEditor", () => {
           publicProvider={publicProvider}
           catalog={catalog}
           providers={[publicProvider, other]}
-          onClose={vi.fn()}
           onError={vi.fn()}
           onStartFlow={vi.fn()}
           onDelete={onDelete}
@@ -94,7 +92,7 @@ describe("OAuthProviderEditor", () => {
     expect(header).not.toBeNull();
     expect(
       Array.from(header!.querySelectorAll("button"), (button) => button.textContent?.trim()),
-    ).toEqual(["删除", "复制", "取消", "保存"]);
+    ).toEqual(["删除", "复制", "保存"]);
     fireEvent.change(screen.getByRole("textbox", { name: "名称" }), {
       target: { value: " existing " },
     });
@@ -112,7 +110,6 @@ describe("OAuthProviderEditor", () => {
           publicProvider={publicProvider}
           catalog={catalog}
           providers={[publicProvider]}
-          onClose={vi.fn()}
           onError={vi.fn()}
           onStartFlow={vi.fn()}
           onDuplicate={onDuplicate}
@@ -146,7 +143,6 @@ describe("OAuthProviderEditor", () => {
           publicProvider={publicProvider}
           catalog={catalog}
           providers={[publicProvider]}
-          onClose={vi.fn()}
           onError={onError}
           onStartFlow={vi.fn()}
         />
@@ -174,7 +170,6 @@ describe("OAuthProviderEditor", () => {
           publicProvider={publicProvider}
           catalog={catalog}
           providers={[publicProvider]}
-          onClose={vi.fn()}
           onError={onError}
           onStartFlow={vi.fn()}
         />
@@ -202,7 +197,6 @@ describe("OAuthProviderEditor", () => {
           initialName="New Codex"
           initialRaw=""
           providers={[]}
-          onClose={vi.fn()}
           onError={vi.fn()}
           onStartFlow={vi.fn()}
           onCreated={onCreated}
@@ -241,7 +235,6 @@ describe("OAuthProviderEditor", () => {
           initialName="Copied Codex"
           initialRaw="copied-raw"
           providers={[]}
-          onClose={vi.fn()}
           onError={onError}
           onStartFlow={vi.fn()}
         />
