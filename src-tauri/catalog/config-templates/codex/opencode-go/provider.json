@@ -1,0 +1,8 @@
+{
+  "id": "opencode-go",
+  "name": "OpenCode Go",
+  "env": ["OPENCODE_API_KEY"],
+  "protocol": "responses",
+  "base_url": "https://opencode.ai/zen/go/v1",
+  "docs": "https://dev.opencode.ai/docs/go/"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "zai-coding-plan",
+  "name": "Z.AI Coding Plan",
+  "env": ["ZHIPU_API_KEY"],
+  "protocol": "openai-compatible",
+  "base_url": "https://api.z.ai/api/coding/paas/v4",
+  "docs": "https://docs.z.ai/devpack/overview"
+}

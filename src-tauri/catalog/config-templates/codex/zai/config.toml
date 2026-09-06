@@ -1,0 +1,10 @@
+model_provider = "ZAI"
+model = "<model-id>"
+model_reasoning_effort = "max"
+model_catalog_json = "~/.codex/models.json"
+
+[model_providers.ZAI]
+name = "Z.AI"
+base_url = "https://api.z.ai/api/v1"
+experimental_bearer_token = "<your-api-key>"
+wire_api = "responses"

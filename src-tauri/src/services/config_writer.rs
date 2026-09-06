@@ -12,6 +12,7 @@ pub enum JsonPatch {
     SetString { path: Vec<String>, value: String },
     SetValue { path: Vec<String>, value: JsonValue },
     Remove { path: Vec<String> },
+    RemoveString { path: Vec<String> },
 }
 
 pub fn parse_jsonc_value(text: &str) -> AppResult<JsonValue> {
@@ -22,6 +23,10 @@ pub fn parse_jsonc_value(text: &str) -> AppResult<JsonValue> {
 
 pub fn patch_jsonc(text: &str, patches: &[JsonPatch]) -> AppResult<String> {
     let effective = if text.trim().is_empty() { "{}\n" } else { text };
+    let mut shape = parse_jsonc_value(effective)?;
+    for patch in patches {
+        validate_and_apply_json_shape(&mut shape, patch)?;
+    }
     let root = CstRootNode::parse(effective, &ParseOptions::default())
         .map_err(|error| AppError::Serialization(error.to_string()))?;
     let root_object = root
@@ -35,13 +40,77 @@ pub fn patch_jsonc(text: &str, patches: &[JsonPatch]) -> AppResult<String> {
             JsonPatch::SetValue { path, value } => {
                 set_json_path(&root_object, path, json_to_cst(value))?
             }
-            JsonPatch::Remove { path } => remove_json_path(&root_object, path)?,
+            JsonPatch::Remove { path } | JsonPatch::RemoveString { path } => {
+                remove_json_path(&root_object, path)?
+            }
         }
     }
     let output = root.to_string();
     CstRootNode::parse(&output, &ParseOptions::default())
         .map_err(|error| AppError::Serialization(error.to_string()))?;
     Ok(output)
+}
+
+fn validate_and_apply_json_shape(root: &mut JsonValue, patch: &JsonPatch) -> AppResult<()> {
+    let (path, replacement) = match patch {
+        JsonPatch::SetString { path, value } => (path, Some(JsonValue::String(value.clone()))),
+        JsonPatch::SetValue { path, value } => (path, Some(value.clone())),
+        JsonPatch::Remove { path } | JsonPatch::RemoveString { path } => (path, None),
+    };
+    let (name, parent_path) = path
+        .split_last()
+        .ok_or_else(|| AppError::Validation("JSON patch path cannot be empty".into()))?;
+    let mut current = root
+        .as_object_mut()
+        .ok_or_else(|| AppError::Unsupported("JSONC root must be an object".into()))?;
+    for segment in parent_path {
+        if !current.contains_key(segment) {
+            current.insert(segment.clone(), JsonValue::Object(serde_json::Map::new()));
+        }
+        current = current
+            .get_mut(segment)
+            .and_then(JsonValue::as_object_mut)
+            .ok_or_else(|| {
+                AppError::Unsupported(format!("JSONC field {segment} must be an object"))
+            })?;
+    }
+    match replacement {
+        Some(replacement) => {
+            if let Some(existing) = current.get(name)
+                && !same_json_kind(existing, &replacement)
+            {
+                return Err(AppError::Unsupported(format!(
+                    "JSONC field {} has an incompatible type",
+                    path.join(".")
+                )));
+            }
+            current.insert(name.clone(), replacement);
+        }
+        None => {
+            if matches!(patch, JsonPatch::RemoveString { .. })
+                && current.get(name).is_some_and(|value| !value.is_string())
+            {
+                return Err(AppError::Unsupported(format!(
+                    "JSONC field {} must be a string",
+                    path.join(".")
+                )));
+            }
+            current.remove(name);
+        }
+    }
+    Ok(())
+}
+
+fn same_json_kind(left: &JsonValue, right: &JsonValue) -> bool {
+    matches!(
+        (left, right),
+        (JsonValue::Null, JsonValue::Null)
+            | (JsonValue::Bool(_), JsonValue::Bool(_))
+            | (JsonValue::Number(_), JsonValue::Number(_))
+            | (JsonValue::String(_), JsonValue::String(_))
+            | (JsonValue::Array(_), JsonValue::Array(_))
+            | (JsonValue::Object(_), JsonValue::Object(_))
+    )
 }
 
 fn object_at_path(
@@ -116,16 +185,76 @@ pub fn patch_codex_api_toml(
     api_key: &str,
     model: &str,
 ) -> AppResult<String> {
+    patch_codex_api_toml_from_template(
+        text,
+        &CodexApiTemplatePatch {
+            provider_id,
+            provider_name,
+            base_url,
+            api_key,
+            model,
+            model_reasoning_effort: "high",
+            model_catalog_json: None,
+            preferred_auth_method: None,
+            forced_login_method: None,
+        },
+    )
+}
+
+pub struct CodexApiTemplatePatch<'a> {
+    pub provider_id: &'a str,
+    pub provider_name: &'a str,
+    pub base_url: &'a str,
+    pub api_key: &'a str,
+    pub model: &'a str,
+    pub model_reasoning_effort: &'a str,
+    pub model_catalog_json: Option<&'a str>,
+    pub preferred_auth_method: Option<&'a str>,
+    pub forced_login_method: Option<&'a str>,
+}
+
+pub fn patch_codex_api_toml_from_template(
+    text: &str,
+    patch: &CodexApiTemplatePatch<'_>,
+) -> AppResult<String> {
     let mut document = parse_toml(text)?;
-    document["model"] = value(model);
-    document["model_provider"] = value(provider_id);
+    set_document_string(&mut document, "model", patch.model)?;
+    set_document_string(&mut document, "model_provider", patch.provider_id)?;
+    set_document_string(
+        &mut document,
+        "model_reasoning_effort",
+        patch.model_reasoning_effort,
+    )?;
+    set_optional_document_string(
+        &mut document,
+        "model_catalog_json",
+        patch.model_catalog_json,
+    )?;
+    set_optional_document_string(
+        &mut document,
+        "preferred_auth_method",
+        patch.preferred_auth_method,
+    )?;
+    set_optional_document_string(
+        &mut document,
+        "forced_login_method",
+        patch.forced_login_method,
+    )?;
     let providers = ensure_table(&mut document, "model_providers")?;
-    let provider = ensure_child_table(providers, provider_id)?;
-    provider["name"] = value(provider_name);
-    provider["base_url"] = value(base_url);
-    provider["wire_api"] = value("responses");
-    provider["experimental_bearer_token"] = value(api_key);
-    provider.remove("env_key");
+    let provider = ensure_child_table(providers, patch.provider_id)?;
+    set_table_string(provider, "name", patch.provider_name)?;
+    set_table_string(provider, "base_url", patch.base_url)?;
+    set_table_string(provider, "wire_api", "responses")?;
+    set_table_string(provider, "experimental_bearer_token", patch.api_key)?;
+    remove_table_string(provider, "env_key")?;
+    if provider
+        .get("requires_openai_auth")
+        .is_some_and(|item| item.as_bool().is_none())
+    {
+        return Err(AppError::Unsupported(
+            "TOML field requires_openai_auth must be a boolean".into(),
+        ));
+    }
     provider.remove("requires_openai_auth");
     provider.remove("auth");
     let output = document.to_string();
@@ -135,9 +264,17 @@ pub fn patch_codex_api_toml(
 
 pub fn patch_codex_oauth_toml(text: &str, model: &str) -> AppResult<String> {
     let mut document = parse_toml(text)?;
-    document["model"] = value(model);
-    document["model_provider"] = value("openai");
-    document["cli_auth_credentials_store"] = value("file");
+    set_document_string(&mut document, "model", model)?;
+    set_document_string(&mut document, "model_provider", "openai")?;
+    set_document_string(&mut document, "cli_auth_credentials_store", "file")?;
+    for key in [
+        "model_catalog_json",
+        "model_reasoning_effort",
+        "preferred_auth_method",
+        "forced_login_method",
+    ] {
+        remove_document_string(&mut document, key)?;
+    }
     let output = document.to_string();
     parse_toml(&output)?;
     Ok(output)
@@ -164,6 +301,68 @@ fn ensure_child_table<'a>(table: &'a mut Table, key: &str) -> AppResult<&'a mut 
     table[key]
         .as_table_mut()
         .ok_or_else(|| AppError::Unsupported(format!("TOML field {key} must be a table")))
+}
+
+fn set_document_string(document: &mut DocumentMut, key: &str, new_value: &str) -> AppResult<()> {
+    if let Some(existing) = document.get(key)
+        && existing.as_str().is_none()
+    {
+        return Err(AppError::Unsupported(format!(
+            "TOML field {key} must be a string"
+        )));
+    }
+    document[key] = value(new_value);
+    Ok(())
+}
+
+fn set_optional_document_string(
+    document: &mut DocumentMut,
+    key: &str,
+    new_value: Option<&str>,
+) -> AppResult<()> {
+    if let Some(new_value) = new_value {
+        set_document_string(document, key, new_value)
+    } else {
+        remove_document_string(document, key)
+    }
+}
+
+fn set_table_string(table: &mut Table, key: &str, new_value: &str) -> AppResult<()> {
+    if let Some(existing) = table.get(key)
+        && existing.as_str().is_none()
+    {
+        return Err(AppError::Unsupported(format!(
+            "TOML field {key} must be a string"
+        )));
+    }
+    table[key] = value(new_value);
+    Ok(())
+}
+
+fn remove_document_string(document: &mut DocumentMut, key: &str) -> AppResult<()> {
+    if document
+        .get(key)
+        .is_some_and(|existing| existing.as_str().is_none())
+    {
+        return Err(AppError::Unsupported(format!(
+            "TOML field {key} must be a string"
+        )));
+    }
+    document.remove(key);
+    Ok(())
+}
+
+fn remove_table_string(table: &mut Table, key: &str) -> AppResult<()> {
+    if table
+        .get(key)
+        .is_some_and(|existing| existing.as_str().is_none())
+    {
+        return Err(AppError::Unsupported(format!(
+            "TOML field {key} must be a string"
+        )));
+    }
+    table.remove(key);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -208,6 +407,34 @@ mod tests {
     }
 
     #[test]
+    fn jsonc_patch_refuses_an_incompatible_managed_leaf_type() {
+        let error = patch_jsonc(
+            r#"{ "model": false }"#,
+            &[JsonPatch::SetString {
+                path: vec!["model".into()],
+                value: "new-model".into(),
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::Unsupported(_)));
+    }
+
+    #[test]
+    fn jsonc_patch_treats_slashes_dots_and_quotes_as_one_path_segment() {
+        let model = "org/model.with.\"quote\"";
+        let output = patch_jsonc(
+            "{}\n",
+            &[JsonPatch::SetString {
+                path: vec!["models".into(), model.into(), "name".into()],
+                value: "雪\\model".into(),
+            }],
+        )
+        .unwrap();
+        let value = parse_jsonc_value(&output).unwrap();
+        assert_eq!(value["models"][model]["name"], "雪\\model");
+    }
+
+    #[test]
     fn toml_patch_preserves_comments_and_unmanaged_tables() {
         let source = "# keep me\nmodel = \"old\"\n\n[profiles.work]\nmodel = \"other\"\n";
         let output = patch_codex_api_toml(
@@ -223,5 +450,64 @@ mod tests {
         assert!(output.contains("[profiles.work]"));
         assert!(output.contains("wire_api = \"responses\""));
         assert!(output.contains("experimental_bearer_token = \"secret\""));
+    }
+
+    #[test]
+    fn toml_patch_round_trips_special_characters_in_keys_and_values() {
+        let provider_id = r#"provider /.\"quoted\"\ 雪"#;
+        let provider_name = r#"Provider \"Snow 雪\"\ name"#;
+        let model = r#"org/model.\"snow 雪\"\ variant"#;
+        let output = patch_codex_api_toml_from_template(
+            "",
+            &CodexApiTemplatePatch {
+                provider_id,
+                provider_name,
+                base_url: "https://example.test/a path",
+                api_key: r#"key \"quoted\"\ 雪"#,
+                model,
+                model_reasoning_effort: "high",
+                model_catalog_json: Some(r#"/tmp/catalog \"snow 雪\"\ models.json"#),
+                preferred_auth_method: None,
+                forced_login_method: None,
+            },
+        )
+        .unwrap();
+
+        let document = parse_toml(&output).unwrap();
+        assert_eq!(document.get("model").and_then(Item::as_str), Some(model));
+        let provider = document
+            .get("model_providers")
+            .and_then(Item::as_table)
+            .and_then(|providers| providers.get(provider_id))
+            .and_then(Item::as_table)
+            .unwrap();
+        assert_eq!(
+            provider.get("name").and_then(Item::as_str),
+            Some(provider_name)
+        );
+        assert_eq!(
+            provider
+                .get("experimental_bearer_token")
+                .and_then(Item::as_str),
+            Some(r#"key \"quoted\"\ 雪"#)
+        );
+        assert_eq!(
+            document.get("model_catalog_json").and_then(Item::as_str),
+            Some(r#"/tmp/catalog \"snow 雪\"\ models.json"#)
+        );
+    }
+
+    #[test]
+    fn toml_patch_refuses_an_incompatible_managed_leaf_type() {
+        let error = patch_codex_api_toml(
+            "model = false\n",
+            "cliswitch_123",
+            "Example",
+            "https://example.test/v1",
+            "secret",
+            "gpt-test",
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::Unsupported(_)));
     }
 }

@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use async_trait::async_trait;
@@ -11,7 +11,8 @@ use crate::{
         CliId, ConfigurationTarget, CurrentCliConfiguration, OAuthKind, ProviderConnection,
         ProviderProfile,
     },
-    error::AppResult,
+    error::{AppError, AppResult},
+    filesystem::{atomic_replace::canonicalize_allow_missing, digest::bytes_digest},
 };
 
 #[derive(Debug, Clone)]
@@ -46,13 +47,7 @@ impl HostEnvironment {
             "OPENCODE_CONFIG",
             "OPENCODE_CONFIG_DIR",
         ];
-        const PRESENCE_APPROVED: &[&str] = &[
-            "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_MODEL",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-        ];
+        const PRESENCE_APPROVED: &[&str] = &crate::config_templates::CLAUDE_MANAGED_ENV_FIELDS;
         let variables = VALUE_APPROVED
             .iter()
             .filter_map(|name| {
@@ -123,14 +118,29 @@ pub struct AdapterReadResult {
     pub unmanaged_api_candidates: Vec<AdapterApiCandidate>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FileWritePlan {
     pub path: PathBuf,
     pub allowed_root: PathBuf,
+    pub source_content: Option<Vec<u8>>,
     pub source_digest: Option<String>,
     pub target_content: Vec<u8>,
     pub contains_credentials: bool,
     pub opaque_content: bool,
+}
+
+impl std::fmt::Debug for FileWritePlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileWritePlan")
+            .field("path", &self.path)
+            .field("allowed_root", &self.allowed_root)
+            .field("source_exists", &self.source_content.is_some())
+            .field("source_digest", &self.source_digest)
+            .field("target_size", &self.target_content.len())
+            .field("contains_credentials", &self.contains_credentials)
+            .field("opaque_content", &self.opaque_content)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -156,12 +166,18 @@ pub trait CliAdapter: Send + Sync {
         target: &ConfigurationTarget,
         provider: &ProviderProfile,
     ) -> AppResult<AdapterWritePlan>;
-    async fn verify_applied(
-        &self,
-        paths: &AdapterPaths,
-        target: &ConfigurationTarget,
-        provider: &ProviderProfile,
-    ) -> AppResult<bool>;
+    async fn verify_applied(&self, plan: &AdapterWritePlan) -> AppResult<bool> {
+        for file in &plan.files {
+            let current = match read_file_snapshot(&file.path, &file.allowed_root).await? {
+                (Some(current), _) => current,
+                (None, _) => return Ok(false),
+            };
+            if bytes_digest(&current) != bytes_digest(&file.target_content) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
     fn oauth_kind(&self) -> Option<OAuthKind>;
     fn validate_imported_auth(&self, bytes: &[u8]) -> AppResult<Option<String>>;
     fn fixed_oauth_command(
@@ -187,6 +203,83 @@ pub async fn read_optional(path: &std::path::Path, default: &str) -> AppResult<S
     }
 }
 
+/// Reads a write-plan source exactly once after a non-mutating containment and file-type check.
+/// The returned digest always belongs to the returned bytes.
+pub async fn read_file_snapshot(
+    path: &Path,
+    allowed_root: &Path,
+) -> AppResult<(Option<Vec<u8>>, Option<String>)> {
+    let resolved_root = canonicalize_allow_missing(allowed_root).await?;
+    let candidate = canonicalize_allow_missing(path).await?;
+    if !candidate.starts_with(&resolved_root) {
+        return Err(AppError::Blocked(
+            "resolved configuration path is outside the approved directory".into(),
+        ));
+    }
+    let bytes = match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let resolved = tokio::fs::canonicalize(path).await.map_err(|error| {
+                AppError::Blocked(format!("cannot resolve configuration symlink: {error}"))
+            })?;
+            if !resolved.starts_with(&resolved_root) {
+                return Err(AppError::Blocked(
+                    "resolved configuration path is outside the approved directory".into(),
+                ));
+            }
+            if !tokio::fs::metadata(&resolved).await?.is_file() {
+                return Err(AppError::Blocked(
+                    "symlink target is not a regular file".into(),
+                ));
+            }
+            Some(tokio::fs::read(resolved).await?)
+        }
+        Ok(metadata) if metadata.is_file() => Some(tokio::fs::read(path).await?),
+        Ok(_) => return Err(AppError::Blocked("target is not a regular file".into())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let digest = bytes.as_deref().map(bytes_digest);
+    Ok((bytes, digest))
+}
+
 pub fn namespaced_provider_id(provider_id: uuid::Uuid) -> String {
     format!("cliswitch_{}", provider_id.simple())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn source_snapshot_is_non_mutating_and_hashes_the_same_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let allowed = temp.path().join("missing-config");
+        let path = allowed.join("nested").join("config.json");
+        let (content, digest) = read_file_snapshot(&path, &allowed).await.unwrap();
+        assert_eq!(content, None);
+        assert_eq!(digest, None);
+        assert!(!allowed.exists());
+
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, b"fixture").await.unwrap();
+        let (content, digest) = read_file_snapshot(&path, &allowed).await.unwrap();
+        assert_eq!(content.as_deref(), Some(b"fixture".as_slice()));
+        assert_eq!(digest, Some(bytes_digest(b"fixture")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn source_snapshot_rejects_a_symlink_escape() {
+        let temp = tempfile::tempdir().unwrap();
+        let allowed = temp.path().join("config");
+        tokio::fs::create_dir_all(&allowed).await.unwrap();
+        let outside = temp.path().join("outside.json");
+        tokio::fs::write(&outside, b"fixture").await.unwrap();
+        let link = allowed.join("config.json");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let error = read_file_snapshot(&link, &allowed).await.unwrap_err();
+        assert!(matches!(error, AppError::Blocked(_)));
+    }
 }

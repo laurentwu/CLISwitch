@@ -1,0 +1,8 @@
+{
+  "id": "zai-coding-plan",
+  "name": "Z.AI Coding Plan",
+  "env": ["ZHIPU_API_KEY"],
+  "protocol": "anthropic-messages",
+  "base_url": "https://api.z.ai/api/anthropic",
+  "docs": "https://docs.z.ai/devpack/tool/claude"
+}

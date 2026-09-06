@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "model": "<model-id>",
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "<your-api-key>",
+    "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+    "ANTHROPIC_MODEL": "<model-id>",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "<model-id>",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "<model-id>",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "<model-id>",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "API_TIMEOUT_MS": "3000000"
+  }
+}

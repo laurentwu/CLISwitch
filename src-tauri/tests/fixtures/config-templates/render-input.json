@@ -1,0 +1,7 @@
+{
+  "providerId": "cliswitch_11111111111111111111111111111111",
+  "providerName": "Fixture Provider 雪",
+  "endpoint": "https://fixture.invalid/custom path",
+  "apiKey": "fixture-template-secret-not-real",
+  "model": "deepseek-v4-flash-vision-exp"
+}

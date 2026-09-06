@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "upstreamRepository": "https://github.com/laurentwu/CLIAdapter",
+  "upstreamCommit": "7ea4dcc5e874d76a14e54a8e15f4fec7b8c5522d",
+  "resources": [
+    {"path":"claude/deepseek/provider.json","sha256":"3034b0c0ef3cc3ad7b0cde5bb1b3210b243d8f47eeaa7755fd9703bd6c5cc6fb","role":"provider-identity","cli":"claude-code","providerId":"deepseek","protocol":"anthropic-messages"}
+,
+    {"path":"claude/deepseek/settings.json","sha256":"b91497cdb81dce96a591b239c75493747bbef0d753297cbe37466cd07cb454fa","role":"claude-settings","cli":"claude-code","providerId":"deepseek","protocol":"anthropic-messages"}
+,
+    {"path":"claude/opencode-go/provider.json","sha256":"e3f1f584176c7a645e9804a4d4a7f23fd45db52369292b237e8481ebd8182b07","role":"provider-identity","cli":"claude-code","providerId":"opencode-go","protocol":"anthropic-messages"}
+,
+    {"path":"claude/opencode-go/settings.json","sha256":"e0342d535516a7a894dbdcdd08754bedaab9b47fb18ca395f3c75669ebe039aa","role":"claude-settings","cli":"claude-code","providerId":"opencode-go","protocol":"anthropic-messages"}
+,
+    {"path":"claude/opencode/provider.json","sha256":"8a37a44c7fb3b767614c1aedac0d337ea6e1ba6957bdd44f48282ab2e36417c2","role":"provider-identity","cli":"claude-code","providerId":"opencode","protocol":"anthropic-messages"}
+,
+    {"path":"claude/opencode/settings.json","sha256":"0b03ef0c5fd44dfef560c83905bce51dbd98aaae3c468a2acb9724be85145030","role":"claude-settings","cli":"claude-code","providerId":"opencode","protocol":"anthropic-messages"}
+,
+    {"path":"claude/settings.json","sha256":"e2690758e6f97d847369f0bb925fd4221467c9b6a1faab8ab2f53c90e7022d90","role":"claude-settings","cli":"claude-code","protocol":"anthropic-messages"}
+,
+    {"path":"claude/zai-coding-plan/provider.json","sha256":"ec7cc6aa81cd8639cc3f9c823fe129e1f2c5db241478bdd984a0d14590a22cc5","role":"provider-identity","cli":"claude-code","providerId":"zai-coding-plan","protocol":"anthropic-messages"}
+,
+    {"path":"claude/zai-coding-plan/settings.json","sha256":"a1ce53357813ad42a028e5c5d95076cb181917e90da8d16564fdbc2a8ab01791","role":"claude-settings","cli":"claude-code","providerId":"zai-coding-plan","protocol":"anthropic-messages"}
+,
+    {"path":"claude/zai/provider.json","sha256":"52b1fa89cf59c0e9615135ccef3d3342b468b41925753cf3dcc0df0d5f309e6d","role":"provider-identity","cli":"claude-code","providerId":"zai","protocol":"anthropic-messages"}
+,
+    {"path":"claude/zai/settings.json","sha256":"a1ce53357813ad42a028e5c5d95076cb181917e90da8d16564fdbc2a8ab01791","role":"claude-settings","cli":"claude-code","providerId":"zai","protocol":"anthropic-messages"}
+,
+    {"path":"claude/zhipuai-coding-plan/provider.json","sha256":"1b8c68142a9218330e83dfef331bc2ef69b35a5103441459ca9135890bac6c43","role":"provider-identity","cli":"claude-code","providerId":"zhipuai-coding-plan","protocol":"anthropic-messages"}
+,
+    {"path":"claude/zhipuai-coding-plan/settings.json","sha256":"b93e0933a548c7e36c9343a99213e5c2afce4dfde722bfc7f6a9fb3610bd23c4","role":"claude-settings","cli":"claude-code","providerId":"zhipuai-coding-plan","protocol":"anthropic-messages"}
+,
+    {"path":"claude/zhipuai/provider.json","sha256":"cb8157b933992249ea0b5676e5f32899f61644b3270db85d7e8c53ee7037c656","role":"provider-identity","cli":"claude-code","providerId":"zhipuai","protocol":"anthropic-messages"}
+,
+    {"path":"claude/zhipuai/settings.json","sha256":"b93e0933a548c7e36c9343a99213e5c2afce4dfde722bfc7f6a9fb3610bd23c4","role":"claude-settings","cli":"claude-code","providerId":"zhipuai","protocol":"anthropic-messages"}
+,
+    {"path":"codex/config.toml","sha256":"983f2914a92d05bbf4276b010959f5786c1285a6611920471b5b6c0cc604caac","role":"codex-config","cli":"codex","protocol":"openai-responses"}
+,
+    {"path":"codex/deepseek/config.toml","sha256":"54d9951c26f49f81fe86f520a9f89b77c782df90e1ba09b0cae9fef156299d2f","role":"codex-config","cli":"codex","providerId":"deepseek","protocol":"openai-responses"}
+,
+    {"path":"codex/deepseek/deepseek-v4-flash/models.json","sha256":"6927c197e9edde79261378a93fe261ae53cc04a8809bd98bdaf82f15248a2b8d","role":"codex-model-catalog","cli":"codex","providerId":"deepseek","modelId":"deepseek-v4-flash","protocol":"openai-responses"}
+,
+    {"path":"codex/deepseek/deepseek-v4-flash-vision-exp/models.json","sha256":"a6714f97dc5a9ca36a21ab8acf29d3a6fc57121b2f3261f5b8f8747cec3f08e7","role":"codex-model-catalog","cli":"codex","providerId":"deepseek","modelId":"deepseek-v4-flash-vision-exp","protocol":"openai-responses"}
+,
+    {"path":"codex/deepseek/deepseek-v4-pro/models.json","sha256":"410ce10b5875c9debaa2cf66c43b2770c94adb2d251ede52b4323352dced1235","role":"codex-model-catalog","cli":"codex","providerId":"deepseek","modelId":"deepseek-v4-pro","protocol":"openai-responses"}
+,
+    {"path":"codex/deepseek/models.json","sha256":"46b92ed5b1a7f89d24a862fc4378cf9fd40415d45c79b14f4b1c055e5fb4f2cb","role":"codex-model-catalog","cli":"codex","providerId":"deepseek","protocol":"openai-responses"}
+,
+    {"path":"codex/deepseek/provider.json","sha256":"983e8b3d164bc6999457cb277de9574f5ce45ad84f240d6368d96ae86ecc8f09","role":"provider-identity","cli":"codex","providerId":"deepseek","protocol":"openai-responses"}
+,
+    {"path":"codex/models.json","sha256":"0ab179be55dc6611f7010f1ff84739545c2e73e61ed48b5ec3c270066fc37c3f","role":"codex-model-catalog","cli":"codex","protocol":"openai-responses"}
+,
+    {"path":"codex/opencode/config.toml","sha256":"2e88dbbde3cd0d159693a2591e04c165eb4c0566604aed79a71266d69349c9b9","role":"codex-config","cli":"codex","providerId":"opencode","protocol":"openai-responses"}
+,
+    {"path":"codex/opencode-go/config.toml","sha256":"932b5803762cc69dab3ae8a2b7a61ed134479da216dfabfa62a2f5038e419fb7","role":"codex-config","cli":"codex","providerId":"opencode-go","protocol":"openai-responses"}
+,
+    {"path":"codex/opencode-go/models.json","sha256":"0ab179be55dc6611f7010f1ff84739545c2e73e61ed48b5ec3c270066fc37c3f","role":"codex-model-catalog","cli":"codex","providerId":"opencode-go","protocol":"openai-responses"}
+,
+    {"path":"codex/opencode-go/provider.json","sha256":"d051ca20a57957470670d8a107ba73ad9606c56c598e3451d36216a2554aa766","role":"provider-identity","cli":"codex","providerId":"opencode-go","protocol":"openai-responses"}
+,
+    {"path":"codex/opencode/models.json","sha256":"0ab179be55dc6611f7010f1ff84739545c2e73e61ed48b5ec3c270066fc37c3f","role":"codex-model-catalog","cli":"codex","providerId":"opencode","protocol":"openai-responses"}
+,
+    {"path":"codex/opencode/provider.json","sha256":"9f18397f2a747b268c8df2670ff129422bfc8e15bbcfa12c61f7276386283dd6","role":"provider-identity","cli":"codex","providerId":"opencode","protocol":"openai-responses"}
+,
+    {"path":"codex/zai-coding-plan/config.toml","sha256":"780c669e38da8ab0fc6b3123d2951427d7126e285bc5566e9731d34cd8e31bda","role":"codex-config","cli":"codex","providerId":"zai-coding-plan","protocol":"openai-responses"}
+,
+    {"path":"codex/zai-coding-plan/models.json","sha256":"0eccd62c51114eccb6e41202f4c563dd56289b8f4d45928edae00a47b643faa0","role":"codex-model-catalog","cli":"codex","providerId":"zai-coding-plan","protocol":"openai-responses"}
+,
+    {"path":"codex/zai-coding-plan/provider.json","sha256":"9e32a44f4ca20d530aea7193f925fcdab9ff16518fc64ecf313311ab41c61678","role":"provider-identity","cli":"codex","providerId":"zai-coding-plan","protocol":"openai-responses"}
+,
+    {"path":"codex/zai/config.toml","sha256":"a26e5224b026977721784805b6f20f0721ab72f892f4aaa718bd8014c6ea4f17","role":"codex-config","cli":"codex","providerId":"zai","protocol":"openai-responses"}
+,
+    {"path":"codex/zai/models.json","sha256":"0eccd62c51114eccb6e41202f4c563dd56289b8f4d45928edae00a47b643faa0","role":"codex-model-catalog","cli":"codex","providerId":"zai","protocol":"openai-responses"}
+,
+    {"path":"codex/zai/provider.json","sha256":"a42a77f6f2cf48154b61c8fcb1ec52dd6d83288779401d30d27a0abbe1371316","role":"provider-identity","cli":"codex","providerId":"zai","protocol":"openai-responses"}
+,
+    {"path":"codex/zhipuai-coding-plan/config.toml","sha256":"f2dae7a82ea2924b34af75de4b6bcac13809ce4998a785113e67ab51a3705be7","role":"codex-config","cli":"codex","providerId":"zhipuai-coding-plan","protocol":"openai-responses"}
+,
+    {"path":"codex/zhipuai-coding-plan/models.json","sha256":"0eccd62c51114eccb6e41202f4c563dd56289b8f4d45928edae00a47b643faa0","role":"codex-model-catalog","cli":"codex","providerId":"zhipuai-coding-plan","protocol":"openai-responses"}
+,
+    {"path":"codex/zhipuai-coding-plan/provider.json","sha256":"b09e6e2cd6e03a315f9053ababbe9b2b503049b3122d6ebd419f1bc16728709f","role":"provider-identity","cli":"codex","providerId":"zhipuai-coding-plan","protocol":"openai-responses"}
+,
+    {"path":"codex/zhipuai/config.toml","sha256":"be1822bf71c2cdac8f527857cefed745839bc216da013c2f49caf49e6fd46f58","role":"codex-config","cli":"codex","providerId":"zhipuai","protocol":"openai-responses"}
+,
+    {"path":"codex/zhipuai/models.json","sha256":"0eccd62c51114eccb6e41202f4c563dd56289b8f4d45928edae00a47b643faa0","role":"codex-model-catalog","cli":"codex","providerId":"zhipuai","protocol":"openai-responses"}
+,
+    {"path":"codex/zhipuai/provider.json","sha256":"db76b6fa8331a6a369b7a665bc8527c64ec5cc29fbcce42b64ed9eb64091f74f","role":"provider-identity","cli":"codex","providerId":"zhipuai","protocol":"openai-responses"}
+,
+    {"path":"LICENSE","sha256":"83beb8d70ca88077e7b539ed6853f8887eaa86a0e69d69b7a592f76a96785c2e","role":"license"}
+,
+    {"path":"opencode/deepseek/auth.json","sha256":"cea306de8e6a79036ff93654a7455a5197684cacdea35588a26380fef6fc5199","role":"opencode-auth","cli":"opencode","providerId":"deepseek","protocol":"openai-compatible"}
+,
+    {"path":"opencode/deepseek/opencode.json","sha256":"cf778023ed7880e2f7b269ba086e673753a96415c3b5ab142bd7cb4030a5beba","role":"opencode-config","cli":"opencode","providerId":"deepseek","protocol":"openai-compatible"}
+,
+    {"path":"opencode/deepseek/provider.json","sha256":"e66d122cf0d823c1c28d2d3691515ac1de126a4810d0367661d7368120101325","role":"provider-identity","cli":"opencode","providerId":"deepseek","protocol":"openai-compatible"}
+,
+    {"path":"opencode/opencode/auth.json","sha256":"ca21685f883809247bda6ec7c88a426e141d47732dc38fe19dea7823821fdf83","role":"opencode-auth","cli":"opencode","providerId":"opencode","protocol":"openai-compatible"}
+,
+    {"path":"opencode/opencode-go/auth.json","sha256":"8d5e505b582db17a29026fd1ec66aaacb74afbdb19a563ef72c679d013fb4b40","role":"opencode-auth","cli":"opencode","providerId":"opencode-go","protocol":"openai-compatible"}
+,
+    {"path":"opencode/opencode-go/opencode.json","sha256":"56e451328266bb49e1785e83cda807decfe8e43e12ecebb34e17c928b402645c","role":"opencode-config","cli":"opencode","providerId":"opencode-go","protocol":"openai-compatible"}
+,
+    {"path":"opencode/opencode-go/provider.json","sha256":"57a79d57bea8b8b4d281283e7329c2ea9267a1974150261719ebab95931288fa","role":"provider-identity","cli":"opencode","providerId":"opencode-go","protocol":"openai-compatible"}
+,
+    {"path":"opencode/opencode.json","sha256":"95d89faa35e342a41ae64dc8ef292975ee3a2ecd63e9e9954d50a260dfe3e524","role":"opencode-config","cli":"opencode","protocol":"openai-compatible"}
+,
+    {"path":"opencode/opencode/opencode.json","sha256":"3ee80a7c00fb478855c5a99101bb64e4f4b2faa26a6d26992003cdeb197d7a4f","role":"opencode-config","cli":"opencode","providerId":"opencode","protocol":"openai-compatible"}
+,
+    {"path":"opencode/opencode/provider.json","sha256":"89b3cc78ebd7639cd01ec3ccb74f30d27f5fdd424a6e52f69139d0f6acdf7be6","role":"provider-identity","cli":"opencode","providerId":"opencode","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zai/auth.json","sha256":"c6403f0f134ce8b5156e63396369737ce60e64a37af6a7fe1708daa7ebcc8c09","role":"opencode-auth","cli":"opencode","providerId":"zai","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zai-coding-plan/auth.json","sha256":"830c53e1582e243b0619ac7af9b83f3800c498afba85f243bd7a567cc237c18c","role":"opencode-auth","cli":"opencode","providerId":"zai-coding-plan","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zai-coding-plan/opencode.json","sha256":"37bcdaeaaf7167832ee7639a373702636403973f2805c688838fe2682c4b1797","role":"opencode-config","cli":"opencode","providerId":"zai-coding-plan","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zai-coding-plan/provider.json","sha256":"4d29597ca2e1a09c6806f3999cc38052898a1f5873e47d848621aca0d46ab593","role":"provider-identity","cli":"opencode","providerId":"zai-coding-plan","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zai/opencode.json","sha256":"dae4df2537372f5788ec198932586bbe246a06cbe5f333236832aceeddd18c95","role":"opencode-config","cli":"opencode","providerId":"zai","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zai/provider.json","sha256":"801f2097ff97eba728bdfcd5ec477b2a131ac9e5249b137c70e0d2a78704111a","role":"provider-identity","cli":"opencode","providerId":"zai","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zhipuai/auth.json","sha256":"f1bac7b6768079eb1e133fa7b20b8cd0de3e9601136412f0ce1c6da9c9129b42","role":"opencode-auth","cli":"opencode","providerId":"zhipuai","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zhipuai-coding-plan/auth.json","sha256":"402453955efba34b0fdd5270badd39133414ee7d3c58fe68de36ca74541ba356","role":"opencode-auth","cli":"opencode","providerId":"zhipuai-coding-plan","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zhipuai-coding-plan/opencode.json","sha256":"5eb3478bc96b6801be1bae11e886cb9c44ad7534bce896a7342e3ccf4e2692cf","role":"opencode-config","cli":"opencode","providerId":"zhipuai-coding-plan","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zhipuai-coding-plan/provider.json","sha256":"2b7d29bd0088aea55ad440524c489492c2cd43b0a5f1a3747bd759feea9189c8","role":"provider-identity","cli":"opencode","providerId":"zhipuai-coding-plan","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zhipuai/opencode.json","sha256":"90e8dd972c4074d431b13e7c0a466233eb7767d567e4d258824f6c5a7026b49e","role":"opencode-config","cli":"opencode","providerId":"zhipuai","protocol":"openai-compatible"}
+,
+    {"path":"opencode/zhipuai/provider.json","sha256":"45d24d5d4d6ad7ba8e35cd3843ee0a60c1abf956a331fbfff201d93100399b5e","role":"provider-identity","cli":"opencode","providerId":"zhipuai","protocol":"openai-compatible"}
+
+  ]
+}
