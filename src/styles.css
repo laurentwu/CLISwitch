@@ -549,6 +549,25 @@ small {
   color: var(--accent);
   margin-inline-start: 0.3rem;
 }
+.configuration-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  inline-size: max-content;
+}
+.configuration-action {
+  position: relative;
+  inline-size: 100%;
+  min-inline-size: max-content;
+}
+.configuration-action .dirty-marker {
+  position: absolute;
+  top: 50%;
+  inset-inline-end: 7px;
+  margin-inline-start: 0;
+  line-height: 1;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
 .sync-row {
   display: flex;
   gap: 10px;
@@ -968,6 +987,9 @@ small {
 @media (max-width: 1050px) {
   .cli-card-grid {
     grid-template-columns: 1fr;
+  }
+  .configuration-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .location-row {
     grid-template-columns: 110px minmax(0, 1fr) auto;

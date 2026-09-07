@@ -92,7 +92,7 @@ export const en = {
       saveCurrent: "Save as new configuration",
       scan: "Scan again",
       scanDiagnostic: "Scan diagnostic",
-      apply: "Apply configuration",
+      apply: "Apply",
       sync: "Sync provider to compatible CLIs",
       locate: "Quick navigation",
       included: "Include",

@@ -213,7 +213,7 @@ describe("ConfigurationPage", () => {
       </QueryClientProvider>,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "应用配置" }));
+    fireEvent.click(await screen.findByRole("button", { name: "应用" }));
     await waitFor(() =>
       expect(commandMock).toHaveBeenCalledWith("apply_configuration", {
         configurationId: saved.id,
