@@ -1923,7 +1923,7 @@ mod tests {
 
     #[test]
     fn exact_deepseek_models_keep_their_reviewed_metadata() {
-        let catalog = Path::new("/tmp/models.json");
+        let catalog = std::env::temp_dir().join("cliswitch-test-models.json");
         for (model, display_name, priority, modalities) in [
             (
                 "deepseek-v4-flash",
@@ -1952,7 +1952,7 @@ mod tests {
             })
             .unwrap();
             let RenderedManagedConfig::Codex(rendered) =
-                render_managed_config(&templates, &bindings(model, catalog)).unwrap()
+                render_managed_config(&templates, &bindings(model, &catalog)).unwrap()
             else {
                 unreachable!()
             };
@@ -1965,7 +1965,7 @@ mod tests {
 
     #[test]
     fn unknown_provider_uses_generic_template() {
-        let catalog = Path::new("/tmp/models.json");
+        let catalog = std::env::temp_dir().join("cliswitch-test-models.json");
         let templates = resolve_templates(&TemplateSelection {
             cli_id: CliId::Codex,
             template_id: Some("future-provider"),
@@ -1974,7 +1974,7 @@ mod tests {
         })
         .unwrap();
         let RenderedManagedConfig::Codex(rendered) =
-            render_managed_config(&templates, &bindings("manual-model", catalog)).unwrap()
+            render_managed_config(&templates, &bindings("manual-model", &catalog)).unwrap()
         else {
             unreachable!()
         };

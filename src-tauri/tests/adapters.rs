@@ -977,14 +977,14 @@ async fn codex_templates_write_reasoning_login_fields_and_a_uuid_model_catalog()
         let paths = adapter.resolve_paths(&environment(temp.path()), None);
         let external = temp.path().join("external-models.json");
         write_fixture(&external, r#"{"models":[{"slug":"do-not-touch"}]}"#).await;
-        write_fixture(
-            &paths.config_file,
-            &format!(
-                "# keep config comment\nmodel = \"old\"\nmodel_catalog_json = \"{}\"\n\n[profiles.keep]\nmodel = \"profile-model\"\n",
-                external.display()
-            ),
+
+        let mut initial_config = parse_toml(
+            "# keep config comment\nmodel = \"old\"\nmodel_catalog_json = \"placeholder\"\n\n[profiles.keep]\nmodel = \"profile-model\"\n",
         )
-        .await;
+        .unwrap();
+        initial_config["model_catalog_json"] =
+            toml_edit::value(external.to_string_lossy().as_ref());
+        write_fixture(&paths.config_file, &initial_config.to_string()).await;
         let (provider, connection_id) = cli_adapter_provider(
             template_id,
             CliProtocol::OpenaiResponses,

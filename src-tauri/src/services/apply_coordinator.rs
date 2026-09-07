@@ -909,7 +909,6 @@ mod tests {
     use super::*;
     use crate::{
         adapters::{AdapterWritePlan, FileWritePlan},
-        catalog::{ProviderCatalog, ProviderTemplate, install_runtime_catalog, runtime_catalog},
         domain::{
             ApiProviderData, CliProtocol, ConnectionAuthType, OAuthKind, OAuthProviderData,
             ProviderConnection, SavedConfiguration, VerificationInfo,
@@ -918,8 +917,15 @@ mod tests {
     };
     use url::Url;
 
+    #[cfg(unix)]
+    use crate::catalog::{
+        ProviderCatalog, ProviderTemplate, install_runtime_catalog, runtime_catalog,
+    };
+
+    #[cfg(unix)]
     struct RuntimeCatalogRestore(ProviderCatalog);
 
+    #[cfg(unix)]
     impl Drop for RuntimeCatalogRestore {
         fn drop(&mut self) {
             install_runtime_catalog(self.0.clone());
