@@ -2,7 +2,7 @@
 
 CLISwitch itself is licensed under Apache-2.0. It includes or links software maintained by third parties under their own licenses. Copyright remains with the respective authors.
 
-This notice was reviewed against `pnpm-lock.yaml` and `src-tauri/Cargo.lock` on 2026-08-23. The lockfiles are the canonical exact-version inventory. To regenerate the machine-readable inputs used for release review:
+This notice was reviewed against `pnpm-lock.yaml` and `src-tauri/Cargo.lock` on 2026-09-06. The lockfiles are the canonical exact-version inventory. To regenerate the machine-readable inputs used for release review:
 
 ```bash
 pnpm licenses list --prod --json > pnpm-licenses.json
@@ -29,13 +29,18 @@ below. A release owner must review new or changed license expressions before pub
 | jsonc-parser, toml_edit, portable-pty, sysinfo, directories | Permissive licenses identified in Cargo.lock metadata                |
 | SQLite bundled through SQLx/system SQLite                   | Public-domain SQLite terms; wrapper crates retain their own licenses |
 
-## Bundled provider data
+## Bundled CLIAdapter data and templates
 
 `src-tauri/catalog/providers.json` is a generated snapshot of the CLIAdapter provider database from
 <https://laurentwu.github.io/CLIAdapter/providers.json>. CLIAdapter is Copyright (c) 2026 Laurent
 Wu and is distributed under the MIT License. The snapshot is data only; CLISwitch does not bundle
 or execute remote code from it. See the upstream project at
 <https://github.com/laurentwu/CLIAdapter>.
+
+`src-tauri/catalog/config-templates` preserves the allowlisted configuration templates and license
+from CLIAdapter commit `7ea4dcc5e874d76a14e54a8e15f4fec7b8c5522d`. The original MIT text is
+included at [src-tauri/catalog/config-templates/LICENSE](src-tauri/catalog/config-templates/LICENSE).
+These files are parsed as local data and are never executed.
 
 Build and test-only tools—including Vite, TypeScript, ESLint, Prettier, Vitest, WebdriverIO, and the WDIO Tauri plugins—are not intentionally shipped as production frontend code. They retain their respective permissive licenses. The dedicated E2E binary is not a release artifact.
 

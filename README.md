@@ -12,7 +12,8 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 - A horizontal `Current configuration / named configurations / +` workspace.
 - Local discovery with explicit executable and config-directory overrides.
 - Endpoint + key providers with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages connections.
-- Provider templates sourced from a bundled [CLIAdapter](https://github.com/laurentwu/CLIAdapter) snapshot, with a private local cache and a manual update action in Settings.
+- Provider endpoint data sourced from a bundled [CLIAdapter](https://github.com/laurentwu/CLIAdapter) snapshot, with a private local cache and a manual update action in Settings.
+- Audited CLI configuration templates pinned to a fixed CLIAdapter commit and shipped with each app version; provider-specific templates fall back to generic Claude Code, Codex CLI, or OpenCode templates.
 - Every upstream provider is visible by name and ID. A provider contributes only the one to three protocol endpoints it declares, and only endpoints which pass the fixed protocol and security policy are selectable.
 - Models are not merged from an external catalog: each API provider requires a selected or manually entered model ID before saving. Saved connections and short-lived API candidates discovered from CLI files can request their live `/models` list. Custom providers remain available for endpoints outside the catalog.
 - Anthropic OAuth for Claude Code and Codex OAuth for Codex CLI, using installed official CLIs or offline auth-file import.
@@ -36,7 +37,9 @@ pnpm tauri dev
 
 Refresh the checked-in CLIAdapter provider snapshot with `pnpm catalog:update`. The updater uses the
 fixed upstream URL, validates provider identities and declared protocol endpoints, and records a
-digest sidecar.
+digest sidecar. This does not update the configuration templates in
+`src-tauri/catalog/config-templates`; follow that directory's reviewed, commit-pinned update process
+and release template changes with the application.
 
 Common verification commands:
 

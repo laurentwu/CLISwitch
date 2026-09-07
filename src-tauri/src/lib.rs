@@ -3,6 +3,7 @@ pub mod app_state;
 pub mod catalog;
 #[cfg(feature = "desktop")]
 pub mod commands;
+pub mod config_templates;
 pub mod domain;
 pub mod error;
 pub mod filesystem;

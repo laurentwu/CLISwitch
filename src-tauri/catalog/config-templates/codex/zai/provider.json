@@ -1,0 +1,8 @@
+{
+  "id": "zai",
+  "name": "Z.AI",
+  "env": ["ZHIPU_API_KEY"],
+  "protocol": "responses",
+  "base_url": "https://api.z.ai/api/v1",
+  "docs": "https://docs.z.ai/devpack/overview"
+}

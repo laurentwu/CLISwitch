@@ -8,16 +8,21 @@ use uuid::Uuid;
 use crate::{
     adapters::traits::{
         AdapterApiCandidate, AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan,
-        CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, read_optional,
+        CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id,
+        read_file_snapshot, read_optional,
     },
     catalog::{CatalogProviderInfo, legacy_catalog, runtime_catalog},
+    config_templates::{
+        CLAUDE_MANAGED_ENV_FIELDS, RenderedManagedConfig, TemplateBindings, TemplateSelection,
+        render_managed_config, resolve_templates,
+    },
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
         OAuthKind, ProviderConnection, ProviderData, ProviderProfile, SourceFileSnapshot,
         VerificationInfo,
     },
     error::{AppError, AppResult},
-    filesystem::digest::{bytes_digest, file_digest},
+    filesystem::digest::file_digest,
     services::{
         config_writer::{JsonPatch, parse_jsonc_value, patch_jsonc},
         minimax::{
@@ -96,6 +101,59 @@ fn dynamic_anthropic_provider<'a>(
     }
 }
 
+fn snapshot_text<'a>(source: &'a Option<Vec<u8>>, default: &'a str) -> AppResult<&'a str> {
+    match source {
+        Some(source) => std::str::from_utf8(source).map_err(|error| {
+            AppError::Serialization(format!("configuration is not UTF-8: {error}"))
+        }),
+        None => Ok(default),
+    }
+}
+
+fn validate_connection_identity(
+    provider: &ProviderProfile,
+    connection: &ProviderConnection,
+) -> AppResult<()> {
+    let active_catalog = runtime_catalog()?;
+    match (
+        provider.template_id.as_deref(),
+        connection.template_endpoint_id.as_deref(),
+    ) {
+        (Some(template_id), Some(endpoint_id)) => {
+            let catalog = if active_catalog.api_template(template_id).is_some() {
+                &active_catalog
+            } else {
+                legacy_catalog()?
+            };
+            catalog
+                .api_relation(CliId::ClaudeCode, template_id, endpoint_id)
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "Claude Code has no relation for template {template_id} endpoint {endpoint_id}"
+                    ))
+                })?;
+            Ok(())
+        }
+        (Some(template_id), None)
+            if active_catalog
+                .dynamic_provider_info(template_id)
+                .is_some_and(|info| {
+                    info.selectable
+                        && info.endpoints.iter().any(|endpoint| {
+                            endpoint.selectable
+                                && endpoint.protocol == Some(CliProtocol::AnthropicMessages)
+                        })
+                }) =>
+        {
+            Ok(())
+        }
+        (None, None) => Ok(()),
+        _ => Err(AppError::Validation(
+            "Claude provider template identity is incomplete".into(),
+        )),
+    }
+}
+
 #[async_trait]
 impl CliAdapter for ClaudeCodeAdapter {
     fn metadata(&self) -> AdapterMetadata {
@@ -103,7 +161,7 @@ impl CliAdapter for ClaudeCodeAdapter {
             cli_id: CliId::ClaudeCode,
             display_name: "Claude Code".into(),
             command: "claude".into(),
-            schema_fingerprint: "stable-2026-08:settings.model+env/.credentials.json".into(),
+            schema_fingerprint: "stable-2026-09:templated-model-slots+env/.credentials.json".into(),
         }
     }
 
@@ -178,15 +236,9 @@ impl CliAdapter for ClaudeCodeAdapter {
             .as_ref()
             .map(|path| path.exists())
             .unwrap_or(false);
-        let externally_overridden = [
-            "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_MODEL",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-        ]
-        .iter()
-        .any(|key| environment.is_present(key));
+        let externally_overridden = CLAUDE_MANAGED_ENV_FIELDS
+            .iter()
+            .any(|key| environment.is_present(key));
         let mut recognized_provider_name = None;
         let candidate = match (&endpoint, &credential) {
             (Some(endpoint), Some((configured_auth_type, key))) => {
@@ -331,12 +383,11 @@ impl CliAdapter for ClaudeCodeAdapter {
         target: &ConfigurationTarget,
         provider: &ProviderProfile,
     ) -> AppResult<AdapterWritePlan> {
-        let source = read_optional(&paths.config_file, "{}\n").await?;
+        let (config_source, config_digest) =
+            read_file_snapshot(&paths.config_file, &paths.config_directory).await?;
+        let source = snapshot_text(&config_source, "{}\n")?;
         let model = target.model();
-        let mut patches = vec![JsonPatch::SetString {
-            path: vec!["model".into()],
-            value: model.to_string(),
-        }];
+        let mut patches = Vec::new();
         let mut files = Vec::new();
         let mut warning = None;
         match (target, &provider.data) {
@@ -351,108 +402,50 @@ impl CliAdapter for ClaudeCodeAdapter {
                         "Claude Code only accepts Anthropic Messages".into(),
                     ));
                 }
-                let active_catalog = runtime_catalog()?;
-                let (effective_endpoint, effective_auth_type) = match (
-                    provider.template_id.as_deref(),
-                    connection.template_endpoint_id.as_deref(),
-                ) {
-                    (Some(template_id), Some(endpoint_id)) => {
-                        let is_runtime_template =
-                            active_catalog.api_template(template_id).is_some();
-                        let catalog = if is_runtime_template {
-                            &active_catalog
-                        } else {
-                            legacy_catalog()?
-                        };
-                        let relation = catalog
-                            .api_relation(CliId::ClaudeCode, template_id, endpoint_id)
-                            .ok_or_else(|| {
-                                AppError::Validation(format!(
-                                    "Claude Code has no relation for template {template_id} endpoint {endpoint_id}"
-                                ))
-                            })?;
-                        let auth_type = catalog.relation_auth_type(relation).ok_or_else(|| {
-                            AppError::Serialization(format!(
-                                "Claude Code relation {} has no valid auth option",
-                                relation.id
-                            ))
-                        })?;
-                        let auth_type = if is_runtime_template {
-                            catalog
-                                .api_template(template_id)
-                                .and_then(|template| {
-                                    template
-                                        .endpoints
-                                        .iter()
-                                        .find(|endpoint| endpoint.id == endpoint_id)
-                                })
-                                .filter(|endpoint| {
-                                    endpoint
-                                        .auth_options
-                                        .iter()
-                                        .any(|option| option.auth_type == connection.auth_type)
-                                })
-                                .map_or(auth_type, |_| connection.auth_type)
-                        } else {
-                            // Legacy MiniMax identities encode API versus coding-plan auth in the
-                            // relation itself, even though their endpoint schema permits both.
-                            auth_type
-                        };
-                        (
-                            relation.base_url.as_ref().unwrap_or(&connection.endpoint),
-                            auth_type,
-                        )
-                    }
-                    (Some(template_id), None)
-                        if active_catalog
-                            .dynamic_provider_info(template_id)
-                            .is_some_and(|info| {
-                                info.selectable
-                                    && info.endpoints.iter().any(|endpoint| {
-                                        endpoint.selectable
-                                            && endpoint.protocol
-                                                == Some(CliProtocol::AnthropicMessages)
-                                    })
-                            }) =>
-                    {
-                        (&connection.endpoint, connection.auth_type)
-                    }
-                    (None, None) => (&connection.endpoint, connection.auth_type),
-                    _ => {
-                        return Err(AppError::Validation(
-                            "Claude provider template identity is incomplete".into(),
-                        ));
-                    }
+                validate_connection_identity(provider, connection)?;
+                let provider_id = namespaced_provider_id(provider.id);
+                let templates = resolve_templates(&TemplateSelection {
+                    cli_id: CliId::ClaudeCode,
+                    template_id: provider.template_id.as_deref(),
+                    protocol: connection.protocol,
+                    model,
+                })?;
+                let rendered = render_managed_config(
+                    &templates,
+                    &TemplateBindings {
+                        provider_id: &provider_id,
+                        provider_name: &provider.name,
+                        endpoint: connection.endpoint.as_str(),
+                        auth_type: connection.auth_type,
+                        api_key: &connection.api_key,
+                        model,
+                        model_catalog_path: None,
+                    },
+                )?;
+                let RenderedManagedConfig::Claude(rendered) = rendered else {
+                    return Err(AppError::Serialization(
+                        "resolved a non-Claude config template".into(),
+                    ));
                 };
-                patches.extend([
-                    JsonPatch::SetString {
-                        path: vec!["env".into(), "ANTHROPIC_BASE_URL".into()],
-                        value: effective_endpoint.to_string(),
-                    },
-                    JsonPatch::Remove {
-                        path: vec!["env".into(), "ANTHROPIC_MODEL".into()],
-                    },
-                    JsonPatch::Remove {
-                        path: vec!["env".into(), "CLAUDE_CODE_OAUTH_TOKEN".into()],
-                    },
-                ]);
-                match effective_auth_type {
-                    ConnectionAuthType::ApiKey => {
+                if let Some(schema) = rendered.schema {
+                    patches.push(JsonPatch::SetString {
+                        path: vec!["$schema".into()],
+                        value: schema,
+                    });
+                }
+                patches.push(JsonPatch::SetString {
+                    path: vec!["model".into()],
+                    value: rendered.model,
+                });
+                for field in CLAUDE_MANAGED_ENV_FIELDS {
+                    if let Some(value) = rendered.env.get(field) {
                         patches.push(JsonPatch::SetString {
-                            path: vec!["env".into(), "ANTHROPIC_API_KEY".into()],
-                            value: connection.api_key.clone(),
+                            path: vec!["env".into(), field.into()],
+                            value: value.clone(),
                         });
-                        patches.push(JsonPatch::Remove {
-                            path: vec!["env".into(), "ANTHROPIC_AUTH_TOKEN".into()],
-                        });
-                    }
-                    ConnectionAuthType::Bearer => {
-                        patches.push(JsonPatch::SetString {
-                            path: vec!["env".into(), "ANTHROPIC_AUTH_TOKEN".into()],
-                            value: connection.api_key.clone(),
-                        });
-                        patches.push(JsonPatch::Remove {
-                            path: vec!["env".into(), "ANTHROPIC_API_KEY".into()],
+                    } else {
+                        patches.push(JsonPatch::RemoveString {
+                            path: vec!["env".into(), field.into()],
                         });
                     }
                 }
@@ -460,31 +453,32 @@ impl CliAdapter for ClaudeCodeAdapter {
             (ConfigurationTarget::Oauth { .. }, ProviderData::Oauth(oauth))
                 if oauth.oauth_kind == OAuthKind::Anthropic =>
             {
-                patches.extend([
-                    JsonPatch::Remove {
-                        path: vec!["env".into(), "ANTHROPIC_BASE_URL".into()],
-                    },
-                    JsonPatch::Remove {
-                        path: vec!["env".into(), "ANTHROPIC_API_KEY".into()],
-                    },
-                    JsonPatch::Remove {
-                        path: vec!["env".into(), "ANTHROPIC_AUTH_TOKEN".into()],
-                    },
-                ]);
+                patches.push(JsonPatch::SetString {
+                    path: vec!["model".into()],
+                    value: model.into(),
+                });
+                for field in CLAUDE_MANAGED_ENV_FIELDS {
+                    patches.push(JsonPatch::RemoveString {
+                        path: vec!["env".into(), field.into()],
+                    });
+                }
                 if cfg!(target_os = "macos") {
                     patches.push(JsonPatch::SetString {
                         path: vec!["env".into(), "CLAUDE_CODE_OAUTH_TOKEN".into()],
                         value: oauth.raw_content.clone(),
                     });
                 } else {
-                    patches.push(JsonPatch::Remove {
+                    patches.push(JsonPatch::RemoveString {
                         path: vec!["env".into(), "CLAUDE_CODE_OAUTH_TOKEN".into()],
                     });
                     let auth_file = paths.auth_file.clone().ok_or_else(|| {
                         AppError::Unsupported("Claude auth file is unavailable".into())
                     })?;
+                    let (auth_source, auth_digest) =
+                        read_file_snapshot(&auth_file, &paths.config_directory).await?;
                     files.push(FileWritePlan {
-                        source_digest: file_digest(&auth_file).await?,
+                        source_content: auth_source,
+                        source_digest: auth_digest,
                         path: auth_file,
                         allowed_root: paths.config_directory.clone(),
                         target_content: oauth.raw_content.as_bytes().to_vec(),
@@ -505,11 +499,12 @@ impl CliAdapter for ClaudeCodeAdapter {
                 ));
             }
         }
-        let target_content = patch_jsonc(&source, &patches)?.into_bytes();
+        let target_content = patch_jsonc(source, &patches)?.into_bytes();
         files.insert(
             0,
             FileWritePlan {
-                source_digest: file_digest(&paths.config_file).await?,
+                source_content: config_source,
+                source_digest: config_digest,
                 path: paths.config_file.clone(),
                 allowed_root: paths.config_directory.clone(),
                 target_content,
@@ -522,22 +517,6 @@ impl CliAdapter for ClaudeCodeAdapter {
             files,
             warning,
         })
-    }
-
-    async fn verify_applied(
-        &self,
-        paths: &AdapterPaths,
-        target: &ConfigurationTarget,
-        provider: &ProviderProfile,
-    ) -> AppResult<bool> {
-        let plan = self.plan_write(paths, target, provider).await?;
-        for file in plan.files {
-            let current = tokio::fs::read(&file.path).await?;
-            if bytes_digest(&current) != bytes_digest(&file.target_content) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     fn oauth_kind(&self) -> Option<OAuthKind> {

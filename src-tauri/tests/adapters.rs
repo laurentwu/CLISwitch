@@ -2,12 +2,17 @@ use std::{collections::BTreeMap, path::Path};
 
 use chrono::Utc;
 use cliswitch_lib::{
-    adapters::{ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter},
+    adapters::{
+        AdapterWritePlan, ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment,
+        OpenCodeAdapter, namespaced_provider_id,
+    },
     catalog::{legacy_catalog, runtime_catalog},
     domain::{
-        ApiProviderData, CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType,
-        ProviderConnection, ProviderData, ProviderProfile, VerificationInfo,
+        ApiProviderData, CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, OAuthKind,
+        OAuthProviderData, ProviderConnection, ProviderData, ProviderProfile, VerificationInfo,
     },
+    filesystem::digest::bytes_digest,
+    services::config_writer::{parse_jsonc_value, parse_toml},
 };
 use tempfile::TempDir;
 use url::Url;
@@ -94,11 +99,81 @@ fn templated_provider(
     )
 }
 
+fn cli_adapter_provider(
+    template_id: &str,
+    protocol: CliProtocol,
+    auth_type: ConnectionAuthType,
+) -> (ProviderProfile, Uuid) {
+    let catalog = runtime_catalog().unwrap();
+    let template = catalog.api_template(template_id).unwrap();
+    let endpoint = template
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.protocol == protocol)
+        .unwrap();
+    let connection_id = Uuid::new_v4();
+    (
+        ProviderProfile {
+            id: Uuid::new_v4(),
+            name: format!("{template_id} saved instance"),
+            template_id: Some(template_id.into()),
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            data: ProviderData::Api(ApiProviderData {
+                connections: vec![ProviderConnection {
+                    id: connection_id,
+                    template_endpoint_id: Some(endpoint.id.clone()),
+                    credential_slot_id: endpoint.credential_slot_id.clone(),
+                    protocol,
+                    endpoint: Url::parse("https://saved-endpoint.invalid/custom/v1").unwrap(),
+                    auth_type,
+                    api_key: "fixture-template-key-not-real".into(),
+                    default_model: "selected-model".into(),
+                    verification: VerificationInfo::default(),
+                }],
+            }),
+        },
+        connection_id,
+    )
+}
+
+fn oauth_provider(kind: OAuthKind, raw_content: &str) -> ProviderProfile {
+    ProviderProfile {
+        id: Uuid::new_v4(),
+        name: "Fixture OAuth".into(),
+        template_id: None,
+        revision: 1,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        data: ProviderData::Oauth(OAuthProviderData {
+            oauth_kind: kind,
+            account_id: Some("fixture-account".into()),
+            account_label: None,
+            raw_content: raw_content.into(),
+            digest: bytes_digest(raw_content.as_bytes()),
+            manually_modified: false,
+            verification: VerificationInfo::default(),
+        }),
+    }
+}
+
 async fn write_fixture(path: &Path, content: &str) {
     tokio::fs::create_dir_all(path.parent().unwrap())
         .await
         .unwrap();
     tokio::fs::write(path, content).await.unwrap();
+}
+
+async fn materialize_plan(plan: &AdapterWritePlan) {
+    for file in &plan.files {
+        tokio::fs::create_dir_all(file.path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&file.path, &file.target_content)
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::test]
@@ -390,39 +465,73 @@ async fn claude_rejects_ambiguous_process_credential_overrides() {
 }
 
 #[tokio::test]
-async fn claude_uses_relation_specific_minimax_base_url_and_auth_variable() {
+async fn claude_reports_every_new_managed_environment_field_by_presence_only() {
+    for field in [
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "CLAUDE_CODE_EFFORT_LEVEL",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "API_TIMEOUT_MS",
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = ClaudeCodeAdapter;
+        let mut host = environment(temp.path());
+        host.present_variables.insert(field.into());
+        let paths = adapter.resolve_paths(&host, None);
+        write_fixture(&paths.config_file, "{}\n").await;
+
+        let current = adapter.read_current(&paths, &host).await.unwrap();
+
+        assert!(current.current.externally_overridden, "{field}");
+        assert!(!host.variables.contains_key(field), "{field}");
+        assert!(
+            current
+                .current
+                .diagnostics
+                .iter()
+                .all(|message| !message.contains("fixture-secret"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_preserves_saved_minimax_endpoint_and_auth_type() {
     for (template_id, key, stored_auth_type, expected_base_url, expected_field, removed_field) in [
         (
             "minimax-coding-plan",
             "sk-cp-fixture",
             ConnectionAuthType::ApiKey,
             "https://api.minimax.io/anthropic",
-            "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
         ),
         (
             "minimax-api",
             "sk-api-fixture",
             ConnectionAuthType::Bearer,
             "https://api.minimax.io/anthropic",
-            "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
         ),
         (
             "minimax-cn-coding-plan",
             "sk-cp-china-fixture",
             ConnectionAuthType::ApiKey,
             "https://api.minimaxi.com/anthropic",
-            "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
         ),
         (
             "minimax-cn-api",
             "sk-api-china-fixture",
             ConnectionAuthType::Bearer,
             "https://api.minimaxi.com/anthropic",
-            "ANTHROPIC_API_KEY",
             "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
         ),
     ] {
         let temp = TempDir::new().unwrap();
@@ -455,10 +564,366 @@ async fn claude_uses_relation_specific_minimax_base_url_and_auth_variable() {
             .unwrap();
         let output = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
         assert!(output.contains(expected_base_url));
-        assert!(!output.contains(&format!("{expected_base_url}/v1")));
         assert!(output.contains(&format!(r#""{expected_field}": "{key}""#)));
         assert!(!output.contains(&format!(r#""{removed_field}""#)));
         assert!(output.contains(r#""KEEP_ME": "yes""#));
+    }
+}
+
+#[tokio::test]
+async fn claude_template_matrix_replaces_all_managed_model_slots_and_tuning() {
+    struct Expected {
+        anthropic: &'static str,
+        haiku: Option<&'static str>,
+        sonnet: Option<&'static str>,
+        opus: Option<&'static str>,
+        subagent: Option<&'static str>,
+        effort: Option<&'static str>,
+        compact: Option<&'static str>,
+        traffic: Option<&'static str>,
+        timeout: Option<&'static str>,
+    }
+    let cases = [
+        (
+            "deepseek",
+            Expected {
+                anthropic: "selected-model[1m]",
+                haiku: Some("selected-model"),
+                sonnet: Some("selected-model[1m]"),
+                opus: Some("selected-model[1m]"),
+                subagent: Some("selected-model"),
+                effort: Some("max"),
+                compact: Some("786432"),
+                traffic: None,
+                timeout: None,
+            },
+        ),
+        (
+            "zhipuai",
+            Expected {
+                anthropic: "selected-model",
+                haiku: Some("selected-model"),
+                sonnet: Some("selected-model"),
+                opus: Some("selected-model"),
+                subagent: None,
+                effort: None,
+                compact: Some("1000000"),
+                traffic: Some("1"),
+                timeout: Some("3000000"),
+            },
+        ),
+        (
+            "zhipuai-coding-plan",
+            Expected {
+                anthropic: "selected-model",
+                haiku: Some("selected-model"),
+                sonnet: Some("selected-model"),
+                opus: Some("selected-model"),
+                subagent: None,
+                effort: None,
+                compact: Some("1000000"),
+                traffic: Some("1"),
+                timeout: Some("3000000"),
+            },
+        ),
+        (
+            "zai",
+            Expected {
+                anthropic: "selected-model",
+                haiku: Some("selected-model"),
+                sonnet: Some("selected-model"),
+                opus: Some("selected-model"),
+                subagent: None,
+                effort: None,
+                compact: Some("1000000"),
+                traffic: Some("1"),
+                timeout: Some("3000000"),
+            },
+        ),
+        (
+            "zai-coding-plan",
+            Expected {
+                anthropic: "selected-model",
+                haiku: Some("selected-model"),
+                sonnet: Some("selected-model"),
+                opus: Some("selected-model"),
+                subagent: None,
+                effort: None,
+                compact: Some("1000000"),
+                traffic: Some("1"),
+                timeout: Some("3000000"),
+            },
+        ),
+        (
+            "opencode",
+            Expected {
+                anthropic: "selected-model",
+                haiku: None,
+                sonnet: None,
+                opus: None,
+                subagent: None,
+                effort: None,
+                compact: None,
+                traffic: None,
+                timeout: None,
+            },
+        ),
+        (
+            "opencode-go",
+            Expected {
+                anthropic: "selected-model",
+                haiku: None,
+                sonnet: None,
+                opus: None,
+                subagent: None,
+                effort: None,
+                compact: None,
+                traffic: None,
+                timeout: None,
+            },
+        ),
+    ];
+    for (template_id, expected) in cases {
+        let temp = TempDir::new().unwrap();
+        let adapter = ClaudeCodeAdapter;
+        let paths = adapter.resolve_paths(&environment(temp.path()), None);
+        write_fixture(
+            &paths.config_file,
+            r#"{
+              "model": "selected-model",
+              "env": {
+                "ANTHROPIC_MODEL": "old-main",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "old-haiku",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "old-sonnet",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "old-opus",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "old-subagent",
+                "ANTHROPIC_SMALL_FAST_MODEL": "old-small",
+                "CLAUDE_CODE_EFFORT_LEVEL": "old-effort",
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "old-compact",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "old-traffic",
+                "API_TIMEOUT_MS": "old-timeout",
+                "UNMANAGED": "keep"
+              }
+            }"#,
+        )
+        .await;
+        let (provider, connection_id) = cli_adapter_provider(
+            template_id,
+            CliProtocol::AnthropicMessages,
+            ConnectionAuthType::Bearer,
+        );
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::ClaudeCode,
+            provider_id: provider.id,
+            connection_id,
+            model: "selected-model".into(),
+        };
+        let plan = adapter
+            .plan_write(&paths, &target, &provider)
+            .await
+            .unwrap();
+        let output = std::str::from_utf8(&plan.files[0].target_content).unwrap();
+        let value = parse_jsonc_value(output).unwrap();
+        let env = value["env"].as_object().unwrap();
+        let field = |name: &str| env.get(name).and_then(serde_json::Value::as_str);
+        assert_eq!(value["model"], "selected-model", "{template_id}");
+        assert_eq!(
+            field("ANTHROPIC_MODEL"),
+            Some(expected.anthropic),
+            "{template_id}"
+        );
+        assert_eq!(
+            field("ANTHROPIC_DEFAULT_HAIKU_MODEL"),
+            expected.haiku,
+            "{template_id}"
+        );
+        assert_eq!(
+            field("ANTHROPIC_DEFAULT_SONNET_MODEL"),
+            expected.sonnet,
+            "{template_id}"
+        );
+        assert_eq!(
+            field("ANTHROPIC_DEFAULT_OPUS_MODEL"),
+            expected.opus,
+            "{template_id}"
+        );
+        assert_eq!(
+            field("CLAUDE_CODE_SUBAGENT_MODEL"),
+            expected.subagent,
+            "{template_id}"
+        );
+        assert_eq!(
+            field("CLAUDE_CODE_EFFORT_LEVEL"),
+            expected.effort,
+            "{template_id}"
+        );
+        assert_eq!(
+            field("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
+            expected.compact,
+            "{template_id}"
+        );
+        assert_eq!(
+            field("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+            expected.traffic,
+            "{template_id}"
+        );
+        assert_eq!(field("API_TIMEOUT_MS"), expected.timeout, "{template_id}");
+        assert_eq!(field("ANTHROPIC_SMALL_FAST_MODEL"), None, "{template_id}");
+        assert_eq!(
+            field("ANTHROPIC_AUTH_TOKEN"),
+            Some("fixture-template-key-not-real")
+        );
+        assert_eq!(
+            field("ANTHROPIC_BASE_URL"),
+            Some("https://saved-endpoint.invalid/custom/v1")
+        );
+        assert_eq!(field("UNMANAGED"), Some("keep"));
+    }
+}
+
+#[tokio::test]
+async fn claude_generic_template_repairs_non_primary_slots() {
+    let temp = TempDir::new().unwrap();
+    let adapter = ClaudeCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "model": "selected-model",
+          "env": {
+            "ANTHROPIC_MODEL": "old",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "old",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "old",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "old",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "old"
+          }
+        }"#,
+    )
+    .await;
+    let (provider, connection_id) = provider(CliProtocol::AnthropicMessages);
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::ClaudeCode,
+        provider_id: provider.id,
+        connection_id,
+        model: "selected-model".into(),
+    };
+    let plan = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    assert_ne!(
+        plan.files[0].source_content.as_ref().unwrap(),
+        &plan.files[0].target_content
+    );
+    let output =
+        parse_jsonc_value(std::str::from_utf8(&plan.files[0].target_content).unwrap()).unwrap();
+    for field in [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL",
+    ] {
+        assert_eq!(output["env"][field], "selected-model");
+    }
+}
+
+#[tokio::test]
+async fn claude_plan_is_idempotent_and_frozen_verification_checks_auxiliary_model_slots() {
+    let temp = TempDir::new().unwrap();
+    let adapter = ClaudeCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(&paths.config_file, "{}\n").await;
+    let (provider, connection_id) = provider(CliProtocol::AnthropicMessages);
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::ClaudeCode,
+        provider_id: provider.id,
+        connection_id,
+        model: "fixture-model".into(),
+    };
+    let first = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    materialize_plan(&first).await;
+    assert!(adapter.verify_applied(&first).await.unwrap());
+
+    let second = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    assert_eq!(
+        second.files[0].source_content,
+        Some(first.files[0].target_content.clone())
+    );
+    assert_eq!(
+        second.files[0].target_content,
+        first.files[0].target_content
+    );
+
+    let output = std::str::from_utf8(&first.files[0].target_content).unwrap();
+    let tampered = output.replace(
+        r#""ANTHROPIC_DEFAULT_HAIKU_MODEL": "fixture-model""#,
+        r#""ANTHROPIC_DEFAULT_HAIKU_MODEL": "tampered-model""#,
+    );
+    assert_ne!(tampered, output);
+    tokio::fs::write(&paths.config_file, tampered)
+        .await
+        .unwrap();
+    assert!(!adapter.verify_applied(&first).await.unwrap());
+}
+
+#[tokio::test]
+async fn claude_oauth_clears_every_api_template_field() {
+    let temp = TempDir::new().unwrap();
+    let adapter = ClaudeCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "model": "old",
+          "env": {
+            "ANTHROPIC_BASE_URL": "https://old.invalid",
+            "ANTHROPIC_API_KEY": "old",
+            "ANTHROPIC_AUTH_TOKEN": "old",
+            "ANTHROPIC_MODEL": "old",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "old",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "old",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "old",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "old",
+            "ANTHROPIC_SMALL_FAST_MODEL": "old",
+            "CLAUDE_CODE_EFFORT_LEVEL": "old",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "old",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "old",
+            "API_TIMEOUT_MS": "old",
+            "UNMANAGED": "keep"
+          }
+        }"#,
+    )
+    .await;
+    let provider = oauth_provider(
+        OAuthKind::Anthropic,
+        r#"{"claudeAiOauth":{"accessToken":"fixture-token"}}"#,
+    );
+    let target = ConfigurationTarget::Oauth {
+        cli_id: CliId::ClaudeCode,
+        provider_id: provider.id,
+        model: "oauth-model".into(),
+    };
+    let plan = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    let output =
+        parse_jsonc_value(std::str::from_utf8(&plan.files[0].target_content).unwrap()).unwrap();
+    assert_eq!(output["model"], "oauth-model");
+    assert_eq!(output["env"]["UNMANAGED"], "keep");
+    for field in cliswitch_lib::config_templates::CLAUDE_MANAGED_ENV_FIELDS {
+        if cfg!(target_os = "macos") && field == "CLAUDE_CODE_OAUTH_TOKEN" {
+            assert!(output["env"].get(field).is_some());
+        } else {
+            assert!(output["env"].get(field).is_none(), "{field}");
+        }
     }
 }
 
@@ -483,12 +948,358 @@ async fn codex_writes_responses_file_mapping_and_preserves_unmanaged_toml() {
         .plan_write(&paths, &target, &provider)
         .await
         .unwrap();
-    let output = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
+    let config_file = plan
+        .files
+        .iter()
+        .find(|file| file.path == paths.config_file)
+        .unwrap();
+    let output = String::from_utf8(config_file.target_content.clone()).unwrap();
     assert!(output.contains("# Scrubbed stable Codex CLI fixture."));
     assert!(output.contains("[profiles.keep_me]"));
     assert!(output.contains("wire_api = \"responses\""));
     assert!(output.contains("experimental_bearer_token = \"fixture-new-key-not-real\""));
     assert!(!output.contains("env_key"));
+}
+
+#[tokio::test]
+async fn codex_templates_write_reasoning_login_fields_and_a_uuid_model_catalog() {
+    for template_id in [
+        "deepseek",
+        "zhipuai",
+        "zhipuai-coding-plan",
+        "zai",
+        "zai-coding-plan",
+        "opencode",
+        "opencode-go",
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = CodexAdapter;
+        let paths = adapter.resolve_paths(&environment(temp.path()), None);
+        let external = temp.path().join("external-models.json");
+        write_fixture(&external, r#"{"models":[{"slug":"do-not-touch"}]}"#).await;
+
+        let mut initial_config = parse_toml(
+            "# keep config comment\nmodel = \"old\"\nmodel_catalog_json = \"placeholder\"\n\n[profiles.keep]\nmodel = \"profile-model\"\n",
+        )
+        .unwrap();
+        initial_config["model_catalog_json"] =
+            toml_edit::value(external.to_string_lossy().as_ref());
+        write_fixture(&paths.config_file, &initial_config.to_string()).await;
+        let (provider, connection_id) = cli_adapter_provider(
+            template_id,
+            CliProtocol::OpenaiResponses,
+            ConnectionAuthType::Bearer,
+        );
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::Codex,
+            provider_id: provider.id,
+            connection_id,
+            model: "selected-model".into(),
+        };
+        let plan = adapter
+            .plan_write(&paths, &target, &provider)
+            .await
+            .unwrap();
+        assert_eq!(plan.files.len(), 2, "{template_id}");
+        assert!(
+            plan.files[0]
+                .path
+                .starts_with(paths.config_directory.join("cliswitch-models"))
+        );
+        assert_eq!(plan.files[1].path, paths.config_file);
+        let expected_name = format!("{}-{}.json", provider.id.simple(), connection_id.simple());
+        assert_eq!(
+            plan.files[0].path.file_name().unwrap().to_str().unwrap(),
+            expected_name
+        );
+        assert_eq!(plan.files[0].source_content, None);
+        let models =
+            parse_jsonc_value(std::str::from_utf8(&plan.files[0].target_content).unwrap()).unwrap();
+        assert_eq!(models["models"].as_array().unwrap().len(), 1);
+        assert_eq!(models["models"][0]["slug"], "selected-model");
+        let config = std::str::from_utf8(&plan.files[1].target_content).unwrap();
+        let document = parse_toml(config).unwrap();
+        assert!(config.contains("# keep config comment"));
+        assert!(config.contains("[profiles.keep]"));
+        assert_eq!(document["model"].as_str(), Some("selected-model"));
+        let provider_id = namespaced_provider_id(provider.id);
+        assert_eq!(
+            document["model_provider"].as_str(),
+            Some(provider_id.as_str())
+        );
+        let provider_table = document["model_providers"]
+            .as_table()
+            .unwrap()
+            .get(&provider_id)
+            .and_then(toml_edit::Item::as_table)
+            .unwrap();
+        assert_eq!(
+            provider_table["name"].as_str(),
+            Some(provider.name.as_str())
+        );
+        assert_eq!(
+            provider_table["base_url"].as_str(),
+            Some("https://saved-endpoint.invalid/custom/v1")
+        );
+        assert_eq!(provider_table["wire_api"].as_str(), Some("responses"));
+        assert_eq!(
+            provider_table["experimental_bearer_token"].as_str(),
+            Some("fixture-template-key-not-real")
+        );
+        for field in ["env_key", "requires_openai_auth", "auth"] {
+            assert!(
+                provider_table.get(field).is_none(),
+                "{template_id}: {field}"
+            );
+        }
+        assert_eq!(
+            document["model_reasoning_effort"].as_str(),
+            Some(
+                if matches!(
+                    template_id,
+                    "zhipuai" | "zhipuai-coding-plan" | "zai" | "zai-coding-plan"
+                ) {
+                    "max"
+                } else {
+                    "high"
+                }
+            )
+        );
+        assert_eq!(
+            document["model_catalog_json"].as_str(),
+            plan.files[0].path.to_str()
+        );
+        assert_eq!(
+            document
+                .get("preferred_auth_method")
+                .and_then(|item| item.as_str()),
+            (template_id == "deepseek").then_some("apikey")
+        );
+        assert_eq!(
+            document
+                .get("forced_login_method")
+                .and_then(|item| item.as_str()),
+            (template_id == "deepseek").then_some("api")
+        );
+        assert_eq!(
+            tokio::fs::read(&external).await.unwrap(),
+            br#"{"models":[{"slug":"do-not-touch"}]}"#
+        );
+    }
+}
+
+#[tokio::test]
+async fn codex_exact_vision_template_and_frozen_multi_file_plan_are_stable() {
+    let temp = TempDir::new().unwrap();
+    let adapter = CodexAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(&paths.config_file, "# keep\nmodel = \"old\"\n").await;
+    let (provider, connection_id) = cli_adapter_provider(
+        "deepseek",
+        CliProtocol::OpenaiResponses,
+        ConnectionAuthType::Bearer,
+    );
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Codex,
+        provider_id: provider.id,
+        connection_id,
+        model: "deepseek-v4-flash-vision-exp".into(),
+    };
+    let first = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    let model =
+        parse_jsonc_value(std::str::from_utf8(&first.files[0].target_content).unwrap()).unwrap();
+    assert_eq!(
+        model["models"][0]["display_name"],
+        "DeepSeek-V4-Flash-Vision"
+    );
+    assert_eq!(
+        model["models"][0]["input_modalities"],
+        serde_json::json!(["text", "image"])
+    );
+    for file in &first.files {
+        tokio::fs::create_dir_all(file.path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&file.path, &file.target_content)
+            .await
+            .unwrap();
+    }
+    assert!(adapter.verify_applied(&first).await.unwrap());
+    let second = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    for (first, second) in first.files.iter().zip(&second.files) {
+        assert_eq!(first.path, second.path);
+        assert_eq!(first.target_content, second.target_content);
+        assert_eq!(
+            second.source_content.as_deref(),
+            Some(second.target_content.as_slice())
+        );
+    }
+    tokio::fs::write(&first.files[0].path, b"{\"models\":[]}")
+        .await
+        .unwrap();
+    assert!(!adapter.verify_applied(&first).await.unwrap());
+}
+
+#[tokio::test]
+async fn codex_managed_catalog_preserves_root_extensions_and_scan_diagnoses_damage_or_absence() {
+    let temp = TempDir::new().unwrap();
+    let adapter = CodexAdapter;
+    let manual_directory = temp.path().join("Codex Config With Spaces");
+    let paths = adapter.resolve_paths(&environment(temp.path()), Some(manual_directory.clone()));
+    write_fixture(&paths.config_file, "model = \"old\"\n").await;
+    let (provider, connection_id) = cli_adapter_provider(
+        "deepseek",
+        CliProtocol::OpenaiResponses,
+        ConnectionAuthType::Bearer,
+    );
+    let catalog_path = manual_directory.join("cliswitch-models").join(format!(
+        "{}-{}.json",
+        provider.id.simple(),
+        connection_id.simple()
+    ));
+    write_fixture(
+        &catalog_path,
+        r#"{
+          // keep catalog comment
+          "extension": { "keep": true },
+          "models": [{ "slug": "old" }]
+        }"#,
+    )
+    .await;
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Codex,
+        provider_id: provider.id,
+        connection_id,
+        model: "deepseek-v4-pro".into(),
+    };
+    let plan = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    assert_eq!(plan.files[0].path, catalog_path);
+    let catalog_text = std::str::from_utf8(&plan.files[0].target_content).unwrap();
+    assert!(catalog_text.contains("// keep catalog comment"));
+    let catalog = parse_jsonc_value(catalog_text).unwrap();
+    assert_eq!(catalog["extension"]["keep"], true);
+    assert_eq!(catalog["models"].as_array().unwrap().len(), 1);
+    assert_eq!(catalog["models"][0]["slug"], "deepseek-v4-pro");
+    materialize_plan(&plan).await;
+
+    let current = adapter
+        .read_current(&paths, &environment(temp.path()))
+        .await
+        .unwrap();
+    assert!(current.current.sources.iter().any(|source| {
+        source.source_id == "codex-model-catalog" && source.display_path == catalog_path
+    }));
+
+    tokio::fs::write(&catalog_path, b"{not-json").await.unwrap();
+    let current = adapter
+        .read_current(&paths, &environment(temp.path()))
+        .await
+        .unwrap();
+    assert!(
+        current.current.diagnostics.iter().any(|message| {
+            message.contains("Unable to parse the CLISwitch Codex model catalog")
+        })
+    );
+    let error = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        cliswitch_lib::error::AppError::Serialization(_)
+    ));
+    assert_eq!(tokio::fs::read(&catalog_path).await.unwrap(), b"{not-json");
+
+    tokio::fs::write(&catalog_path, &plan.files[0].target_content)
+        .await
+        .unwrap();
+    adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    tokio::fs::remove_file(&catalog_path).await.unwrap();
+    let current = adapter
+        .read_current(&paths, &environment(temp.path()))
+        .await
+        .unwrap();
+    assert!(
+        current
+            .current
+            .diagnostics
+            .iter()
+            .any(|message| { message.contains("model catalog is missing") })
+    );
+    assert!(
+        current
+            .current
+            .sources
+            .iter()
+            .any(|source| { source.source_id == "codex-model-catalog" && source.digest.is_none() })
+    );
+    let recreated = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    assert_eq!(recreated.files[0].source_content, None);
+}
+
+#[tokio::test]
+async fn codex_oauth_clears_api_template_top_level_fields() {
+    let temp = TempDir::new().unwrap();
+    let adapter = CodexAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(
+        &paths.config_file,
+        r#"model = "old"
+model_provider = "old-provider"
+model_catalog_json = "/tmp/old-models.json"
+model_reasoning_effort = "max"
+preferred_auth_method = "apikey"
+forced_login_method = "api"
+unmanaged = "keep"
+"#,
+    )
+    .await;
+    let provider = oauth_provider(OAuthKind::Codex, r#"{"tokens":{"account_id":"fixture"}}"#);
+    let target = ConfigurationTarget::Oauth {
+        cli_id: CliId::Codex,
+        provider_id: provider.id,
+        model: "oauth-model".into(),
+    };
+    let plan = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    let config = plan
+        .files
+        .iter()
+        .find(|file| file.path == paths.config_file)
+        .unwrap();
+    let document = parse_toml(std::str::from_utf8(&config.target_content).unwrap()).unwrap();
+    assert_eq!(document["model"].as_str(), Some("oauth-model"));
+    assert_eq!(document["model_provider"].as_str(), Some("openai"));
+    assert_eq!(
+        document["cli_auth_credentials_store"].as_str(),
+        Some("file")
+    );
+    assert_eq!(document["unmanaged"].as_str(), Some("keep"));
+    for field in [
+        "model_catalog_json",
+        "model_reasoning_effort",
+        "preferred_auth_method",
+        "forced_login_method",
+    ] {
+        assert!(document.get(field).is_none(), "{field}");
+    }
 }
 
 #[tokio::test]
@@ -598,6 +1409,247 @@ async fn opencode_stable_schema_maps_each_protocol_to_the_correct_package() {
         assert!(auth.contains("\"type\": \"api\""));
         assert!(auth.contains("fixture-new-key-not-real"));
     }
+}
+
+#[tokio::test]
+async fn opencode_template_patch_preserves_extensions_and_cleans_current_auth_entry() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    let (provider, connection_id) = provider(CliProtocol::OpenaiResponses);
+    let provider_id = namespaced_provider_id(provider.id);
+    write_fixture(
+        &paths.config_file,
+        &format!(
+            r#"{{
+              // keep config comment
+              "unknownRoot": true,
+              "provider": {{
+                "other": {{ "npm": "keep-other" }},
+                "{provider_id}": {{
+                  "extension": "keep-provider",
+                  "options": {{ "baseURL": "https://old.invalid", "apiKey": "old-inline", "header": "keep-option" }},
+                  "models": {{
+                    "fixture-model": {{ "name": "old-name", "custom": "keep-model" }},
+                    "other-model": {{ "name": "keep-other-model" }}
+                  }}
+                }}
+              }}
+            }}"#
+        ),
+    )
+    .await;
+    write_fixture(
+        paths.auth_file.as_ref().unwrap(),
+        &format!(
+            r#"{{
+              "other": {{ "type": "api", "key": "keep-other-key" }},
+              "{provider_id}": {{
+                "type": "oauth",
+                "key": "old-key",
+                "refresh": "old-refresh",
+                "access": "old-access",
+                "expires": 123,
+                "accountId": "old-account",
+                "enterpriseUrl": "https://old.invalid",
+                "custom": "keep-auth"
+              }}
+            }}"#
+        ),
+    )
+    .await;
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: provider.id,
+        connection_id,
+        model: "fixture-model".into(),
+    };
+    let plan = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    let config_text = std::str::from_utf8(&plan.files[0].target_content).unwrap();
+    assert!(config_text.contains("// keep config comment"));
+    let config = parse_jsonc_value(config_text).unwrap();
+    let current = &config["provider"][&provider_id];
+    assert_eq!(config["unknownRoot"], true);
+    assert_eq!(config["provider"]["other"]["npm"], "keep-other");
+    assert_eq!(current["extension"], "keep-provider");
+    assert_eq!(current["options"]["header"], "keep-option");
+    assert!(current["options"].get("apiKey").is_none());
+    assert_eq!(current["models"]["other-model"]["name"], "keep-other-model");
+    assert_eq!(current["models"]["fixture-model"]["custom"], "keep-model");
+    assert_eq!(current["models"]["fixture-model"]["reasoning"], true);
+    assert_eq!(config["$schema"], "https://opencode.ai/config.json");
+
+    let auth =
+        parse_jsonc_value(std::str::from_utf8(&plan.files[1].target_content).unwrap()).unwrap();
+    let current_auth = auth[&provider_id].as_object().unwrap();
+    assert_eq!(current_auth["type"], "api");
+    assert_eq!(current_auth["key"], "fixture-new-key-not-real");
+    assert_eq!(current_auth["custom"], "keep-auth");
+    for field in ["refresh", "access", "expires", "accountId", "enterpriseUrl"] {
+        assert!(!current_auth.contains_key(field));
+    }
+    assert_eq!(auth["other"]["key"], "keep-other-key");
+}
+
+#[tokio::test]
+async fn opencode_all_provider_templates_keep_saved_transport_endpoint_and_instance_identity() {
+    for template_id in [
+        "deepseek",
+        "zhipuai",
+        "zhipuai-coding-plan",
+        "zai",
+        "zai-coding-plan",
+        "opencode",
+        "opencode-go",
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = OpenCodeAdapter;
+        let paths = adapter.resolve_paths(&environment(temp.path()), None);
+        write_fixture(&paths.config_file, "{}\n").await;
+        write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+        let (provider, connection_id) = cli_adapter_provider(
+            template_id,
+            CliProtocol::OpenaiResponses,
+            ConnectionAuthType::Bearer,
+        );
+        let provider_id = namespaced_provider_id(provider.id);
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::Opencode,
+            provider_id: provider.id,
+            connection_id,
+            model: "selected-model".into(),
+        };
+        let plan = adapter
+            .plan_write(&paths, &target, &provider)
+            .await
+            .unwrap();
+        let config =
+            parse_jsonc_value(std::str::from_utf8(&plan.files[0].target_content).unwrap()).unwrap();
+        let current = &config["provider"][&provider_id];
+        assert_eq!(config["model"], format!("{provider_id}/selected-model"));
+        assert_eq!(current["npm"], "@ai-sdk/openai");
+        assert_eq!(current["name"], format!("{template_id} saved instance"));
+        assert_eq!(
+            current["options"]["baseURL"],
+            "https://saved-endpoint.invalid/custom/v1"
+        );
+        assert_eq!(current["models"]["selected-model"]["reasoning"], true);
+        let auth =
+            parse_jsonc_value(std::str::from_utf8(&plan.files[1].target_content).unwrap()).unwrap();
+        assert_eq!(auth[&provider_id]["type"], "api");
+        assert_eq!(auth[&provider_id]["key"], "fixture-template-key-not-real");
+    }
+}
+
+#[tokio::test]
+async fn opencode_plan_is_idempotent_and_frozen_verification_checks_auth() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(&paths.config_file, "{}\n").await;
+    write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+    let (provider, connection_id) = provider(CliProtocol::OpenaiChat);
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: provider.id,
+        connection_id,
+        model: "fixture-model".into(),
+    };
+    let first = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    materialize_plan(&first).await;
+    assert!(adapter.verify_applied(&first).await.unwrap());
+
+    let second = adapter
+        .plan_write(&paths, &target, &provider)
+        .await
+        .unwrap();
+    for (first_file, second_file) in first.files.iter().zip(&second.files) {
+        assert_eq!(
+            second_file.source_content,
+            Some(first_file.target_content.clone())
+        );
+        assert_eq!(second_file.target_content, first_file.target_content);
+    }
+
+    let auth_file = first
+        .files
+        .iter()
+        .find(|file| file.path == *paths.auth_file.as_ref().unwrap())
+        .unwrap();
+    let auth = std::str::from_utf8(&auth_file.target_content).unwrap();
+    let tampered = auth.replace("fixture-new-key-not-real", "tampered-key");
+    assert_ne!(tampered, auth);
+    tokio::fs::write(paths.auth_file.as_ref().unwrap(), tampered)
+        .await
+        .unwrap();
+    assert!(!adapter.verify_applied(&first).await.unwrap());
+}
+
+#[tokio::test]
+async fn opencode_two_namespaced_instances_do_not_replace_each_other() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(&paths.config_file, "{}\n").await;
+    write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+    let (first_provider, first_connection) = provider(CliProtocol::OpenaiChat);
+    let first_target = ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: first_provider.id,
+        connection_id: first_connection,
+        model: "first-model".into(),
+    };
+    let first = adapter
+        .plan_write(&paths, &first_target, &first_provider)
+        .await
+        .unwrap();
+    for file in &first.files {
+        tokio::fs::create_dir_all(file.path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&file.path, &file.target_content)
+            .await
+            .unwrap();
+    }
+    let (second_provider, second_connection) = provider(CliProtocol::AnthropicMessages);
+    let second_target = ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: second_provider.id,
+        connection_id: second_connection,
+        model: "second-model".into(),
+    };
+    let second = adapter
+        .plan_write(&paths, &second_target, &second_provider)
+        .await
+        .unwrap();
+    let config =
+        parse_jsonc_value(std::str::from_utf8(&second.files[0].target_content).unwrap()).unwrap();
+    let auth =
+        parse_jsonc_value(std::str::from_utf8(&second.files[1].target_content).unwrap()).unwrap();
+    assert!(
+        config["provider"]
+            .get(namespaced_provider_id(first_provider.id))
+            .is_some()
+    );
+    assert!(
+        config["provider"]
+            .get(namespaced_provider_id(second_provider.id))
+            .is_some()
+    );
+    assert!(
+        auth.get(namespaced_provider_id(first_provider.id))
+            .is_some()
+    );
+    assert!(
+        auth.get(namespaced_provider_id(second_provider.id))
+            .is_some()
+    );
 }
 
 #[tokio::test]

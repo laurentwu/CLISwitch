@@ -7,3 +7,5 @@ src-tauri/target/
 dist/
 src-tauri/catalog/providers.json
 src-tauri/catalog/providers.meta.json
+# Pinned upstream template bytes and their digest manifest must not be reformatted.
+src-tauri/catalog/config-templates/**

@@ -1,0 +1,10 @@
+model_provider = "ZHIPUAI"
+model = "<model-id>"
+model_reasoning_effort = "max"
+model_catalog_json = "~/.codex/models.json"
+
+[model_providers.ZHIPUAI]
+name = "Zhipu AI"
+base_url = "https://open.bigmodel.cn/api/v1"
+experimental_bearer_token = "<your-api-key>"
+wire_api = "responses"

@@ -1,0 +1,32 @@
+{
+  "claudeDeepseek": {
+    "$schema": "https://json.schemastore.org/claude-code-settings.json",
+    "model": "deepseek-v4-flash-vision-exp",
+    "env": {
+      "ANTHROPIC_AUTH_TOKEN": "fixture-template-secret-not-real",
+      "ANTHROPIC_BASE_URL": "https://fixture.invalid/custom path",
+      "ANTHROPIC_MODEL": "deepseek-v4-flash-vision-exp[1m]",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-flash-vision-exp[1m]",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash-vision-exp[1m]",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash-vision-exp",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash-vision-exp",
+      "CLAUDE_CODE_EFFORT_LEVEL": "max",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "786432"
+    }
+  },
+  "codexDeepseekVision": {
+    "model": "deepseek-v4-flash-vision-exp",
+    "reasoningEffort": "high",
+    "preferredAuthMethod": "apikey",
+    "forcedLoginMethod": "api",
+    "displayName": "DeepSeek-V4-Flash-Vision",
+    "inputModalities": ["text", "image"]
+  },
+  "opencodeChat": {
+    "$schema": "https://opencode.ai/config.json",
+    "model": "cliswitch_11111111111111111111111111111111/deepseek-v4-flash-vision-exp",
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "deepseek-v4-flash-vision-exp",
+    "reasoning": true
+  }
+}

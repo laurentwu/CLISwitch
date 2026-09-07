@@ -9,11 +9,15 @@ use crate::{
     adapters::traits::{
         AdapterApiCandidate, AdapterMetadata, AdapterPaths, AdapterReadResult, AdapterWritePlan,
         CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id,
-        read_optional,
+        read_file_snapshot, read_optional,
     },
     catalog::{
         ProviderCatalog, ProviderModelTemplate, fixed_adapter_protocol, legacy_catalog,
         runtime_catalog,
+    },
+    config_templates::{
+        RenderedManagedConfig, TemplateBindings, TemplateSelection, render_managed_config,
+        resolve_templates,
     },
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
@@ -440,6 +444,15 @@ fn opencode_model_value(model: &ProviderModelTemplate) -> Value {
     Value::Object(value)
 }
 
+fn snapshot_text<'a>(source: &'a Option<Vec<u8>>, default: &'a str) -> AppResult<&'a str> {
+    match source {
+        Some(source) => std::str::from_utf8(source).map_err(|error| {
+            AppError::Serialization(format!("configuration is not UTF-8: {error}"))
+        }),
+        None => Ok(default),
+    }
+}
+
 fn provider_models(
     provider: Option<&serde_json::Map<String, Value>>,
     current: Option<&ModelSelection>,
@@ -488,7 +501,7 @@ impl CliAdapter for OpenCodeAdapter {
             display_name: "OpenCode".into(),
             command: "opencode".into(),
             schema_fingerprint:
-                "stable-v1:provider/npm/options/models+auth.type-api+state.model.recent".into(),
+                "stable-v1:templated-provider-leaves+auth.type-api+state.model.recent".into(),
         }
     }
 
@@ -943,51 +956,156 @@ impl CliAdapter for OpenCodeAdapter {
                 )));
             }
         }
-        let relation_package = provider
-            .template_id
-            .as_deref()
-            .zip(connection.template_endpoint_id.as_deref())
-            .and_then(|(template_id, endpoint_id)| {
-                catalog
-                    .api_relations(CliId::Opencode, template_id)
-                    .find(|relation| relation.endpoint_id == endpoint_id)
-                    .and_then(|relation| relation.provider_package.as_deref())
-            });
-        let package = relation_package
-            .or_else(|| catalog.protocol_package(CliId::Opencode, connection.protocol))
-            .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "OpenCode has no provider package for {}",
-                    connection.protocol
-                ))
-            })?;
         let provider_id = namespaced_provider_id(provider.id);
-        let config_source = read_optional(&paths.config_file, "{}\n").await?;
-        let parsed = parse_jsonc_value(&config_source)?;
+        let templates = resolve_templates(&TemplateSelection {
+            cli_id: CliId::Opencode,
+            template_id: provider.template_id.as_deref(),
+            protocol: connection.protocol,
+            model: target.model(),
+        })?;
+        let rendered = render_managed_config(
+            &templates,
+            &TemplateBindings {
+                provider_id: &provider_id,
+                provider_name: &provider.name,
+                endpoint: connection.endpoint.as_str(),
+                auth_type: connection.auth_type,
+                api_key: &connection.api_key,
+                model: target.model(),
+                model_catalog_path: None,
+            },
+        )?;
+        let RenderedManagedConfig::OpenCode(rendered) = rendered else {
+            return Err(AppError::Serialization(
+                "resolved a non-OpenCode config template".into(),
+            ));
+        };
+        let (config_source, config_digest) =
+            read_file_snapshot(&paths.config_file, &paths.config_directory).await?;
+        let config_text = snapshot_text(&config_source, "{}\n")?;
+        let parsed = parse_jsonc_value(config_text)?;
         if parsed.get("providers").is_some() {
             return Err(AppError::Unsupported(
                 "refusing to write the OpenCode v2 beta schema".into(),
             ));
         }
-        let provider_value = json!({
-            "npm": package,
-            "name": provider.name,
-            "options": { "baseURL": connection.endpoint.as_str() },
-            "models": opencode_models(provider, connection, target.model())
-        });
-        let target_config = patch_jsonc(
-            &config_source,
-            &[
-                JsonPatch::SetValue {
-                    path: vec!["provider".into(), provider_id.clone()],
-                    value: provider_value,
-                },
-                JsonPatch::SetString {
-                    path: vec!["model".into()],
-                    value: format!("{provider_id}/{}", target.model()),
-                },
-            ],
-        )?;
+        let template_models = opencode_models(provider, connection, target.model());
+        let template_models = template_models
+            .as_object()
+            .expect("opencode_models always returns an object");
+        let selected_model = &template_models[target.model()];
+        let model_name = selected_model
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&rendered.model_name)
+            .to_string();
+        let mut config_patches = vec![
+            JsonPatch::SetString {
+                path: vec!["$schema".into()],
+                value: rendered.schema,
+            },
+            JsonPatch::SetString {
+                path: vec!["model".into()],
+                value: rendered.model_reference,
+            },
+            JsonPatch::SetString {
+                path: vec!["provider".into(), provider_id.clone(), "npm".into()],
+                value: rendered.npm_package,
+            },
+            JsonPatch::SetString {
+                path: vec!["provider".into(), provider_id.clone(), "name".into()],
+                value: rendered.provider_name,
+            },
+            JsonPatch::SetString {
+                path: vec![
+                    "provider".into(),
+                    provider_id.clone(),
+                    "options".into(),
+                    "baseURL".into(),
+                ],
+                value: rendered.endpoint,
+            },
+            JsonPatch::RemoveString {
+                path: vec![
+                    "provider".into(),
+                    provider_id.clone(),
+                    "options".into(),
+                    "apiKey".into(),
+                ],
+            },
+            JsonPatch::SetString {
+                path: vec![
+                    "provider".into(),
+                    provider_id.clone(),
+                    "models".into(),
+                    target.model().into(),
+                    "name".into(),
+                ],
+                value: model_name,
+            },
+            JsonPatch::SetValue {
+                path: vec![
+                    "provider".into(),
+                    provider_id.clone(),
+                    "models".into(),
+                    target.model().into(),
+                    "reasoning".into(),
+                ],
+                value: Value::Bool(rendered.reasoning),
+            },
+        ];
+        if let Some(limit) = selected_model.get("limit").and_then(Value::as_object) {
+            for field in ["context", "output"] {
+                if let Some(value) = limit.get(field) {
+                    config_patches.push(JsonPatch::SetValue {
+                        path: vec![
+                            "provider".into(),
+                            provider_id.clone(),
+                            "models".into(),
+                            target.model().into(),
+                            "limit".into(),
+                            field.into(),
+                        ],
+                        value: value.clone(),
+                    });
+                }
+            }
+        }
+        for (model_id, metadata) in template_models {
+            if model_id == target.model() {
+                continue;
+            }
+            if let Some(name) = metadata.get("name").and_then(Value::as_str) {
+                config_patches.push(JsonPatch::SetString {
+                    path: vec![
+                        "provider".into(),
+                        provider_id.clone(),
+                        "models".into(),
+                        model_id.clone(),
+                        "name".into(),
+                    ],
+                    value: name.into(),
+                });
+            }
+            if let Some(limit) = metadata.get("limit").and_then(Value::as_object) {
+                for field in ["context", "output"] {
+                    if let Some(value) = limit.get(field) {
+                        config_patches.push(JsonPatch::SetValue {
+                            path: vec![
+                                "provider".into(),
+                                provider_id.clone(),
+                                "models".into(),
+                                model_id.clone(),
+                                "limit".into(),
+                                field.into(),
+                            ],
+                            value: value.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        let target_config = patch_jsonc(config_text, &config_patches)?;
         let auth_file = paths
             .auth_file
             .clone()
@@ -996,13 +1114,35 @@ impl CliAdapter for OpenCodeAdapter {
             .parent()
             .ok_or_else(|| AppError::Validation("OpenCode auth path has no parent".into()))?
             .to_path_buf();
-        let auth_source = read_optional(&auth_file, "{}\n").await?;
+        let (auth_source, auth_digest) = read_file_snapshot(&auth_file, &auth_root).await?;
+        let auth_text = snapshot_text(&auth_source, "{}\n")?;
         let target_auth = patch_jsonc(
-            &auth_source,
-            &[JsonPatch::SetValue {
-                path: vec![provider_id],
-                value: json!({ "type": "api", "key": connection.api_key }),
-            }],
+            auth_text,
+            &[
+                JsonPatch::SetString {
+                    path: vec![provider_id.clone(), "type".into()],
+                    value: "api".into(),
+                },
+                JsonPatch::SetString {
+                    path: vec![provider_id.clone(), "key".into()],
+                    value: rendered.api_key,
+                },
+                JsonPatch::RemoveString {
+                    path: vec![provider_id.clone(), "refresh".into()],
+                },
+                JsonPatch::RemoveString {
+                    path: vec![provider_id.clone(), "access".into()],
+                },
+                JsonPatch::Remove {
+                    path: vec![provider_id.clone(), "expires".into()],
+                },
+                JsonPatch::RemoveString {
+                    path: vec![provider_id.clone(), "accountId".into()],
+                },
+                JsonPatch::RemoveString {
+                    path: vec![provider_id, "enterpriseUrl".into()],
+                },
+            ],
         )?;
         Ok(AdapterWritePlan {
             cli_id: CliId::Opencode,
@@ -1010,7 +1150,8 @@ impl CliAdapter for OpenCodeAdapter {
                 FileWritePlan {
                     path: paths.config_file.clone(),
                     allowed_root: paths.config_directory.clone(),
-                    source_digest: file_digest(&paths.config_file).await?,
+                    source_content: config_source,
+                    source_digest: config_digest,
                     target_content: target_config.into_bytes(),
                     contains_credentials: false,
                     opaque_content: false,
@@ -1018,7 +1159,8 @@ impl CliAdapter for OpenCodeAdapter {
                 FileWritePlan {
                     path: auth_file.clone(),
                     allowed_root: auth_root,
-                    source_digest: file_digest(&auth_file).await?,
+                    source_content: auth_source,
+                    source_digest: auth_digest,
                     target_content: target_auth.into_bytes(),
                     contains_credentials: true,
                     opaque_content: false,
@@ -1026,22 +1168,6 @@ impl CliAdapter for OpenCodeAdapter {
             ],
             warning: None,
         })
-    }
-
-    async fn verify_applied(
-        &self,
-        paths: &AdapterPaths,
-        target: &ConfigurationTarget,
-        provider: &ProviderProfile,
-    ) -> AppResult<bool> {
-        let plan = self.plan_write(paths, target, provider).await?;
-        for file in plan.files {
-            let current = tokio::fs::read(&file.path).await?;
-            if bytes_digest(&current) != bytes_digest(&file.target_content) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     fn oauth_kind(&self) -> Option<OAuthKind> {

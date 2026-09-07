@@ -269,13 +269,13 @@ impl ApplyCoordinator {
                     continue;
                 }
             };
-            let unchanged = match all_files_unchanged(&plan).await {
+            let unchanged = match all_files_unchanged(&plan) {
                 Ok(unchanged) => unchanged,
                 Err(error) => {
                     public_items.push(ApplyPreviewItem {
                         cli_id,
                         state: ApplyItemState::Failed,
-                        path: plan.files.first().map(|file| file.path.clone()),
+                        path: Some(paths.config_file.clone()),
                         provider_name: provider.name,
                         protocol,
                         model: target.model().into(),
@@ -314,7 +314,7 @@ impl ApplyCoordinator {
             .into_iter()
             .filter(|change| change.before != change.after)
             .collect();
-            let files = preview_files(&plan).await;
+            let files = preview_files(&plan);
             public_items.push(ApplyPreviewItem {
                 cli_id,
                 state: if unchanged {
@@ -322,7 +322,7 @@ impl ApplyCoordinator {
                 } else {
                     ApplyItemState::Waiting
                 },
-                path: plan.files.first().map(|file| file.path.clone()),
+                path: Some(paths.config_file.clone()),
                 provider_name: provider.name.clone(),
                 protocol,
                 model: target.model().into(),
@@ -575,8 +575,8 @@ impl ApplyCoordinator {
                     file.path.display()
                 )));
             }
+            let target = resolve_target(&file.path, &file.allowed_root).await?;
             if current_digest != Some(bytes_digest(&file.target_content)) {
-                let target = resolve_target(&file.path, &file.allowed_root).await?;
                 changes.push((file, target));
             }
         }
@@ -609,7 +609,7 @@ impl ApplyCoordinator {
         let verified = self
             .registry
             .get(item.target.cli_id())
-            .verify_applied(&item.paths, &item.target, &item.provider)
+            .verify_applied(&item.plan)
             .await;
         if !matches!(verified, Ok(true)) {
             self.rollback_written(&backups, written).await;
@@ -842,23 +842,28 @@ impl ApplyCoordinator {
     }
 }
 
-async fn all_files_unchanged(plan: &AdapterWritePlan) -> AppResult<bool> {
+fn all_files_unchanged(plan: &AdapterWritePlan) -> AppResult<bool> {
     for file in &plan.files {
-        if file_digest(&file.path).await? != Some(bytes_digest(&file.target_content)) {
+        if file.source_content.as_deref().map(bytes_digest) != file.source_digest {
+            return Err(AppError::Serialization(format!(
+                "frozen source bytes and digest differ for {}",
+                file.path.display()
+            )));
+        }
+        if file.source_digest != Some(bytes_digest(&file.target_content)) {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-async fn preview_files(plan: &AdapterWritePlan) -> Vec<ApplyPreviewFile> {
+fn preview_files(plan: &AdapterWritePlan) -> Vec<ApplyPreviewFile> {
     let mut files = Vec::with_capacity(plan.files.len());
     for file in &plan.files {
-        let source_content = match tokio::fs::read(&file.path).await {
-            Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(_) => None,
-        };
+        let source_content = file
+            .source_content
+            .as_deref()
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
         files.push(ApplyPreviewFile {
             path: file.path.clone(),
             existed: source_content.is_some(),
@@ -911,6 +916,21 @@ mod tests {
         filesystem::private_paths::PrivatePaths,
     };
     use url::Url;
+
+    #[cfg(unix)]
+    use crate::catalog::{
+        ProviderCatalog, ProviderTemplate, install_runtime_catalog, runtime_catalog,
+    };
+
+    #[cfg(unix)]
+    struct RuntimeCatalogRestore(ProviderCatalog);
+
+    #[cfg(unix)]
+    impl Drop for RuntimeCatalogRestore {
+        fn drop(&mut self) {
+            install_runtime_catalog(self.0.clone());
+        }
+    }
 
     async fn fixture() -> (
         tempfile::TempDir,
@@ -1049,6 +1069,7 @@ mod tests {
             files: vec![FileWritePlan {
                 path: file.clone(),
                 allowed_root: temp.path().to_path_buf(),
+                source_content: Some(b"same".to_vec()),
                 source_digest: file_digest(&file).await.unwrap(),
                 target_content: b"same".to_vec(),
                 contains_credentials: false,
@@ -1056,7 +1077,28 @@ mod tests {
             }],
             warning: None,
         };
-        assert!(all_files_unchanged(&plan).await.unwrap());
+        assert!(all_files_unchanged(&plan).unwrap());
+    }
+
+    #[test]
+    fn inconsistent_frozen_source_bytes_and_digest_are_rejected() {
+        let plan = AdapterWritePlan {
+            cli_id: CliId::Codex,
+            files: vec![FileWritePlan {
+                path: PathBuf::from("/fixture/config.toml"),
+                allowed_root: PathBuf::from("/fixture"),
+                source_content: Some(b"source".to_vec()),
+                source_digest: Some(bytes_digest(b"different")),
+                target_content: b"target".to_vec(),
+                contains_credentials: false,
+                opaque_content: false,
+            }],
+            warning: None,
+        };
+        assert!(matches!(
+            all_files_unchanged(&plan),
+            Err(AppError::Serialization(_))
+        ));
     }
 
     #[tokio::test]
@@ -1073,6 +1115,7 @@ mod tests {
                 FileWritePlan {
                     path: existing.clone(),
                     allowed_root: temp.path().to_path_buf(),
+                    source_content: Some(b"model = \"old\"\n".to_vec()),
                     source_digest: file_digest(&existing).await.unwrap(),
                     target_content: b"model = \"new\"\n".to_vec(),
                     contains_credentials: false,
@@ -1081,6 +1124,7 @@ mod tests {
                 FileWritePlan {
                     path: missing,
                     allowed_root: temp.path().to_path_buf(),
+                    source_content: None,
                     source_digest: Some("stale-digest".into()),
                     target_content: b"model = \"new\"\n".to_vec(),
                     contains_credentials: false,
@@ -1090,7 +1134,7 @@ mod tests {
             warning: None,
         };
 
-        let files = preview_files(&plan).await;
+        let files = preview_files(&plan);
 
         assert_eq!(
             files[0].source_content.as_deref(),
@@ -1100,6 +1144,66 @@ mod tests {
         assert_eq!(files[0].target_content, "model = \"new\"\n");
         assert_eq!(files[1].source_content, None);
         assert!(!files[1].existed);
+    }
+
+    #[tokio::test]
+    async fn changing_any_frozen_plan_source_blocks_every_write_for_that_cli() {
+        for changed_index in 0..2 {
+            let (temp, _paths, repository, coordinator) = fixture().await;
+            let provider = api_provider();
+            repository.insert_provider(&provider, None).await.unwrap();
+            let target = api_target(CliId::Codex, &provider);
+            let configuration = configuration(vec![target.clone()]);
+            repository
+                .insert_configuration(&configuration)
+                .await
+                .unwrap();
+            let root = temp.path().join(format!("config-{changed_index}"));
+            tokio::fs::create_dir_all(&root).await.unwrap();
+            let paths = [root.join("models.json"), root.join("config.toml")];
+            for path in &paths {
+                tokio::fs::write(path, b"original").await.unwrap();
+            }
+            let mut files = Vec::new();
+            for path in &paths {
+                files.push(FileWritePlan {
+                    path: path.clone(),
+                    allowed_root: root.clone(),
+                    source_content: Some(b"original".to_vec()),
+                    source_digest: file_digest(path).await.unwrap(),
+                    target_content: b"target".to_vec(),
+                    contains_credentials: false,
+                    opaque_content: false,
+                });
+            }
+            let item = prepared_item(
+                target,
+                provider,
+                AdapterWritePlan {
+                    cli_id: CliId::Codex,
+                    files,
+                    warning: None,
+                },
+            );
+            tokio::fs::write(&paths[changed_index], b"external-change")
+                .await
+                .unwrap();
+
+            let error = coordinator
+                .execute_item(configuration.id, configuration.revision, &item)
+                .await
+                .unwrap_err();
+
+            assert!(matches!(error, AppError::Conflict(_)));
+            for (index, path) in paths.iter().enumerate() {
+                let expected = if index == changed_index {
+                    b"external-change".as_slice()
+                } else {
+                    b"original".as_slice()
+                };
+                assert_eq!(tokio::fs::read(path).await.unwrap(), expected);
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -1148,6 +1252,134 @@ mod tests {
 
         assert_eq!(preview.items.len(), 1);
         assert_eq!(preview.items[0].cli_id, CliId::Codex);
+        let expected_config = config_directory.join("config.toml");
+        assert_eq!(
+            preview.items[0].path.as_deref(),
+            Some(expected_config.as_path())
+        );
+        assert_eq!(preview.items[0].files.len(), 2);
+        assert!(
+            preview.items[0].files[0]
+                .path
+                .starts_with(config_directory.join("cliswitch-models"))
+        );
+        assert_eq!(preview.items[0].files[1].path, expected_config);
+        assert!(preview.items[0].files.iter().all(|file| !file.existed));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn runtime_catalog_refresh_after_preview_keeps_the_frozen_targets() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp, _paths, repository, coordinator) = fixture().await;
+        let provider = api_provider();
+        repository.insert_provider(&provider, None).await.unwrap();
+        let target = api_target(CliId::Codex, &provider);
+        let configuration = configuration(vec![target.clone()]);
+        repository
+            .insert_configuration(&configuration)
+            .await
+            .unwrap();
+
+        let executable = temp.path().join("codex-fixture");
+        tokio::fs::write(&executable, b"#!/bin/sh\necho codex 1.0\n")
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        let config_directory = temp.path().join("codex-config");
+        tokio::fs::create_dir_all(&config_directory).await.unwrap();
+        let mut settings = repository.get_settings().await.unwrap();
+        for location in &mut settings.manual_locations {
+            if location.cli_id == CliId::Codex {
+                location.executable_path = Some(executable.clone());
+                location.config_directory = Some(config_directory.clone());
+            }
+        }
+
+        let preview = coordinator
+            .preview_target(configuration.id, configuration.revision, &settings, target)
+            .await
+            .unwrap();
+        let item = coordinator.previews.read().await[&preview.id].items[&CliId::Codex].clone();
+        let frozen_targets = item
+            .plan
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), file.target_content.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(preview.items[0].files.len(), frozen_targets.len());
+        for (preview_file, (path, target_content)) in
+            preview.items[0].files.iter().zip(&frozen_targets)
+        {
+            assert_eq!(&preview_file.path, path);
+            assert_eq!(preview_file.target_content.as_bytes(), target_content);
+        }
+
+        let original_catalog = runtime_catalog().unwrap();
+        let _restore = RuntimeCatalogRestore(original_catalog.clone());
+        let mut refreshed_catalog = original_catalog;
+        let (template_id, endpoint_id, previous_endpoint) = refreshed_catalog
+            .provider_templates
+            .iter_mut()
+            .find_map(|template| match template {
+                ProviderTemplate::Api(template) => template.endpoints.first_mut().map(|endpoint| {
+                    let previous = endpoint.base_url.clone();
+                    endpoint.base_url = Url::parse("https://refreshed.example.test/v1").unwrap();
+                    (template.id.clone(), endpoint.id.clone(), previous)
+                }),
+                ProviderTemplate::Auth(_) => None,
+            })
+            .unwrap();
+        if let Some(provider_info) =
+            refreshed_catalog
+                .provider_info
+                .as_mut()
+                .and_then(|providers| {
+                    providers
+                        .iter_mut()
+                        .find(|provider| provider.id == template_id)
+                })
+            && let Some(endpoint) = provider_info
+                .endpoints
+                .iter_mut()
+                .find(|endpoint| endpoint.id == endpoint_id)
+        {
+            endpoint.endpoint = Some(Url::parse("https://refreshed.example.test/v1").unwrap());
+        }
+        install_runtime_catalog(refreshed_catalog);
+        assert_ne!(
+            runtime_catalog()
+                .unwrap()
+                .api_template(&template_id)
+                .unwrap()
+                .endpoints[0]
+                .base_url,
+            previous_endpoint
+        );
+
+        let run = coordinator.start(preview.id).await.unwrap();
+        let active = coordinator.runs.read().await[&run.id].clone();
+        let finished = active.finished.notified();
+        if active.snapshot.read().await.finished_at.is_none() {
+            finished.await;
+        }
+        let completed = coordinator.snapshot(run.id).await.unwrap();
+        assert_eq!(completed.items[0].state, ApplyItemState::Success);
+
+        for (path, expected) in frozen_targets {
+            assert_eq!(tokio::fs::read(path).await.unwrap(), expected);
+        }
+        assert!(
+            coordinator
+                .registry
+                .get(CliId::Codex)
+                .verify_applied(&item.plan)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1301,6 +1533,7 @@ mod tests {
                 FileWritePlan {
                     path: first.clone(),
                     allowed_root: config_root,
+                    source_content: Some(b"original".to_vec()),
                     source_digest: file_digest(&first).await.unwrap(),
                     target_content: b"changed".to_vec(),
                     contains_credentials: false,
@@ -1309,6 +1542,7 @@ mod tests {
                 FileWritePlan {
                     path: read_only_target.clone(),
                     allowed_root: PathBuf::from("/proc"),
+                    source_content: Some(tokio::fs::read(&read_only_target).await.unwrap()),
                     source_digest: file_digest(&read_only_target).await.unwrap(),
                     target_content: b"cannot replace procfs".to_vec(),
                     contains_credentials: false,
@@ -1325,6 +1559,58 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("temporary file creation"));
         assert_eq!(tokio::fs::read(&first).await.unwrap(), b"original");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn second_file_failure_rolls_a_new_auxiliary_file_back_to_missing() {
+        let (temp, _paths, repository, coordinator) = fixture().await;
+        let provider = api_provider();
+        repository.insert_provider(&provider, None).await.unwrap();
+        let target = api_target(CliId::Codex, &provider);
+        let configuration = configuration(vec![target.clone()]);
+        repository
+            .insert_configuration(&configuration)
+            .await
+            .unwrap();
+
+        let config_root = temp.path().join("config");
+        tokio::fs::create_dir_all(&config_root).await.unwrap();
+        let auxiliary = config_root.join("cliswitch-models").join("new.json");
+        let read_only_target = PathBuf::from("/proc/version");
+        let read_only_source = tokio::fs::read(&read_only_target).await.unwrap();
+        let plan = AdapterWritePlan {
+            cli_id: CliId::Codex,
+            files: vec![
+                FileWritePlan {
+                    path: auxiliary.clone(),
+                    allowed_root: config_root,
+                    source_content: None,
+                    source_digest: None,
+                    target_content: b"new catalog".to_vec(),
+                    contains_credentials: false,
+                    opaque_content: false,
+                },
+                FileWritePlan {
+                    path: read_only_target.clone(),
+                    allowed_root: PathBuf::from("/proc"),
+                    source_content: Some(read_only_source),
+                    source_digest: file_digest(&read_only_target).await.unwrap(),
+                    target_content: b"cannot replace procfs".to_vec(),
+                    contains_credentials: false,
+                    opaque_content: false,
+                },
+            ],
+            warning: None,
+        };
+        let item = prepared_item(target, provider, plan);
+
+        coordinator
+            .execute_item(configuration.id, configuration.revision, &item)
+            .await
+            .unwrap_err();
+
+        assert!(!auxiliary.exists());
     }
 
     #[tokio::test]
@@ -1558,6 +1844,7 @@ mod tests {
                 files: vec![FileWritePlan {
                     path: native_auth.clone(),
                     allowed_root: native_root,
+                    source_content: Some(raw.to_vec()),
                     source_digest: file_digest(&native_auth).await.unwrap(),
                     target_content: raw.to_vec(),
                     contains_credentials: true,

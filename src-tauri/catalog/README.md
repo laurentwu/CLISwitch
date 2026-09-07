@@ -22,3 +22,10 @@ New runtime API templates and CLI relations are generated from the one to three 
 declared by each CLIAdapter provider plus `clis.jsonc`; OAuth templates remain fixed and independent
 of CLIAdapter. Persisted provider IDs must remain the upstream IDs. The source provides no model
 catalog, so model IDs are entered manually for every endpoint before save.
+
+`config-templates/` is independent of this refreshable provider database. It contains the original
+allowlisted Claude Code, Codex CLI, and OpenCode configuration resources from a fixed CLIAdapter
+commit, plus its own manifest, source/update instructions, and upstream license. Rust compiles and
+validates these resources; `pnpm catalog:update` must not modify them. Template updates are reviewed
+and released with a CLISwitch version, while the Settings action continues to refresh endpoint data
+only.
