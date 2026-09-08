@@ -140,7 +140,7 @@ export const zhCN = {
       saveCurrent: "保存为新配置",
       scan: "重新扫描",
       scanDiagnostic: "扫描诊断",
-      apply: "应用配置",
+      apply: "应用",
       sync: "同步供应商到兼容 CLI",
       locate: "快速定位",
       included: "纳入配置",
