@@ -20,6 +20,35 @@ async function invoke<T>(command: string, args: Record<string, unknown> = {}): P
   )) as T;
 }
 
+async function scanWhenIdle(): Promise<ScanSnapshot> {
+  let scan: ScanSnapshot | undefined;
+  let unexpectedError: unknown;
+  await browser.waitUntil(
+    async () => {
+      try {
+        scan = await invoke<ScanSnapshot>("scan_clis");
+        return true;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : (JSON.stringify(error) ?? String(error));
+        if (!message.includes("another apply or restore operation is active")) {
+          unexpectedError = error;
+          return true;
+        }
+        return false;
+      }
+    },
+    {
+      interval: 250,
+      timeout: 30_000,
+      timeoutMsg: "Expected the active desktop operation to finish before scanning",
+    },
+  );
+  if (unexpectedError) throw unexpectedError;
+  if (!scan) throw new Error("Scan completed without a snapshot");
+  return scan;
+}
+
 describe("CLISwitch desktop shell", () => {
   const waitForSelectedConfiguration = async (name: string) => {
     await browser.waitUntil(
@@ -69,7 +98,7 @@ describe("CLISwitch desktop shell", () => {
   });
 
   it("imports Qwen and completes preview, A/B/A switching, rescan, and restore", async () => {
-    const originalScan = await invoke<ScanSnapshot>("scan_clis");
+    const originalScan = await scanWhenIdle();
     const originalQwen = originalScan.items.find((item) => item.cliId === "qwen");
     const originalDigest = originalQwen?.current?.sources.find(
       (source) => source.sourceId === "qwen-settings",
@@ -88,10 +117,30 @@ describe("CLISwitch desktop shell", () => {
     });
 
     await navigation[0].click();
+    await expect($("h1")).toHaveText(expect.stringMatching(/Configurations|配置/));
+    const currentConfigurationTab = await $(
+      "//button[@role='tab' and (normalize-space()='Current configuration' or normalize-space()='当前配置')]",
+    );
+    await currentConfigurationTab.waitForClickable();
+    await currentConfigurationTab.click();
+    await browser.waitUntil(
+      async () => (await currentConfigurationTab.getAttribute("aria-selected")) === "true",
+      { timeoutMsg: "Expected Current configuration to become selected" },
+    );
+    await scanWhenIdle();
     const scanButton = await $(
       "//button[contains(normalize-space(.), 'Scan') or contains(normalize-space(.), '扫描')]",
     );
+    const previousScanId = (await invoke<AppSnapshot>("get_app_snapshot")).current?.id;
+    await scanButton.waitForClickable();
     await scanButton.click();
+    await browser.waitUntil(
+      async () => {
+        const snapshot = await invoke<AppSnapshot>("get_app_snapshot");
+        return Boolean(snapshot.current?.id && snapshot.current.id !== previousScanId);
+      },
+      { timeout: 30_000, timeoutMsg: "Expected the UI scan to finish" },
+    );
     const manageCandidate = await $(
       "//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]//button[contains(normalize-space(.), 'Manage') or contains(normalize-space(.), '管理')]",
     );
@@ -167,7 +216,7 @@ describe("CLISwitch desktop shell", () => {
       await $(
         "//*[@role='dialog']//*[contains(@class, 'modal-footer')]//button[contains(normalize-space(.), 'Close') or contains(normalize-space(.), '关闭')]",
       ).click();
-      const scan = await invoke<ScanSnapshot>("scan_clis");
+      const scan = await scanWhenIdle();
       const qwen = scan.items.find((item) => item.cliId === "qwen");
       expect(qwen?.current?.managedConnectionId).toBe(expectedConnectionId);
     };
@@ -203,7 +252,7 @@ describe("CLISwitch desktop shell", () => {
       const backups = await invoke<BackupMetadata[]>("list_backups", { cliId: "qwen" });
       return backups.length >= 4;
     });
-    const restoredScan = await invoke<ScanSnapshot>("scan_clis");
+    const restoredScan = await scanWhenIdle();
     const restoredQwen = restoredScan.items.find((item) => item.cliId === "qwen");
     expect(
       restoredQwen?.current?.sources.find((source) => source.sourceId === "qwen-settings")?.digest,

@@ -79,7 +79,17 @@ impl HostEnvironment {
     }
 
     pub fn is_present(&self, key: &str) -> bool {
-        self.variables.contains_key(key) || self.present_variables.contains(key)
+        if self.os == "windows" {
+            self.variables
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case(key))
+                || self
+                    .present_variables
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(key))
+        } else {
+            self.variables.contains_key(key) || self.present_variables.contains(key)
+        }
     }
 }
 
@@ -258,6 +268,25 @@ pub fn namespaced_provider_id(provider_id: uuid::Uuid) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_presence_uses_windows_case_rules_only_on_windows() {
+        let mut environment = HostEnvironment {
+            home: PathBuf::from("/fixture"),
+            variables: BTreeMap::from([("APPDATA".into(), "fixture".into())]),
+            present_variables: HashSet::from(["openai_api_key".into()]),
+            os: "windows".into(),
+        };
+
+        assert!(environment.is_present("appdata"));
+        assert!(environment.is_present("OPENAI_API_KEY"));
+
+        environment.os = "linux".into();
+        assert!(!environment.is_present("appdata"));
+        assert!(!environment.is_present("OPENAI_API_KEY"));
+        assert!(environment.is_present("APPDATA"));
+        assert!(environment.is_present("openai_api_key"));
+    }
 
     #[tokio::test]
     async fn source_snapshot_is_non_mutating_and_hashes_the_same_bytes() {

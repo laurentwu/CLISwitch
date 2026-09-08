@@ -2860,10 +2860,14 @@ async fn qwen_rejects_duplicate_routes_and_target_environment_overrides() {
     );
 
     write_fixture(&paths.config_file, "{}\n").await;
-    host.present_variables.insert(format!(
-        "CLISWITCH_QWEN_KEY_{}",
-        connection_id.simple().to_string().to_ascii_uppercase()
-    ));
+    host.os = "windows".into();
+    host.present_variables.insert(
+        format!(
+            "CLISWITCH_QWEN_KEY_{}",
+            connection_id.simple().to_string().to_ascii_uppercase()
+        )
+        .to_ascii_lowercase(),
+    );
     let error = adapter
         .plan_write(&paths, &target, &provider, &host)
         .await
@@ -2876,7 +2880,8 @@ async fn qwen_scan_uses_default_env_key_and_reports_external_and_unsupported_rou
     let temp = TempDir::new().unwrap();
     let adapter = QwenAdapter;
     let mut host = environment(temp.path());
-    host.present_variables.insert("OPENAI_API_KEY".into());
+    host.os = "windows".into();
+    host.present_variables.insert("openai_api_key".into());
     let paths = adapter.resolve_paths(&host, None);
     let source = r#"{
       "modelProviders": {
