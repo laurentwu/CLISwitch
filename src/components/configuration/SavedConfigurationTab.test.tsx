@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import "../../i18n";
+import i18n from "../../i18n";
 import type { ProviderCatalog, PublicProvider, SavedConfiguration } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { useNotificationStore } from "../../stores/notifications";
@@ -113,6 +113,34 @@ describe("SavedConfigurationTab", () => {
     });
   });
 
+  it("renders stable equal-width configuration actions with a concise apply label", () => {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <SavedConfigurationTab
+          configuration={targetConfiguration}
+          providers={[provider]}
+          catalog={targetCatalog}
+          configurations={[targetConfiguration]}
+          onDeleted={vi.fn()}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    const actions = ["复制", "删除", "保存", "应用"].map((name) =>
+      screen.getByRole("button", { name }),
+    );
+    expect(i18n.t("config.apply", { lng: "en" })).toBe("Apply");
+    expect(actions[0].parentElement).toHaveClass("configuration-actions");
+    for (const action of actions) expect(action).toHaveClass("configuration-action");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "名称" }), {
+      target: { value: "Changed" },
+    });
+    expect(screen.getByLabelText("有未保存的修改")).toHaveClass("dirty-marker");
+    expect(screen.getByRole("button", { name: /保存/ })).toHaveClass("configuration-action");
+  });
+
   it("reports guarded-save validation and keeps the pending transition blocked", async () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
@@ -173,7 +201,7 @@ describe("SavedConfigurationTab", () => {
     );
 
     expect(screen.getAllByRole("button", { name: /预览/ })).toHaveLength(3);
-    fireEvent.click(screen.getByRole("button", { name: /应用配置/ }));
+    fireEvent.click(screen.getByRole("button", { name: /应用/ }));
     await waitFor(() =>
       expect(commandMock).toHaveBeenCalledWith("apply_configuration", {
         configurationId: saved.id,
@@ -209,7 +237,7 @@ describe("SavedConfigurationTab", () => {
       </QueryClientProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /应用配置/ }));
+    fireEvent.click(screen.getByRole("button", { name: /应用/ }));
 
     await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
     expect(onError).toHaveBeenCalledWith(saveError, "save");

@@ -207,8 +207,9 @@ export function SavedConfigurationTab({
               </Badge>
             ) : null}
           </div>
-          <div className="section-actions">
+          <div className="section-actions configuration-actions">
             <Button
+              className="configuration-action"
               variant="secondary"
               onClick={() => {
                 setDuplicateName(
@@ -219,10 +220,15 @@ export function SavedConfigurationTab({
             >
               <Copy size={16} /> {t("common.duplicate")}
             </Button>
-            <Button variant="danger" onClick={() => setDeleteOpen(true)}>
+            <Button
+              className="configuration-action"
+              variant="danger"
+              onClick={() => setDeleteOpen(true)}
+            >
               <Trash2 size={16} /> {t("common.delete")}
             </Button>
             <Button
+              className="configuration-action"
               disabled={save.isPending || Boolean(nameIssue) || !targetsValid}
               onClick={() => save.mutate()}
             >
@@ -234,6 +240,7 @@ export function SavedConfigurationTab({
               ) : null}
             </Button>
             <Button
+              className="configuration-action"
               disabled={!targetsValid || Boolean(nameIssue) || save.isPending || apply.isPending}
               onClick={() => apply.mutate()}
             >
