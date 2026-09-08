@@ -242,6 +242,10 @@ describe("CLISwitch desktop shell", () => {
       "//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]//button[contains(normalize-space(.), 'Backups') or contains(normalize-space(.), '备份')]",
     );
     await qwenBackupButton.click();
+    await browser.waitUntil(async () => (await $$("[role=dialog] .backup-row")).length >= 3, {
+      timeout: 30_000,
+      timeoutMsg: "Expected Qwen backups to load",
+    });
     const backupRows = await $$("[role=dialog] .backup-row");
     expect(backupRows.length).toBeGreaterThanOrEqual(3);
     await backupRows[backupRows.length - 1].$("button").click();
