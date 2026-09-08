@@ -142,7 +142,7 @@ describe("CLISwitch desktop shell", () => {
       { timeout: 30_000, timeoutMsg: "Expected the UI scan to finish" },
     );
     const manageCandidate = await $(
-      "//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]//button[contains(normalize-space(.), 'Manage') or contains(normalize-space(.), '管理')]",
+      "//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]//button[contains(normalize-space(.), 'as provider') or contains(normalize-space(.), '保存为供应商')]",
     );
     await manageCandidate.waitForClickable();
     await manageCandidate.click();
