@@ -19,6 +19,9 @@ CLISwitch deliberately adapts upstream values at the local trust boundary:
 - OpenCode native providers and environment-key authentication are converted to namespaced
   instances and the existing local `auth.json` format;
 - supported OpenCode packages are fixed by the selected CLISwitch protocol.
+- Qwen provider groups and file-local env keys are replaced with connection-UUID-derived names;
+  applying also writes Qwen's OpenAI auth and exact model/base-URL startup selection. An existing
+  unique route is updated in place, while duplicate routes fail closed.
 
 To update the bundle:
 

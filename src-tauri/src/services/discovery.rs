@@ -104,9 +104,18 @@ fn common_locations(cli_id: CliId, environment: &HostEnvironment) -> Vec<PathBuf
     }
     #[cfg(windows)]
     if let Some(app_data) = environment.value("APPDATA") {
-        values.push(PathBuf::from(app_data).join(format!("{command}.cmd")));
+        values.extend(windows_npm_locations(Path::new(app_data), command));
     }
     values
+}
+
+#[cfg(any(windows, test))]
+fn windows_npm_locations(app_data: &Path, command: &str) -> [PathBuf; 2] {
+    let npm = app_data.join("npm");
+    [
+        npm.join(format!("{command}.cmd")),
+        npm.join(format!("{command}.ps1")),
+    ]
 }
 
 async fn validate_executable(path: &Path) -> AppResult<PathBuf> {
@@ -168,6 +177,19 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
 
     use super::*;
+
+    #[test]
+    fn windows_npm_locations_include_the_npm_subdirectory() {
+        let app_data = PathBuf::from(r"C:\fixture\AppData\Roaming");
+
+        assert_eq!(
+            windows_npm_locations(&app_data, "qwen"),
+            [
+                app_data.join("npm").join("qwen.cmd"),
+                app_data.join("npm").join("qwen.ps1"),
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn manual_executable_is_canonicalized_and_probed() {

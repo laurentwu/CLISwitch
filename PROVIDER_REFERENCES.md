@@ -85,3 +85,11 @@ https://app.umans.ai/offers/code
 
 https://docs.mthreads.com/kuaecloud/kuaecloud-doc-online/coding_plan/plan_overview/
 https://docs.mthreads.com/kuaecloud/kuaecloud-doc-online/coding_plan/tools_config/
+
+## Qwen Code
+
+https://github.com/QwenLM/qwen-code/tree/v0.23.0
+https://qwenlm.github.io/qwen-code-docs/zh/users/configuration/auth/
+
+CLISwitch's Qwen baseline is the v0.23.0 array-shaped `modelProviders` settings schema with
+OpenAI Chat and file-local API keys only. OAuth and other Qwen provider protocols are out of scope.

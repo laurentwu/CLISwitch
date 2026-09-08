@@ -1,0 +1,18 @@
+{
+  "modelProviders": {
+    "zhipuai-coding-plan": [
+      {
+        "id": "<model-id>",
+        "name": "<model-name>",
+        "envKey": "ZHIPU_API_KEY",
+        "baseUrl": "https://open.bigmodel.cn/api/coding/paas/v4"
+      }
+    ]
+  },
+  "providerProtocol": {
+    "zhipuai-coding-plan": "openai"
+  },
+  "env": {
+    "ZHIPU_API_KEY": "<your-api-key>"
+  }
+}

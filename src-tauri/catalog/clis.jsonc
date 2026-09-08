@@ -36,5 +36,12 @@
         },
       ],
     },
+    {
+      "id": "qwen",
+      "name": "Qwen Code",
+      "protocols": ["openai-chat"],
+      "authModes": [],
+      "protocolAdapters": [],
+    },
   ],
 }

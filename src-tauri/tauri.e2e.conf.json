@@ -1,4 +1,5 @@
 {
+  "identifier": "io.github.laurentwu.cliswitch.e2e",
   "build": {
     "beforeBuildCommand": "pnpm build:e2e"
   },

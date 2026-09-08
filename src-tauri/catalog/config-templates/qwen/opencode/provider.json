@@ -1,0 +1,10 @@
+{
+  "id": "opencode",
+  "name": "OpenCode Zen",
+  "env": [
+    "OPENCODE_API_KEY"
+  ],
+  "protocol": "openai-compatible",
+  "base_url": "https://opencode.ai/zen/v1",
+  "docs": "https://opencode.ai/docs/zen"
+}

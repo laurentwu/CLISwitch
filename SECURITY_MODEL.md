@@ -52,6 +52,9 @@ The raw OAuth editor deliberately accepts any UTF-8 text, including empty or mal
 - Only the documented user-level files listed in [CLI_SUPPORT.md](CLI_SUPPORT.md) are managed.
 - Codex auxiliary model catalogs are derived only from saved provider/connection UUIDs beneath the
   resolved config directory; model IDs and old `model_catalog_json` values never form output paths.
+- Qwen group and environment names are derived only from a saved connection UUID. Qwen credentials
+  remain in `settings.json`; switching accounts intentionally leaves dormant old environment
+  entries and provider variables untouched, and backups retain the complete original file.
 - Canonical target containment and symlink resolution are checked before writes.
 - Planning performs a non-mutating containment/file-type check and reads each source once. A
   preview is rendered from those frozen bytes and records their digest; changes to config, auth, or
@@ -59,6 +62,9 @@ The raw OAuth editor deliberately accepts any UTF-8 text, including empty or mal
 - Replacement is atomic where supported, multi-file failures roll back already-written files, and the result is verified.
 - Write verification compares every output file to the frozen preview target bytes. It does not
   re-resolve templates, reload the provider catalog, or perform network activity.
+- Qwen additionally verifies that the written primary route is unique and its file-local env
+  reference resolves. Environment-variable presence is captured by name only; values are never
+  captured, returned to the frontend, or logged. A present target variable blocks the write.
 - Credential backups are private, digest-checked, bounded to five versions per source, and can represent “file did not exist” tombstones.
 - OAuth switching is blocked when the target CLI is running or its running state cannot be determined reliably. Other CLI items continue.
 - CLISwitch waits for the current atomic unit, cancels outstanding OAuth/apply work, and then exits when the user confirms a protected close.

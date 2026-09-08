@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     adapters::{
-        ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter,
+        ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment, OpenCodeAdapter, QwenAdapter,
         opencode::model_routed_model_is_supported,
     },
     catalog::{ApiProviderTemplate, legacy_catalog, runtime_catalog},
@@ -55,6 +55,7 @@ impl Default for AdapterRegistry {
                 CliId::Opencode,
                 Arc::new(OpenCodeAdapter) as Arc<dyn CliAdapter>,
             ),
+            (CliId::Qwen, Arc::new(QwenAdapter) as Arc<dyn CliAdapter>),
         ]
         .into_iter()
         .collect();
@@ -151,6 +152,7 @@ impl CliManager {
                                 auth_kind: None,
                                 model: None,
                                 managed_provider_id: None,
+                                managed_connection_id: None,
                                 sources: Vec::new(),
                                 externally_overridden: false,
                                 diagnostics: vec![self.redactor.sanitize(error.to_string())],
@@ -164,7 +166,7 @@ impl CliManager {
             }
         };
         self.evict_expired_candidates().await;
-        let mut items = Vec::with_capacity(3);
+        let mut items = Vec::with_capacity(CliId::ALL.len());
         for cli_id in CliId::ALL {
             let adapter = self.registry.get(cli_id);
             let location = settings
@@ -217,22 +219,28 @@ impl CliManager {
                     let mut oauth_unmanaged = false;
                     let mut unmatched_api_candidates = Vec::new();
                     for candidate in std::mem::take(&mut read.unmanaged_api_candidates) {
-                        let matched_provider =
-                            if candidate.model_routed && candidate.default_model.is_none() {
-                                // A model-routed provider without a selected model uses a
-                                // placeholder transport. Reconcile it by stable template and
-                                // credential identity instead of that placeholder.
-                                self.match_saved_model_routed_credential(
-                                    candidate.template_id.as_deref(),
-                                    &candidate.connection,
-                                )
+                        let matched_connection = if cli_id == CliId::Qwen {
+                            self.match_saved_connection_unique(&candidate.connection)
                                 .await
-                            } else {
-                                self.match_saved_connection(&candidate.connection).await
-                            };
-                        if let Some(provider_id) = matched_provider {
-                            if candidate.is_current {
+                        } else if candidate.model_routed && candidate.default_model.is_none() {
+                            // A model-routed provider without a selected model uses a
+                            // placeholder transport. Reconcile it by stable template and
+                            // credential identity instead of that placeholder.
+                            self.match_saved_model_routed_credential(
+                                candidate.template_id.as_deref(),
+                                &candidate.connection,
+                            )
+                            .await
+                            .map(|provider_id| (provider_id, None))
+                        } else {
+                            self.match_saved_connection(&candidate.connection)
+                                .await
+                                .map(|provider_id| (provider_id, None))
+                        };
+                        if let Some((provider_id, connection_id)) = matched_connection {
+                            if candidate.is_current && !read.current.externally_overridden {
                                 read.current.managed_provider_id = Some(provider_id);
+                                read.current.managed_connection_id = connection_id;
                                 read.current.provider_name = self
                                     .repository
                                     .get_provider(provider_id)
@@ -336,6 +344,8 @@ impl CliManager {
                     };
                     let status = if read.current.externally_overridden {
                         ScanStatus::ExternallyOverridden
+                    } else if let Some(hint) = read.scan_status_hint {
+                        hint
                     } else if oauth_unmanaged || !unmatched_api_candidates.is_empty() {
                         ScanStatus::Unmanaged
                     } else if read.current.model.is_some()
@@ -477,6 +487,7 @@ impl CliManager {
                             auth_kind: None,
                             model: None,
                             managed_provider_id: None,
+                            managed_connection_id: None,
                             sources: vec![SourceFileSnapshot {
                                 source_id: format!("{cli_id}-config"),
                                 display_path: paths.config_file,
@@ -679,6 +690,31 @@ impl CliManager {
         None
     }
 
+    async fn match_saved_connection_unique(
+        &self,
+        candidate: &crate::domain::ProviderConnection,
+    ) -> Option<(Uuid, Option<Uuid>)> {
+        let mut matched = None;
+        for public in self.repository.list_providers().await.ok()? {
+            let provider = self.repository.get_provider(public.id).await.ok()?;
+            let ProviderData::Api(api) = provider.data else {
+                continue;
+            };
+            for connection in api.connections.iter().filter(|connection| {
+                connection.protocol == candidate.protocol
+                    && connection.endpoint == candidate.endpoint
+                    && connection.auth_type == candidate.auth_type
+                    && connection.api_key == candidate.api_key
+            }) {
+                if matched.is_some() {
+                    return None;
+                }
+                matched = Some((provider.id, Some(connection.id)));
+            }
+        }
+        matched
+    }
+
     async fn match_saved_model_routed_credential(
         &self,
         template_id: Option<&str>,
@@ -879,6 +915,7 @@ fn error_current(redactor: &Redactor, error: AppError) -> CurrentCliConfiguratio
         auth_kind: None,
         model: None,
         managed_provider_id: None,
+        managed_connection_id: None,
         sources: Vec::new(),
         externally_overridden: false,
         diagnostics: vec![redactor.sanitize(error.to_string())],
@@ -920,6 +957,84 @@ mod tests {
         auth_file: PathBuf,
         managed_provider_id: Uuid,
         managed_source_provider_id: String,
+    }
+
+    #[test]
+    fn default_registry_contains_exactly_all_four_supported_adapters() {
+        let registry = AdapterRegistry::default();
+        assert_eq!(registry.adapters.len(), CliId::ALL.len());
+        for cli_id in CliId::ALL {
+            assert_eq!(registry.get(cli_id).metadata().cli_id, cli_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn qwen_saved_connection_matching_is_exact_and_globally_unique() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = PrivatePaths::from_root(temp.path().join("data"));
+        paths.ensure().await.unwrap();
+        let repository = Repository::open(&paths.database, Redactor::default())
+            .await
+            .unwrap();
+        let manager = CliManager::new(
+            AdapterRegistry::default(),
+            repository.clone(),
+            Redactor::default(),
+        );
+        let candidate = ProviderConnection {
+            id: Uuid::new_v4(),
+            template_endpoint_id: None,
+            credential_slot_id: "api-key".into(),
+            protocol: CliProtocol::OpenaiChat,
+            endpoint: url::Url::parse("https://gateway.invalid/v1").unwrap(),
+            auth_type: ConnectionAuthType::Bearer,
+            api_key: "fixture-qwen-key".into(),
+            default_model: "fixture-model".into(),
+            verification: VerificationInfo::default(),
+        };
+        let make_provider = |name: &str, connection: ProviderConnection| ProviderProfile {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            template_id: None,
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            data: ProviderData::Api(crate::domain::ApiProviderData {
+                connections: vec![connection],
+            }),
+        };
+
+        let mut saved_connection = candidate.clone();
+        saved_connection.id = Uuid::new_v4();
+        let first = make_provider("Qwen exact first", saved_connection.clone());
+        repository.insert_provider(&first, None).await.unwrap();
+        assert_eq!(
+            manager.match_saved_connection_unique(&candidate).await,
+            Some((first.id, Some(saved_connection.id)))
+        );
+
+        let mut same_namespace_wrong_key = candidate.clone();
+        same_namespace_wrong_key.id = Uuid::new_v4();
+        same_namespace_wrong_key.api_key = "different-fixture-key".into();
+        let namespace_only =
+            make_provider("cliswitch_qwen_namespace_only", same_namespace_wrong_key);
+        repository
+            .insert_provider(&namespace_only, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.match_saved_connection_unique(&candidate).await,
+            Some((first.id, Some(saved_connection.id)))
+        );
+
+        let mut duplicate_connection = candidate.clone();
+        duplicate_connection.id = Uuid::new_v4();
+        let duplicate = make_provider("Qwen exact duplicate", duplicate_connection);
+        repository.insert_provider(&duplicate, None).await.unwrap();
+        assert_eq!(
+            manager.match_saved_connection_unique(&candidate).await,
+            None
+        );
     }
 
     #[test]

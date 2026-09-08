@@ -9,10 +9,30 @@ use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone)]
 pub enum JsonPatch {
-    SetString { path: Vec<String>, value: String },
-    SetValue { path: Vec<String>, value: JsonValue },
-    Remove { path: Vec<String> },
-    RemoveString { path: Vec<String> },
+    SetString {
+        path: Vec<String>,
+        value: String,
+    },
+    SetValue {
+        path: Vec<String>,
+        value: JsonValue,
+    },
+    SetArrayObjectString {
+        array_path: Vec<String>,
+        index: usize,
+        object_path: Vec<String>,
+        value: String,
+    },
+    AppendArrayObject {
+        path: Vec<String>,
+        value: JsonValue,
+    },
+    Remove {
+        path: Vec<String>,
+    },
+    RemoveString {
+        path: Vec<String>,
+    },
 }
 
 pub fn parse_jsonc_value(text: &str) -> AppResult<JsonValue> {
@@ -40,6 +60,15 @@ pub fn patch_jsonc(text: &str, patches: &[JsonPatch]) -> AppResult<String> {
             JsonPatch::SetValue { path, value } => {
                 set_json_path(&root_object, path, json_to_cst(value))?
             }
+            JsonPatch::SetArrayObjectString {
+                array_path,
+                index,
+                object_path,
+                value,
+            } => set_array_object_string(&root_object, array_path, *index, object_path, value)?,
+            JsonPatch::AppendArrayObject { path, value } => {
+                append_array_object(&root_object, path, value)?
+            }
             JsonPatch::Remove { path } | JsonPatch::RemoveString { path } => {
                 remove_json_path(&root_object, path)?
             }
@@ -52,10 +81,52 @@ pub fn patch_jsonc(text: &str, patches: &[JsonPatch]) -> AppResult<String> {
 }
 
 fn validate_and_apply_json_shape(root: &mut JsonValue, patch: &JsonPatch) -> AppResult<()> {
+    match patch {
+        JsonPatch::SetArrayObjectString {
+            array_path,
+            index,
+            object_path,
+            value,
+        } => {
+            let array = value_at_path_mut(root, array_path)?
+                .as_array_mut()
+                .ok_or_else(|| unsupported_path(array_path, "must be an array"))?;
+            let object = array
+                .get_mut(*index)
+                .and_then(JsonValue::as_object_mut)
+                .ok_or_else(|| {
+                    unsupported_path(array_path, "has no object at the planned index")
+                })?;
+            set_object_string_shape(object, object_path, value)?;
+            return Ok(());
+        }
+        JsonPatch::AppendArrayObject { path, value } => {
+            if !value.is_object() {
+                return Err(AppError::Validation(
+                    "JSON array append value must be an object".into(),
+                ));
+            }
+            let (name, parent_path) = path
+                .split_last()
+                .ok_or_else(|| AppError::Validation("JSON patch path cannot be empty".into()))?;
+            let parent = object_at_json_path_mut(root, parent_path, true)?;
+            let array = parent
+                .entry(name.clone())
+                .or_insert_with(|| JsonValue::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or_else(|| unsupported_path(path, "must be an array"))?;
+            array.push(value.clone());
+            return Ok(());
+        }
+        _ => {}
+    }
     let (path, replacement) = match patch {
         JsonPatch::SetString { path, value } => (path, Some(JsonValue::String(value.clone()))),
         JsonPatch::SetValue { path, value } => (path, Some(value.clone())),
         JsonPatch::Remove { path } | JsonPatch::RemoveString { path } => (path, None),
+        JsonPatch::SetArrayObjectString { .. } | JsonPatch::AppendArrayObject { .. } => {
+            unreachable!("handled above")
+        }
     };
     let (name, parent_path) = path
         .split_last()
@@ -101,6 +172,66 @@ fn validate_and_apply_json_shape(root: &mut JsonValue, patch: &JsonPatch) -> App
     Ok(())
 }
 
+fn unsupported_path(path: &[String], message: &str) -> AppError {
+    AppError::Unsupported(format!("JSONC field {} {message}", path.join(".")))
+}
+
+fn value_at_path_mut<'a>(root: &'a mut JsonValue, path: &[String]) -> AppResult<&'a mut JsonValue> {
+    let mut current = root;
+    for segment in path {
+        current = current
+            .as_object_mut()
+            .and_then(|object| object.get_mut(segment))
+            .ok_or_else(|| unsupported_path(path, "is missing or has an incompatible type"))?;
+    }
+    Ok(current)
+}
+
+fn object_at_json_path_mut<'a>(
+    root: &'a mut JsonValue,
+    path: &[String],
+    create: bool,
+) -> AppResult<&'a mut serde_json::Map<String, JsonValue>> {
+    let mut current = root
+        .as_object_mut()
+        .ok_or_else(|| AppError::Unsupported("JSONC root must be an object".into()))?;
+    for segment in path {
+        if create && !current.contains_key(segment) {
+            current.insert(segment.clone(), JsonValue::Object(serde_json::Map::new()));
+        }
+        current = current
+            .get_mut(segment)
+            .and_then(JsonValue::as_object_mut)
+            .ok_or_else(|| unsupported_path(path, "must be an object"))?;
+    }
+    Ok(current)
+}
+
+fn set_object_string_shape(
+    root: &mut serde_json::Map<String, JsonValue>,
+    path: &[String],
+    value: &str,
+) -> AppResult<()> {
+    let (name, parent_path) = path
+        .split_last()
+        .ok_or_else(|| AppError::Validation("JSON object patch path cannot be empty".into()))?;
+    let mut current = root;
+    for segment in parent_path {
+        current = current
+            .get_mut(segment)
+            .and_then(JsonValue::as_object_mut)
+            .ok_or_else(|| unsupported_path(path, "must traverse objects"))?;
+    }
+    if current
+        .get(name)
+        .is_some_and(|existing| !existing.is_string())
+    {
+        return Err(unsupported_path(path, "must be a string"));
+    }
+    current.insert(name.clone(), JsonValue::String(value.into()));
+    Ok(())
+}
+
 fn same_json_kind(left: &JsonValue, right: &JsonValue) -> bool {
     matches!(
         (left, right),
@@ -141,7 +272,19 @@ fn set_json_path(
         .ok_or_else(|| AppError::Validation("JSON patch path cannot be empty".into()))?;
     let parent = object_at_path(root, parent_path, true)?.expect("created parent object");
     match parent.get(name) {
-        Some(property) => property.set_value(value),
+        Some(property) => {
+            if let CstInputValue::String(new_value) = &value
+                && property
+                    .value()
+                    .and_then(|value| value.as_string_lit())
+                    .and_then(|value| value.decoded_value().ok())
+                    .as_deref()
+                    == Some(new_value)
+            {
+                return Ok(());
+            }
+            property.set_value(value);
+        }
         None => {
             parent.append(name, value);
         }
@@ -158,6 +301,45 @@ fn remove_json_path(root: &jsonc_parser::cst::CstObject, path: &[String]) -> App
     {
         property.remove();
     }
+    Ok(())
+}
+
+fn set_array_object_string(
+    root: &jsonc_parser::cst::CstObject,
+    array_path: &[String],
+    index: usize,
+    object_path: &[String],
+    value: &str,
+) -> AppResult<()> {
+    let (name, parent_path) = array_path
+        .split_last()
+        .ok_or_else(|| AppError::Validation("JSON array path cannot be empty".into()))?;
+    let parent = object_at_path(root, parent_path, false)?
+        .ok_or_else(|| unsupported_path(array_path, "is missing"))?;
+    let array = parent
+        .array_value(name)
+        .ok_or_else(|| unsupported_path(array_path, "must be an array"))?;
+    let object = array
+        .elements()
+        .get(index)
+        .and_then(|element| element.as_object())
+        .ok_or_else(|| unsupported_path(array_path, "has no object at the planned index"))?;
+    set_json_path(&object, object_path, CstInputValue::String(value.into()))
+}
+
+fn append_array_object(
+    root: &jsonc_parser::cst::CstObject,
+    path: &[String],
+    value: &JsonValue,
+) -> AppResult<()> {
+    let (name, parent_path) = path
+        .split_last()
+        .ok_or_else(|| AppError::Validation("JSON array path cannot be empty".into()))?;
+    let parent = object_at_path(root, parent_path, true)?.expect("created parent object");
+    let array = parent
+        .array_value_or_create(name)
+        .ok_or_else(|| unsupported_path(path, "must be an array"))?;
+    array.append(json_to_cst(value));
     Ok(())
 }
 
@@ -432,6 +614,49 @@ mod tests {
         .unwrap();
         let value = parse_jsonc_value(&output).unwrap();
         assert_eq!(value["models"][model]["name"], "雪\\model");
+    }
+
+    #[test]
+    fn jsonc_array_patches_preserve_comments_unknown_fields_and_crlf() {
+        let source = "{\r\n  \"groups\": {\r\n    \"a/b\": [\r\n      {\r\n        // keep model metadata\r\n        \"id\": \"old\",\r\n        \"name\": \"Old\",\r\n        \"generationConfig\": { \"temperature\": 0.2 },\r\n      },\r\n      { \"id\": \"other\", \"name\": \"Other\" },\r\n    ],\r\n  },\r\n}\r\n";
+        let output = patch_jsonc(
+            source,
+            &[
+                JsonPatch::SetArrayObjectString {
+                    array_path: vec!["groups".into(), "a/b".into()],
+                    index: 0,
+                    object_path: vec!["id".into()],
+                    value: "new/model".into(),
+                },
+                JsonPatch::AppendArrayObject {
+                    path: vec!["groups".into(), "a/b".into()],
+                    value: serde_json::json!({ "id": "third", "name": "Third" }),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(output.contains("// keep model metadata\r\n"));
+        assert!(output.contains("\"generationConfig\": { \"temperature\": 0.2 }"));
+        assert!(output.contains("{ \"id\": \"other\", \"name\": \"Other\" }"));
+        assert!(output.contains("\r\n"));
+        let value = parse_jsonc_value(&output).unwrap();
+        assert_eq!(value["groups"]["a/b"][0]["id"], "new/model");
+        assert_eq!(value["groups"]["a/b"][2]["id"], "third");
+    }
+
+    #[test]
+    fn jsonc_array_patches_validate_every_operation_before_rendering() {
+        let error = patch_jsonc(
+            r#"{ "groups": { "a": [{ "id": false }] } }"#,
+            &[JsonPatch::SetArrayObjectString {
+                array_path: vec!["groups".into(), "a".into()],
+                index: 0,
+                object_path: vec!["id".into()],
+                value: "model".into(),
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::Unsupported(_)));
     }
 
     #[test]

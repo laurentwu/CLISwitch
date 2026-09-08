@@ -172,7 +172,7 @@ describe("SavedConfigurationTab", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getAllByRole("button", { name: /预览/ })).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: /预览/ })).toHaveLength(4);
     fireEvent.click(screen.getByRole("button", { name: /应用配置/ }));
     await waitFor(() =>
       expect(commandMock).toHaveBeenCalledWith("apply_configuration", {

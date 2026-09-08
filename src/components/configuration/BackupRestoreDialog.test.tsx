@@ -24,4 +24,28 @@ describe("BackupRestoreDialog", () => {
     expect(screen.queryByText("无")).not.toBeInTheDocument();
     expect(screen.getByText("backup directory unreadable")).toBeInTheDocument();
   });
+
+  it("shows the Qwen product name instead of its persisted CLI ID", async () => {
+    commandMock.mockResolvedValueOnce([
+      {
+        id: "backup-1",
+        cliId: "qwen",
+        sourceFileId: "qwen-settings",
+        originalPath: "/fixture/.qwen/settings.json",
+        createdAt: "2026-09-07T00:00:00Z",
+        originallyExisted: true,
+        containsCredentials: true,
+      },
+    ]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={client}>
+        <BackupRestoreDialog open cliId="qwen" onClose={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("Qwen Code")).toBeInTheDocument();
+    expect(screen.queryByText("qwen")).not.toBeInTheDocument();
+  });
 });

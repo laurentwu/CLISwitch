@@ -6,8 +6,9 @@ offline fallback. Run `pnpm catalog:update` to refresh it and `providers.meta.js
 hand-edit either generated file.
 
 `clis.jsonc` remains the small, fixed compatibility policy for supported CLIs, wire protocols,
-OAuth modes, and OpenCode package mappings. The source protocol names map only to these built-in
-adapters; no remote package or code is imported or executed.
+OAuth modes, OpenCode package mappings, and Qwen's Chat-only boundary. The source protocol names
+map only to these built-in adapters; no remote package or code is imported or executed. Qwen
+relations are generated only for source-declared `openai-compatible` endpoints.
 
 At runtime a validated download is stored as private `providers.json` plus
 `providers.meta.json` in the application-data directory. A valid local file takes precedence;
@@ -24,7 +25,7 @@ of CLIAdapter. Persisted provider IDs must remain the upstream IDs. The source p
 catalog, so model IDs are entered manually for every endpoint before save.
 
 `config-templates/` is independent of this refreshable provider database. It contains the original
-allowlisted Claude Code, Codex CLI, and OpenCode configuration resources from a fixed CLIAdapter
+allowlisted Claude Code, Codex CLI, OpenCode, and Qwen Code configuration resources from a fixed CLIAdapter
 commit, plus its own manifest, source/update instructions, and upstream license. Rust compiles and
 validates these resources; `pnpm catalog:update` must not modify them. Template updates are reviewed
 and released with a CLISwitch version, while the Settings action continues to refresh endpoint data

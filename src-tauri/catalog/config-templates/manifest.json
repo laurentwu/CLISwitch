@@ -129,7 +129,22 @@
 ,
     {"path":"opencode/zhipuai/opencode.json","sha256":"90e8dd972c4074d431b13e7c0a466233eb7767d567e4d258824f6c5a7026b49e","role":"opencode-config","cli":"opencode","providerId":"zhipuai","protocol":"openai-compatible"}
 ,
-    {"path":"opencode/zhipuai/provider.json","sha256":"45d24d5d4d6ad7ba8e35cd3843ee0a60c1abf956a331fbfff201d93100399b5e","role":"provider-identity","cli":"opencode","providerId":"zhipuai","protocol":"openai-compatible"}
+    {"path":"opencode/zhipuai/provider.json","sha256":"45d24d5d4d6ad7ba8e35cd3843ee0a60c1abf956a331fbfff201d93100399b5e","role":"provider-identity","cli":"opencode","providerId":"zhipuai","protocol":"openai-compatible"},
+    {"path":"qwen/deepseek/provider.json","sha256":"631ec314e3fcc5f9b41e84aa202bdc2ea52478913ed31444b38e64771e225810","role":"provider-identity","cli":"qwen","providerId":"deepseek","protocol":"openai-compatible"},
+    {"path":"qwen/deepseek/settings.json","sha256":"04dcc63ab0c2595002e031c72433758a4f9ef125887f3da7b6beae1a91b4669a","role":"qwen-config","cli":"qwen","providerId":"deepseek","protocol":"openai-compatible"},
+    {"path":"qwen/opencode-go/provider.json","sha256":"b5871b975bdff86bddc184422f2052803a993bf29d30ceecd1b6526c2ce54180","role":"provider-identity","cli":"qwen","providerId":"opencode-go","protocol":"openai-compatible"},
+    {"path":"qwen/opencode-go/settings.json","sha256":"98838746b660f9b4f8d4b6b21eeb46dddfef3da1aad9b6ee714da8325fb76c8c","role":"qwen-config","cli":"qwen","providerId":"opencode-go","protocol":"openai-compatible"},
+    {"path":"qwen/opencode/provider.json","sha256":"b3cd5fdfe0ef879245493d8b863469136537ac2e0ffdd6611a452faede5a121e","role":"provider-identity","cli":"qwen","providerId":"opencode","protocol":"openai-compatible"},
+    {"path":"qwen/opencode/settings.json","sha256":"a84878cb898f9945f5787afe08ff77321ad89f2ff616767513555621d322ee35","role":"qwen-config","cli":"qwen","providerId":"opencode","protocol":"openai-compatible"},
+    {"path":"qwen/settings.json","sha256":"012c170be01b332e3114330430cdff89b88b7a1b9df6bf86ee27de1255681b19","role":"qwen-config","cli":"qwen","protocol":"openai-compatible"},
+    {"path":"qwen/zai-coding-plan/provider.json","sha256":"fc355d87280b2e494b311c69c961098500ab11ac33243ed4de80e731442b8601","role":"provider-identity","cli":"qwen","providerId":"zai-coding-plan","protocol":"openai-compatible"},
+    {"path":"qwen/zai-coding-plan/settings.json","sha256":"444aa85719356ea72c7b12b4f8122e87185046b58a1e2223205872d7e7206eaa","role":"qwen-config","cli":"qwen","providerId":"zai-coding-plan","protocol":"openai-compatible"},
+    {"path":"qwen/zai/provider.json","sha256":"2b699a143b4979f54384893861b64802f1c458454e3d96b6c6a0ab049947ffa8","role":"provider-identity","cli":"qwen","providerId":"zai","protocol":"openai-compatible"},
+    {"path":"qwen/zai/settings.json","sha256":"8d32373f2d9d9886d3e5fdd68536cf7a9edb230fe9f34996e0834ed8c9d27921","role":"qwen-config","cli":"qwen","providerId":"zai","protocol":"openai-compatible"},
+    {"path":"qwen/zhipuai-coding-plan/provider.json","sha256":"6c60e62495e3b2620992265c4f66dc61db20e840d98ff6f8ec99360b975b3f9b","role":"provider-identity","cli":"qwen","providerId":"zhipuai-coding-plan","protocol":"openai-compatible"},
+    {"path":"qwen/zhipuai-coding-plan/settings.json","sha256":"21601eab673dd97546b8ba2f9cb52bffa5f0be530d5b111469ba9d1c15d11982","role":"qwen-config","cli":"qwen","providerId":"zhipuai-coding-plan","protocol":"openai-compatible"},
+    {"path":"qwen/zhipuai/provider.json","sha256":"2e0a5975edaa63109e2c12f5105418cf9a41d0d542e466e9c8d88bffcf798087","role":"provider-identity","cli":"qwen","providerId":"zhipuai","protocol":"openai-compatible"},
+    {"path":"qwen/zhipuai/settings.json","sha256":"478801ca2c2c945d5db0f4f338c2161cbe17a7c755ad31fe85a32f8018d38d69","role":"qwen-config","cli":"qwen","providerId":"zhipuai","protocol":"openai-compatible"}
 
   ]
 }

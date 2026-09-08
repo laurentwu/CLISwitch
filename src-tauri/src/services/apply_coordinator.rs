@@ -238,7 +238,10 @@ impl ApplyCoordinator {
                     continue;
                 }
             }
-            let plan = match adapter.plan_write(&paths, target, &provider).await {
+            let plan = match adapter
+                .plan_write(&paths, target, &provider, &environment)
+                .await
+            {
                 Ok(plan) => plan,
                 Err(AppError::Validation(message) | AppError::Unsupported(message)) => {
                     public_items.push(ApplyPreviewItem {
@@ -1382,6 +1385,96 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn qwen_preview_apply_and_restore_use_the_existing_atomic_backup_pipeline() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp, _paths, repository, coordinator) = fixture().await;
+        let mut provider = api_provider();
+        let ProviderData::Api(api) = &mut provider.data else {
+            unreachable!()
+        };
+        api.connections[0].protocol = CliProtocol::OpenaiChat;
+        api.connections[0].endpoint = Url::parse("https://qwen-fixture.invalid/v1").unwrap();
+        api.connections[0].credential_slot_id = "api-key".into();
+        api.connections[0].api_key = "fixture-qwen-coordinator-key".into();
+        api.connections[0].default_model = "fixture-qwen-model".into();
+        let connection_id = api.connections[0].id;
+        repository.insert_provider(&provider, None).await.unwrap();
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::Qwen,
+            provider_id: provider.id,
+            connection_id,
+            model: "fixture-qwen-model".into(),
+        };
+        let configuration = configuration(vec![target]);
+        repository
+            .insert_configuration(&configuration)
+            .await
+            .unwrap();
+
+        let executable = temp.path().join("qwen-fixture");
+        tokio::fs::write(&executable, b"#!/bin/sh\necho qwen 0.23.0\n")
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        let config_directory = temp.path().join("qwen-config");
+        tokio::fs::create_dir_all(&config_directory).await.unwrap();
+        let config_file = config_directory.join("settings.json");
+        let original = b"{\n  // original qwen fixture\n  \"theme\": \"dark\"\n}\n";
+        tokio::fs::write(&config_file, original).await.unwrap();
+        let mut settings = repository.get_settings().await.unwrap();
+        let qwen_location = settings
+            .manual_locations
+            .iter_mut()
+            .find(|location| location.cli_id == CliId::Qwen)
+            .unwrap();
+        qwen_location.executable_path = Some(executable);
+        qwen_location.config_directory = Some(config_directory);
+
+        let preview = coordinator
+            .preview(configuration.id, configuration.revision, &settings)
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(&config_file).await.unwrap(), original);
+        assert_eq!(preview.items.len(), 1);
+        assert_eq!(preview.items[0].cli_id, CliId::Qwen);
+        assert_eq!(preview.items[0].state, ApplyItemState::Waiting);
+        assert_eq!(preview.items[0].files.len(), 1);
+        assert_eq!(preview.items[0].files[0].path, config_file);
+        assert!(
+            preview.items[0].files[0]
+                .target_content
+                .contains("CLISWITCH_QWEN_KEY_")
+        );
+
+        let started = coordinator.start(preview.id).await.unwrap();
+        let active = coordinator.runs.read().await[&started.id].clone();
+        let finished = active.finished.notified();
+        if active.snapshot.read().await.finished_at.is_none() {
+            finished.await;
+        }
+        let completed = coordinator.snapshot(started.id).await.unwrap();
+        assert_eq!(completed.items[0].state, ApplyItemState::Success);
+        let managed = tokio::fs::read_to_string(&config_file).await.unwrap();
+        assert!(managed.contains("fixture-qwen-model"));
+        assert!(managed.contains("fixture-qwen-coordinator-key"));
+
+        let backups = coordinator.backup.list(Some(CliId::Qwen)).await.unwrap();
+        assert_eq!(backups.len(), 1);
+        assert!(backups[0].contains_credentials);
+        assert!(backups[0].originally_existed);
+        let restore_preview = coordinator.preview_restore(backups[0].id).await.unwrap();
+        coordinator
+            .restore(restore_preview.id, &settings)
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read(&config_file).await.unwrap(), original);
+    }
+
     #[tokio::test]
     async fn background_run_retains_the_mutation_guard_until_finished() {
         let (_temp, _paths, repository, coordinator) = fixture().await;
@@ -1493,7 +1586,7 @@ mod tests {
                     location.executable_path = Some(executable.clone());
                     location.config_directory = Some(temp.path().join("codex-config"));
                 }
-                CliId::Opencode => {}
+                CliId::Opencode | CliId::Qwen => {}
             }
         }
 

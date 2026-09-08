@@ -1,4 +1,4 @@
-export type CliId = "claude-code" | "codex" | "opencode";
+export type CliId = "claude-code" | "codex" | "opencode" | "qwen";
 export type CliProtocol = "openai-chat" | "openai-responses" | "anthropic-messages";
 export type OAuthKind = "anthropic" | "codex";
 export type ConnectionAuthType = "api-key" | "bearer";
@@ -124,6 +124,7 @@ export interface CurrentCliConfiguration {
   authKind?: string | null;
   model?: string | null;
   managedProviderId?: string | null;
+  managedConnectionId?: string | null;
   sources: SourceFileSnapshot[];
   externallyOverridden: boolean;
   diagnostics: string[];
@@ -331,7 +332,7 @@ export interface ApiProviderDraft {
   connections: ApiConnectionDraft[];
 }
 
-export const CLI_IDS: CliId[] = ["claude-code", "codex", "opencode"];
+export const CLI_IDS: CliId[] = ["claude-code", "codex", "opencode", "qwen"];
 
 export interface CatalogAuthMode {
   id: string;

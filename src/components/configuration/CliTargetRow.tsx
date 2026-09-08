@@ -6,6 +6,7 @@ import {
   providerInstanceDisplayName,
   providerSupportsCli,
 } from "../../shared/catalog";
+import { cliDisplayName } from "../../shared/names";
 import type {
   CliId,
   ConfigurationTarget,
@@ -56,7 +57,7 @@ export function CliTargetRow({
   const connections = selected?.kind === "api" ? connectionsForCli(catalog, cliId, selected) : [];
   return (
     <div className="target-grid">
-      <strong>{cliId}</strong>
+      <strong>{cliDisplayName(cliId)}</strong>
       <Field label={t("config.provider")}>
         <Select
           value={target.providerId}

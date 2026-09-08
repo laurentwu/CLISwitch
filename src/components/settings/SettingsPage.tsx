@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Database, ExternalLink, FolderOpen, RefreshCw, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
+import { cliDisplayName } from "../../shared/names";
 import type { AppSettings, AppSnapshot, CatalogStatus, CliId } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { Alert, Button, Card, Field, Input, Select, type ErrorReporter } from "../ui";
@@ -135,6 +136,19 @@ export function SettingsPage({
       onError(error, "selectPath");
     }
   };
+  const clearLocation = (cliId: CliId, kind: "executable" | "directory") => {
+    setSettings((current) => ({
+      ...current,
+      manualLocations: current.manualLocations.map((location) =>
+        location.cliId === cliId
+          ? {
+              ...location,
+              [kind === "executable" ? "executablePath" : "configDirectory"]: null,
+            }
+          : location,
+      ),
+    }));
+  };
   const checkUpdate = async () => {
     try {
       const value = await command<{ updateAvailable: boolean; latestVersion: string }>(
@@ -225,23 +239,41 @@ export function SettingsPage({
         <div className="locations-list">
           {settings.manualLocations.map((location) => (
             <div className="location-row" key={location.cliId}>
-              <strong>{location.cliId}</strong>
-              <Input
-                readOnly
-                value={location.executablePath ?? ""}
-                placeholder={t("settings.chooseExecutable")}
-              />
-              <Button variant="secondary" onClick={() => choose(location.cliId, "executable")}>
-                {t("settings.chooseExecutable")}
-              </Button>
-              <Input
-                readOnly
-                value={location.configDirectory ?? ""}
-                placeholder={t("settings.chooseDirectory")}
-              />
-              <Button variant="secondary" onClick={() => choose(location.cliId, "directory")}>
-                {t("settings.chooseDirectory")}
-              </Button>
+              <strong>{cliDisplayName(location.cliId)}</strong>
+              <div className="location-control">
+                <Input
+                  readOnly
+                  value={location.executablePath ?? ""}
+                  placeholder={t("settings.chooseExecutable")}
+                />
+                <Button variant="secondary" onClick={() => choose(location.cliId, "executable")}>
+                  {t("settings.chooseExecutable")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={!location.executablePath}
+                  onClick={() => clearLocation(location.cliId, "executable")}
+                >
+                  {t("common.clear")}
+                </Button>
+              </div>
+              <div className="location-control">
+                <Input
+                  readOnly
+                  value={location.configDirectory ?? ""}
+                  placeholder={t("settings.chooseDirectory")}
+                />
+                <Button variant="secondary" onClick={() => choose(location.cliId, "directory")}>
+                  {t("settings.chooseDirectory")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={!location.configDirectory}
+                  onClick={() => clearLocation(location.cliId, "directory")}
+                >
+                  {t("common.clear")}
+                </Button>
+              </div>
             </div>
           ))}
         </div>

@@ -3,8 +3,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArchiveRestore, RefreshCw, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
+import { diagnosticText } from "../../shared/diagnostics";
 import { catalogProviderInfo, providerDisplayName } from "../../shared/catalog";
-import { validateEntityName } from "../../shared/names";
+import { CLI_MARKS, cliDisplayName, validateEntityName } from "../../shared/names";
 import { useNotificationStore } from "../../stores/notifications";
 import type {
   CliId,
@@ -152,18 +153,13 @@ export function CurrentConfigurationTab({
       <div className="cli-card-grid">
         {CLI_IDS.map((cliId) => {
           const item = scan?.items.find((candidate) => candidate.cliId === cliId);
+          const label = cliDisplayName(cliId);
           if (!item) {
-            const label =
-              cliId === "claude-code"
-                ? "Claude Code"
-                : cliId === "codex"
-                  ? "Codex CLI"
-                  : "OpenCode";
             return (
               <Card key={cliId}>
                 <header className="card-title-row">
                   <span className="cli-mark" aria-hidden="true">
-                    {label.slice(0, 2).toUpperCase()}
+                    {CLI_MARKS[cliId]}
                   </span>
                   <h3>{label}</h3>
                   <Badge>{t("config.notScanned")}</Badge>
@@ -175,10 +171,10 @@ export function CurrentConfigurationTab({
             <Card key={item.cliId}>
               <header className="card-title-row">
                 <span className="cli-mark" aria-hidden="true">
-                  {item.label.slice(0, 2).toUpperCase()}
+                  {CLI_MARKS[item.cliId]}
                 </span>
                 <div>
-                  <h3>{item.label}</h3>
+                  <h3>{label}</h3>
                   <small>{item.version ?? "—"}</small>
                 </div>
                 <Badge tone={statusTone(item.status)}>{t(`status.${item.status}`)}</Badge>
@@ -204,7 +200,7 @@ export function CurrentConfigurationTab({
                   tone={statusTone(item.status) === "bad" ? "error" : "warning"}
                   title={t("config.scanDiagnostic")}
                 >
-                  <p>{message}</p>
+                  <p>{diagnosticText(t, message)}</p>
                 </Alert>
               ))}
               <div className="section-actions">

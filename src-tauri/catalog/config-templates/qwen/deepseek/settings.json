@@ -1,0 +1,18 @@
+{
+  "modelProviders": {
+    "deepseek": [
+      {
+        "id": "<model-id>",
+        "name": "<model-name>",
+        "envKey": "DEEPSEEK_API_KEY",
+        "baseUrl": "https://api.deepseek.com"
+      }
+    ]
+  },
+  "providerProtocol": {
+    "deepseek": "openai"
+  },
+  "env": {
+    "DEEPSEEK_API_KEY": "<your-api-key>"
+  }
+}

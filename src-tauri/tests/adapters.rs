@@ -4,12 +4,13 @@ use chrono::Utc;
 use cliswitch_lib::{
     adapters::{
         AdapterWritePlan, ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment,
-        OpenCodeAdapter, namespaced_provider_id,
+        OpenCodeAdapter, QwenAdapter, namespaced_provider_id,
     },
     catalog::{legacy_catalog, runtime_catalog},
     domain::{
         ApiProviderData, CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, OAuthKind,
-        OAuthProviderData, ProviderConnection, ProviderData, ProviderProfile, VerificationInfo,
+        OAuthProviderData, ProviderConnection, ProviderData, ProviderProfile, ScanStatus,
+        VerificationInfo,
     },
     filesystem::digest::bytes_digest,
     services::config_writer::{parse_jsonc_value, parse_toml},
@@ -191,7 +192,7 @@ async fn claude_patch_preserves_comments_order_and_unmanaged_fields() {
         model: "fixture-model".into(),
     };
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     let output = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
@@ -263,7 +264,7 @@ async fn claude_cli_adapter_apply_preserves_selected_bearer_auth() {
     };
 
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     let output = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
@@ -559,7 +560,7 @@ async fn claude_preserves_saved_minimax_endpoint_and_auth_type() {
         };
 
         let plan = adapter
-            .plan_write(&paths, &target, &provider)
+            .plan_write(&paths, &target, &provider, &environment(temp.path()))
             .await
             .unwrap();
         let output = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
@@ -719,7 +720,7 @@ async fn claude_template_matrix_replaces_all_managed_model_slots_and_tuning() {
             model: "selected-model".into(),
         };
         let plan = adapter
-            .plan_write(&paths, &target, &provider)
+            .plan_write(&paths, &target, &provider, &environment(temp.path()))
             .await
             .unwrap();
         let output = std::str::from_utf8(&plan.files[0].target_content).unwrap();
@@ -808,7 +809,7 @@ async fn claude_generic_template_repairs_non_primary_slots() {
         model: "selected-model".into(),
     };
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     assert_ne!(
@@ -842,14 +843,14 @@ async fn claude_plan_is_idempotent_and_frozen_verification_checks_auxiliary_mode
         model: "fixture-model".into(),
     };
     let first = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     materialize_plan(&first).await;
     assert!(adapter.verify_applied(&first).await.unwrap());
 
     let second = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     assert_eq!(
@@ -911,7 +912,7 @@ async fn claude_oauth_clears_every_api_template_field() {
         model: "oauth-model".into(),
     };
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     let output =
@@ -945,7 +946,7 @@ async fn codex_writes_responses_file_mapping_and_preserves_unmanaged_toml() {
         model: "fixture-model".into(),
     };
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     let config_file = plan
@@ -997,7 +998,7 @@ async fn codex_templates_write_reasoning_login_fields_and_a_uuid_model_catalog()
             model: "selected-model".into(),
         };
         let plan = adapter
-            .plan_write(&paths, &target, &provider)
+            .plan_write(&paths, &target, &provider, &environment(temp.path()))
             .await
             .unwrap();
         assert_eq!(plan.files.len(), 2, "{template_id}");
@@ -1106,7 +1107,7 @@ async fn codex_exact_vision_template_and_frozen_multi_file_plan_are_stable() {
         model: "deepseek-v4-flash-vision-exp".into(),
     };
     let first = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     let model =
@@ -1129,7 +1130,7 @@ async fn codex_exact_vision_template_and_frozen_multi_file_plan_are_stable() {
     }
     assert!(adapter.verify_applied(&first).await.unwrap());
     let second = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     for (first, second) in first.files.iter().zip(&second.files) {
@@ -1179,7 +1180,7 @@ async fn codex_managed_catalog_preserves_root_extensions_and_scan_diagnoses_dama
         model: "deepseek-v4-pro".into(),
     };
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     assert_eq!(plan.files[0].path, catalog_path);
@@ -1210,7 +1211,7 @@ async fn codex_managed_catalog_preserves_root_extensions_and_scan_diagnoses_dama
         })
     );
     let error = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -1223,7 +1224,7 @@ async fn codex_managed_catalog_preserves_root_extensions_and_scan_diagnoses_dama
         .await
         .unwrap();
     adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     tokio::fs::remove_file(&catalog_path).await.unwrap();
@@ -1246,7 +1247,7 @@ async fn codex_managed_catalog_preserves_root_extensions_and_scan_diagnoses_dama
             .any(|source| { source.source_id == "codex-model-catalog" && source.digest.is_none() })
     );
     let recreated = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     assert_eq!(recreated.files[0].source_content, None);
@@ -1276,7 +1277,7 @@ unmanaged = "keep"
         model: "oauth-model".into(),
     };
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     let config = plan
@@ -1396,7 +1397,7 @@ async fn opencode_stable_schema_maps_each_protocol_to_the_correct_package() {
             model: "fixture-model".into(),
         };
         let plan = adapter
-            .plan_write(&paths, &target, &provider)
+            .plan_write(&paths, &target, &provider, &environment(temp.path()))
             .await
             .unwrap();
         let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
@@ -1465,7 +1466,7 @@ async fn opencode_template_patch_preserves_extensions_and_cleans_current_auth_en
         model: "fixture-model".into(),
     };
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     let config_text = std::str::from_utf8(&plan.files[0].target_content).unwrap();
@@ -1523,7 +1524,7 @@ async fn opencode_all_provider_templates_keep_saved_transport_endpoint_and_insta
             model: "selected-model".into(),
         };
         let plan = adapter
-            .plan_write(&paths, &target, &provider)
+            .plan_write(&paths, &target, &provider, &environment(temp.path()))
             .await
             .unwrap();
         let config =
@@ -1559,14 +1560,14 @@ async fn opencode_plan_is_idempotent_and_frozen_verification_checks_auth() {
         model: "fixture-model".into(),
     };
     let first = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     materialize_plan(&first).await;
     assert!(adapter.verify_applied(&first).await.unwrap());
 
     let second = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     for (first_file, second_file) in first.files.iter().zip(&second.files) {
@@ -1606,7 +1607,12 @@ async fn opencode_two_namespaced_instances_do_not_replace_each_other() {
         model: "first-model".into(),
     };
     let first = adapter
-        .plan_write(&paths, &first_target, &first_provider)
+        .plan_write(
+            &paths,
+            &first_target,
+            &first_provider,
+            &environment(temp.path()),
+        )
         .await
         .unwrap();
     for file in &first.files {
@@ -1625,7 +1631,12 @@ async fn opencode_two_namespaced_instances_do_not_replace_each_other() {
         model: "second-model".into(),
     };
     let second = adapter
-        .plan_write(&paths, &second_target, &second_provider)
+        .plan_write(
+            &paths,
+            &second_target,
+            &second_provider,
+            &environment(temp.path()),
+        )
         .await
         .unwrap();
     let config =
@@ -1713,7 +1724,7 @@ async fn opencode_materializes_the_explicitly_selected_glm_endpoint() {
     };
 
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
@@ -1809,7 +1820,7 @@ async fn opencode_cli_adapter_providers_use_the_declared_chat_transport() {
             model: model_id.into(),
         };
         let plan = adapter
-            .plan_write(&paths, &target, &provider)
+            .plan_write(&paths, &target, &provider, &environment(temp.path()))
             .await
             .unwrap();
         let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
@@ -1824,7 +1835,12 @@ async fn opencode_cli_adapter_providers_use_the_declared_chat_transport() {
             model: wrong_route_model.into(),
         };
         let plan = adapter
-            .plan_write(&paths, &wrong_route_target, &provider)
+            .plan_write(
+                &paths,
+                &wrong_route_target,
+                &provider,
+                &environment(temp.path()),
+            )
             .await
             .unwrap();
         let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
@@ -2496,7 +2512,7 @@ async fn opencode_recognizes_a_relation_specific_native_provider_package() {
         model: "fixture-model".into(),
     };
     let plan = adapter
-        .plan_write(&paths, &target, &provider)
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
         .await
         .unwrap();
     let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
@@ -2619,4 +2635,541 @@ async fn opencode_v2_beta_schema_is_explicitly_rejected() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("v2 beta"));
+}
+
+#[tokio::test]
+async fn qwen_paths_honor_manual_then_qwen_home_and_retain_invalid_relative_home() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let mut host = environment(temp.path());
+    assert_eq!(
+        adapter.resolve_paths(&host, None).config_file,
+        temp.path().join(".qwen").join("settings.json")
+    );
+    let qwen_home = temp.path().join("custom-qwen");
+    host.variables
+        .insert("QWEN_HOME".into(), qwen_home.to_string_lossy().into_owned());
+    assert_eq!(
+        adapter.resolve_paths(&host, None).config_file,
+        qwen_home.join("settings.json")
+    );
+    let manual = temp.path().join("manual-qwen");
+    assert_eq!(
+        adapter
+            .resolve_paths(&host, Some(manual.clone()))
+            .config_file,
+        manual.join("settings.json")
+    );
+    host.variables
+        .insert("QWEN_HOME".into(), "relative-qwen".into());
+    let relative = adapter.resolve_paths(&host, None);
+    assert!(!relative.config_directory.is_absolute());
+    assert!(
+        adapter
+            .read_current(&relative, &host)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("QWEN_RELATIVE_HOME")
+    );
+
+    host.variables
+        .insert("QWEN_HOME".into(), "~/tilde-qwen".into());
+    assert_eq!(
+        adapter.resolve_paths(&host, None).config_directory,
+        temp.path().join("tilde-qwen")
+    );
+}
+
+#[tokio::test]
+async fn qwen_scan_merges_models_by_file_credential_and_uses_explicit_selection() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "$version": 4,
+          "modelProviders": {
+            "custom": [
+              { "id": "org/model-a", "name": "A", "envKey": "CUSTOM_KEY", "baseUrl": "https://gateway.invalid/v1" },
+              { "id": "org/model-b", "name": "B", "envKey": "CUSTOM_KEY", "baseUrl": "https://gateway.invalid/v1" }
+            ]
+          },
+          "providerProtocol": { "custom": "openai" },
+          "env": { "CUSTOM_KEY": "fixture-qwen-file-key" },
+          "security": { "auth": { "selectedType": "openai" } },
+          "model": { "name": "org/model-b", "baseUrl": "https://gateway.invalid/v1" }
+        }"#,
+    )
+    .await;
+
+    let read = adapter.read_current(&paths, &host).await.unwrap();
+    assert_eq!(read.current.model.as_deref(), Some("org/model-b"));
+    assert_eq!(read.current.protocol, Some(CliProtocol::OpenaiChat));
+    assert_eq!(read.unmanaged_api_candidates.len(), 1);
+    assert_eq!(
+        read.unmanaged_api_candidates[0].available_models,
+        vec!["org/model-a", "org/model-b"]
+    );
+    assert!(read.unmanaged_api_candidates[0].is_current);
+    assert!(!format!("{:?}", read.current).contains("fixture-qwen-file-key"));
+}
+
+#[tokio::test]
+async fn qwen_same_route_switches_accounts_in_place_and_is_byte_idempotent() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        "{\r\n  // keep qwen comments\r\n  \"modelProviders\": {\r\n    \"existing\": [{ \"id\": \"fixture-model\", \"name\": \"Old\", \"envKey\": \"OLD_KEY\", \"baseUrl\": \"https://gateway.invalid/v1\", \"generationConfig\": { \"temperature\": 0.2 }, \"headers\": { \"X-Trace\": \"keep\" } }],\r\n  },\r\n  \"providerProtocol\": { \"existing\": \"openai\" },\r\n  \"env\": { \"OLD_KEY\": \"old-fixture-key\" },\r\n  \"security\": { \"auth\": { \"selectedType\": \"openai\" } },\r\n  \"model\": { \"name\": \"fixture-model\", \"baseUrl\": \"https://gateway.invalid/v1\" },\r\n  \"theme\": \"keep\",\r\n}\r\n",
+    )
+    .await;
+    let (provider_a, connection_a) = provider(CliProtocol::OpenaiChat);
+    let target_a = ConfigurationTarget::Api {
+        cli_id: CliId::Qwen,
+        provider_id: provider_a.id,
+        connection_id: connection_a,
+        model: "fixture-model".into(),
+    };
+    let plan_a = adapter
+        .plan_write(&paths, &target_a, &provider_a, &host)
+        .await
+        .unwrap();
+    let output_a = String::from_utf8(plan_a.files[0].target_content.clone()).unwrap();
+    assert!(output_a.contains("// keep qwen comments\r\n"));
+    assert!(output_a.contains("\"theme\": \"keep\""));
+    assert!(output_a.contains("\"generationConfig\": { \"temperature\": 0.2 }"));
+    assert!(output_a.contains("\"headers\": { \"X-Trace\": \"keep\" }"));
+    let value_a = parse_jsonc_value(&output_a).unwrap();
+    assert_eq!(
+        value_a["modelProviders"]["existing"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let env_a = format!(
+        "CLISWITCH_QWEN_KEY_{}",
+        connection_a.simple().to_string().to_ascii_uppercase()
+    );
+    assert_eq!(value_a["modelProviders"]["existing"][0]["envKey"], env_a);
+    materialize_plan(&plan_a).await;
+
+    let (mut provider_b, connection_b) = provider(CliProtocol::OpenaiChat);
+    let ProviderData::Api(api) = &mut provider_b.data else {
+        unreachable!()
+    };
+    api.connections[0].api_key = "fixture-account-b-key".into();
+    let target_b = ConfigurationTarget::Api {
+        cli_id: CliId::Qwen,
+        provider_id: provider_b.id,
+        connection_id: connection_b,
+        model: "fixture-model".into(),
+    };
+    let plan_b = adapter
+        .plan_write(&paths, &target_b, &provider_b, &host)
+        .await
+        .unwrap();
+    materialize_plan(&plan_b).await;
+    let written = tokio::fs::read_to_string(&paths.config_file).await.unwrap();
+    let value_b = parse_jsonc_value(&written).unwrap();
+    assert_eq!(
+        value_b["modelProviders"]["existing"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        value_b["modelProviders"]["existing"][0]["envKey"],
+        format!(
+            "CLISWITCH_QWEN_KEY_{}",
+            connection_b.simple().to_string().to_ascii_uppercase()
+        )
+    );
+    let second = adapter
+        .plan_write(&paths, &target_b, &provider_b, &host)
+        .await
+        .unwrap();
+    assert_eq!(
+        second.files[0].source_content,
+        Some(second.files[0].target_content.clone())
+    );
+    assert!(adapter.verify_applied(&plan_b).await.unwrap());
+
+    let return_to_a = adapter
+        .plan_write(&paths, &target_a, &provider_a, &host)
+        .await
+        .unwrap();
+    materialize_plan(&return_to_a).await;
+    let value_a_again =
+        parse_jsonc_value(&tokio::fs::read_to_string(&paths.config_file).await.unwrap()).unwrap();
+    assert_eq!(
+        value_a_again["modelProviders"]["existing"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        value_a_again["modelProviders"]["existing"][0]["envKey"],
+        env_a
+    );
+}
+
+#[tokio::test]
+async fn qwen_rejects_duplicate_routes_and_target_environment_overrides() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let mut host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "modelProviders": {
+            "a": [{ "id": "fixture-model", "envKey": "A_KEY", "baseUrl": "https://gateway.invalid/v1" }],
+            "b": [{ "id": "fixture-model", "envKey": "B_KEY", "baseUrl": "https://gateway.invalid/v1/" }]
+          },
+          "providerProtocol": { "a": "openai", "b": "openai" },
+          "env": { "A_KEY": "fixture-a", "B_KEY": "fixture-b" }
+        }"#,
+    )
+    .await;
+    let (provider, connection_id) = provider(CliProtocol::OpenaiChat);
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Qwen,
+        provider_id: provider.id,
+        connection_id,
+        model: "fixture-model".into(),
+    };
+    let error = adapter
+        .plan_write(&paths, &target, &provider, &host)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("QWEN_AMBIGUOUS_ROUTE"));
+    let read = adapter.read_current(&paths, &host).await.unwrap();
+    assert!(read.unmanaged_api_candidates.is_empty());
+    assert!(
+        read.current
+            .diagnostics
+            .contains(&"QWEN_AMBIGUOUS_ROUTE".into())
+    );
+
+    write_fixture(&paths.config_file, "{}\n").await;
+    host.present_variables.insert(format!(
+        "CLISWITCH_QWEN_KEY_{}",
+        connection_id.simple().to_string().to_ascii_uppercase()
+    ));
+    let error = adapter
+        .plan_write(&paths, &target, &provider, &host)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("QWEN_TARGET_ENV_OVERRIDE"));
+}
+
+#[tokio::test]
+async fn qwen_scan_uses_default_env_key_and_reports_external_and_unsupported_routes() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let mut host = environment(temp.path());
+    host.present_variables.insert("OPENAI_API_KEY".into());
+    let paths = adapter.resolve_paths(&host, None);
+    let source = r#"{
+      "modelProviders": {
+        "openai": [
+          { "id": "fixture-main", "baseUrl": "https://gateway.invalid/v1" },
+          { "id": "fixture-image", "baseUrl": "https://gateway.invalid/v1", "imageOnly": true }
+        ],
+        "other": [
+          { "id": "fixture-other", "envKey": "OTHER_KEY", "baseUrl": "https://other.invalid/v1" }
+        ]
+      },
+      "providerProtocol": { "other": "anthropic" },
+      "env": {
+        "OPENAI_API_KEY": "fixture-file-key",
+        "OTHER_KEY": "fixture-other-key"
+      },
+      "security": { "auth": { "selectedType": "openai" } },
+      "model": { "name": "fixture-main", "baseUrl": "https://gateway.invalid/v1" }
+    }"#;
+    write_fixture(&paths.config_file, source).await;
+
+    let read = adapter.read_current(&paths, &host).await.unwrap();
+    assert_eq!(
+        tokio::fs::read_to_string(&paths.config_file).await.unwrap(),
+        source
+    );
+    assert!(read.current.externally_overridden);
+    assert_eq!(read.current.model.as_deref(), Some("fixture-main"));
+    assert_eq!(read.unmanaged_api_candidates.len(), 1);
+    assert_eq!(
+        read.unmanaged_api_candidates[0].available_models,
+        ["fixture-main"]
+    );
+    assert!(
+        read.current
+            .diagnostics
+            .contains(&"QWEN_EXTERNAL_OVERRIDE".into())
+    );
+    assert!(
+        read.current
+            .diagnostics
+            .contains(&"QWEN_SPECIAL_ONLY_MODEL".into())
+    );
+    assert!(
+        read.current
+            .diagnostics
+            .contains(&"QWEN_UNSUPPORTED_PROTOCOL".into())
+    );
+}
+
+#[tokio::test]
+async fn qwen_scan_rejects_unsafe_shapes_without_exposing_fixture_credentials() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    for (source, code) in [
+        ("{ broken fixture-secret-value", "QWEN_MALFORMED_JSONC"),
+        (
+            "{ \"$version\": 5, \"env\": { \"KEY\": \"fixture-secret-value\" } }",
+            "QWEN_UNSUPPORTED_VERSION",
+        ),
+        (
+            "{ \"env\": {}, \"env\": { \"KEY\": \"fixture-secret-value\" } }",
+            "QWEN_DUPLICATE_PROPERTY",
+        ),
+        (
+            "{ \"model\": \"legacy\", \"apiKey\": \"fixture-secret-value\" }",
+            "QWEN_MODEL_NOT_OBJECT",
+        ),
+        (
+            "{ \"modelProviders\": { \"openai\": { \"protocol\": \"openai\", \"models\": [] } } }",
+            "QWEN_LEGACY_PROVIDER_SCHEMA",
+        ),
+        (
+            "{ \"modelProviders\": { \"openai\": [{ \"id\": 7, \"baseUrl\": \"https://example.invalid/v1\" }] } }",
+            "QWEN_MODEL_ID_NOT_STRING",
+        ),
+        (
+            "{ \"modelProviders\": { \"openai\": [{ \"id\": \"model\", \"envKey\": \"KEY\", \"baseUrl\": \"https://example.invalid/v1\" }] }, \"env\": { \"KEY\": 7 } }",
+            "QWEN_ENV_CREDENTIAL_NOT_STRING",
+        ),
+    ] {
+        write_fixture(&paths.config_file, source).await;
+        let message = adapter
+            .read_current(&paths, &host)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains(code), "expected {code}, got {message}");
+        assert!(!message.contains("fixture-secret-value"));
+    }
+}
+
+#[tokio::test]
+async fn qwen_scan_reports_invalid_utf8_with_a_fixed_diagnostic() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    tokio::fs::create_dir_all(paths.config_file.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&paths.config_file, [0xff, 0xfe])
+        .await
+        .unwrap();
+
+    let message = adapter
+        .read_current(&paths, &host)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.ends_with("QWEN_CONFIG_NOT_UTF8"),
+        "unexpected diagnostic: {message}"
+    );
+}
+
+#[tokio::test]
+async fn qwen_incomplete_current_keeps_complete_candidates_and_partial_status_hint() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "modelProviders": {
+            "ready": [{ "id": "ready-model", "envKey": "READY_KEY", "baseUrl": "https://ready.invalid/v1" }],
+            "missing": [{ "id": "missing-model", "envKey": "MISSING_KEY", "baseUrl": "https://missing.invalid/v1" }]
+          },
+          "providerProtocol": { "ready": "openai", "missing": "openai" },
+          "env": { "READY_KEY": "fixture-ready-key" },
+          "security": { "auth": { "selectedType": "openai" } },
+          "model": { "name": "missing-model", "baseUrl": "https://missing.invalid/v1" }
+        }"#,
+    )
+    .await;
+
+    let read = adapter.read_current(&paths, &host).await.unwrap();
+    assert_eq!(read.scan_status_hint, Some(ScanStatus::PartiallyDetected));
+    assert_eq!(read.unmanaged_api_candidates.len(), 1);
+    assert_eq!(
+        read.unmanaged_api_candidates[0].available_models,
+        ["ready-model"]
+    );
+    assert!(
+        read.current
+            .diagnostics
+            .contains(&"QWEN_MISSING_FILE_CREDENTIAL".into())
+    );
+}
+
+#[tokio::test]
+async fn qwen_new_and_second_endpoint_routes_are_appended_without_preview_side_effects() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    let (provider_a, connection_a) = provider(CliProtocol::OpenaiChat);
+    let target_a = ConfigurationTarget::Api {
+        cli_id: CliId::Qwen,
+        provider_id: provider_a.id,
+        connection_id: connection_a,
+        model: "org/model-with-slash".into(),
+    };
+    let plan_a = adapter
+        .plan_write(&paths, &target_a, &provider_a, &host)
+        .await
+        .unwrap();
+    assert!(!paths.config_directory.exists());
+    assert_eq!(plan_a.files.len(), 1);
+    assert!(plan_a.files[0].source_content.is_none());
+    assert!(plan_a.files[0].contains_credentials);
+    assert!(!plan_a.files[0].opaque_content);
+    materialize_plan(&plan_a).await;
+
+    let (mut provider_b, connection_b) = provider(CliProtocol::OpenaiChat);
+    let ProviderData::Api(api) = &mut provider_b.data else {
+        unreachable!()
+    };
+    api.connections[0].endpoint = Url::parse("https://second.invalid/chat").unwrap();
+    let target_b = ConfigurationTarget::Api {
+        cli_id: CliId::Qwen,
+        provider_id: provider_b.id,
+        connection_id: connection_b,
+        model: "org/model-with-slash".into(),
+    };
+    let plan_b = adapter
+        .plan_write(&paths, &target_b, &provider_b, &host)
+        .await
+        .unwrap();
+    materialize_plan(&plan_b).await;
+    let value =
+        parse_jsonc_value(&tokio::fs::read_to_string(&paths.config_file).await.unwrap()).unwrap();
+    let route_count = value["modelProviders"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|models| models.as_array().unwrap())
+        .filter(|model| model["id"] == "org/model-with-slash")
+        .count();
+    assert_eq!(route_count, 2);
+    assert_eq!(value["model"]["baseUrl"], "https://second.invalid/chat");
+    assert_eq!(
+        value["modelProviders"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|group| group.starts_with("cliswitch_qwen_"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn qwen_write_rejects_extra_authentication_and_conflicting_policies() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    let (provider, connection_id) = provider(CliProtocol::OpenaiChat);
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Qwen,
+        provider_id: provider.id,
+        connection_id,
+        model: "fixture-model".into(),
+    };
+
+    for (source, code) in [
+        (
+            r#"{
+              "modelProviders": { "existing": [{ "id": "fixture-model", "envKey": "OLD_KEY", "baseUrl": "https://gateway.invalid/v1", "headers": { "Authorization": "fixture-header" } }] },
+              "providerProtocol": { "existing": "openai" },
+              "env": { "OLD_KEY": "fixture-old-key" }
+            }"#,
+            "QWEN_EXTRA_AUTH_SETTINGS",
+        ),
+        (
+            r#"{ "security": { "auth": { "useExternal": true } } }"#,
+            "QWEN_EXTERNAL_AUTH_POLICY",
+        ),
+        (
+            r#"{ "security": { "auth": { "enforcedType": "oauth" } } }"#,
+            "QWEN_ENFORCED_AUTH_CONFLICT",
+        ),
+    ] {
+        write_fixture(&paths.config_file, source).await;
+        let before = tokio::fs::read(&paths.config_file).await.unwrap();
+        let error = adapter
+            .plan_write(&paths, &target, &provider, &host)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(code));
+        assert_eq!(tokio::fs::read(&paths.config_file).await.unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn qwen_write_rejects_a_target_route_occupied_by_a_special_only_model() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    let source = r#"{
+      "modelProviders": {
+        "images": [{
+          "id": "fixture-model",
+          "envKey": "IMAGE_KEY",
+          "baseUrl": "https://gateway.invalid/v1",
+          "imageOnly": true
+        }]
+      },
+      "providerProtocol": { "images": "openai" },
+      "env": { "IMAGE_KEY": "fixture-image-key-not-real" }
+    }"#;
+    write_fixture(&paths.config_file, source).await;
+    let (provider, connection_id) = provider(CliProtocol::OpenaiChat);
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Qwen,
+        provider_id: provider.id,
+        connection_id,
+        model: "fixture-model".into(),
+    };
+
+    let error = adapter
+        .plan_write(&paths, &target, &provider, &host)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("QWEN_SPECIAL_ONLY_MODEL"));
+    assert_eq!(
+        tokio::fs::read_to_string(&paths.config_file).await.unwrap(),
+        source
+    );
 }

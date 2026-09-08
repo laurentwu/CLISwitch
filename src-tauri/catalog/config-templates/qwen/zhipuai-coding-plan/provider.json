@@ -1,0 +1,10 @@
+{
+  "id": "zhipuai-coding-plan",
+  "name": "Zhipu AI Coding Plan",
+  "env": [
+    "ZHIPU_API_KEY"
+  ],
+  "protocol": "openai-compatible",
+  "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+  "docs": "https://docs.bigmodel.cn/cn/coding-plan/overview"
+}

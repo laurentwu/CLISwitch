@@ -41,7 +41,7 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "Switch local AI CLI configurations safely",
-    "longDescription": "Manage user-level Claude Code, Codex CLI, and OpenCode configurations with previews and backups.",
+    "longDescription": "Manage user-level Claude Code, Codex CLI, OpenCode, and Qwen Code configurations with previews and backups.",
     "copyright": "Copyright CLISwitch contributors",
     "licenseFile": "../LICENSE",
     "windows": {

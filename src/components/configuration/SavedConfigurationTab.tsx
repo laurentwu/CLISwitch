@@ -4,7 +4,7 @@ import { Copy, Eye, Play, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
 import { providerInstanceDisplayName, providerSupportsCli } from "../../shared/catalog";
-import { uniqueCopyName, validateEntityName } from "../../shared/names";
+import { cliDisplayName, uniqueCopyName, validateEntityName } from "../../shared/names";
 import type {
   ApplyRunSnapshot,
   CliId,
@@ -277,7 +277,7 @@ export function SavedConfigurationTab({
                     onChange={(event) => toggle(cliId, event.target.checked)}
                   />
                   <span>
-                    {t("config.included")}: {cliId}
+                    {t("config.included")}: {cliDisplayName(cliId)}
                   </span>
                 </label>
                 <div className="row-actions">

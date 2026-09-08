@@ -13,16 +13,18 @@ pub enum CliId {
     ClaudeCode,
     Codex,
     Opencode,
+    Qwen,
 }
 
 impl CliId {
-    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Opencode];
+    pub const ALL: [Self; 4] = [Self::ClaudeCode, Self::Codex, Self::Opencode, Self::Qwen];
 
     pub const fn command(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
             Self::Codex => "codex",
             Self::Opencode => "opencode",
+            Self::Qwen => "qwen",
         }
     }
 
@@ -31,6 +33,7 @@ impl CliId {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex CLI",
             Self::Opencode => "OpenCode",
+            Self::Qwen => "Qwen Code",
         }
     }
 }
@@ -41,6 +44,7 @@ impl fmt::Display for CliId {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
             Self::Opencode => "opencode",
+            Self::Qwen => "qwen",
         })
     }
 }
@@ -53,6 +57,7 @@ impl FromStr for CliId {
             "claude-code" => Ok(Self::ClaudeCode),
             "codex" => Ok(Self::Codex),
             "opencode" => Ok(Self::Opencode),
+            "qwen" => Ok(Self::Qwen),
             _ => Err(AppError::Validation(format!("unknown CLI id: {value}"))),
         }
     }
@@ -682,6 +687,8 @@ pub struct CurrentCliConfiguration {
     pub auth_kind: Option<String>,
     pub model: Option<String>,
     pub managed_provider_id: Option<Uuid>,
+    #[serde(default)]
+    pub managed_connection_id: Option<Uuid>,
     pub sources: Vec<SourceFileSnapshot>,
     pub externally_overridden: bool,
     pub diagnostics: Vec<String>,
@@ -822,6 +829,9 @@ pub fn calculate_configuration_match(
                 .find(|connection| connection.id == *connection_id)
                 .is_some_and(|connection| {
                     current.managed_provider_id == Some(provider.id)
+                        && current
+                            .managed_connection_id
+                            .is_none_or(|connection_id| connection_id == connection.id)
                         && current.protocol == Some(connection.protocol)
                         && current.model.as_deref() == Some(target.model())
                 }),
@@ -1116,6 +1126,24 @@ pub fn normalize_name(name: &str) -> AppResult<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cli_ids_round_trip_in_stable_display_order() {
+        assert_eq!(
+            CliId::ALL,
+            [
+                CliId::ClaudeCode,
+                CliId::Codex,
+                CliId::Opencode,
+                CliId::Qwen,
+            ]
+        );
+        for cli_id in CliId::ALL {
+            assert_eq!(CliId::from_str(&cli_id.to_string()).unwrap(), cli_id);
+        }
+        assert_eq!(CliId::Qwen.command(), "qwen");
+        assert_eq!(CliId::Qwen.label(), "Qwen Code");
+    }
+
     fn api_provider_from_template(template_id: &str) -> ProviderProfile {
         let template = crate::catalog::legacy_catalog()
             .unwrap()
@@ -1396,6 +1424,7 @@ mod tests {
             auth_kind: Some("api".into()),
             model: Some("model-a".into()),
             managed_provider_id: Some(provider_id),
+            managed_connection_id: None,
             sources: Vec::new(),
             externally_overridden: false,
             diagnostics: Vec::new(),
@@ -1422,6 +1451,20 @@ mod tests {
             calculate_configuration_match(&configuration, &scan, std::slice::from_ref(&provider)),
             ConfigurationMatchStatus::Applied
         );
+        scan.items[0]
+            .current
+            .as_mut()
+            .unwrap()
+            .managed_connection_id = Some(Uuid::new_v4());
+        assert_eq!(
+            calculate_configuration_match(&configuration, &scan, std::slice::from_ref(&provider)),
+            ConfigurationMatchStatus::PartiallyApplied
+        );
+        scan.items[0]
+            .current
+            .as_mut()
+            .unwrap()
+            .managed_connection_id = None;
         scan.items[0].current.as_mut().unwrap().model = Some("different".into());
         assert_eq!(
             calculate_configuration_match(&configuration, &scan, std::slice::from_ref(&provider)),

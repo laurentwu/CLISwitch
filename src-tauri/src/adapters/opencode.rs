@@ -898,11 +898,13 @@ impl CliAdapter for OpenCodeAdapter {
                 auth_kind: current_auth_kind,
                 model,
                 managed_provider_id,
+                managed_connection_id: None,
                 sources,
                 externally_overridden: false,
                 diagnostics,
             },
             unmanaged_api_candidates,
+            scan_status_hint: None,
         })
     }
 
@@ -911,6 +913,7 @@ impl CliAdapter for OpenCodeAdapter {
         paths: &AdapterPaths,
         target: &ConfigurationTarget,
         provider: &ProviderProfile,
+        _environment: &HostEnvironment,
     ) -> AppResult<AdapterWritePlan> {
         let (connection_id, api) = match (target, &provider.data) {
             (ConfigurationTarget::Api { connection_id, .. }, ProviderData::Api(api)) => {
@@ -973,6 +976,7 @@ impl CliAdapter for OpenCodeAdapter {
                 api_key: &connection.api_key,
                 model: target.model(),
                 model_catalog_path: None,
+                qwen: None,
             },
         )?;
         let RenderedManagedConfig::OpenCode(rendered) = rendered else {

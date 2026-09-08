@@ -1,3 +1,23 @@
+import type { CliId } from "./types";
+
+export const CLI_DISPLAY_NAMES: Record<CliId, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex CLI",
+  opencode: "OpenCode",
+  qwen: "Qwen Code",
+};
+
+export const CLI_MARKS: Record<CliId, string> = {
+  "claude-code": "CL",
+  codex: "CO",
+  opencode: "OP",
+  qwen: "QW",
+};
+
+export function cliDisplayName(cliId: CliId): string {
+  return CLI_DISPLAY_NAMES[cliId];
+}
+
 export type NameIssue = "length" | "duplicate";
 
 export function validateEntityName(

@@ -1,3 +1,25 @@
+import type {
+  ApiProviderDraft,
+  AppSettings,
+  AppSnapshot,
+  BackupMetadata,
+  PublicProvider,
+  SavedConfiguration,
+  ScanSnapshot,
+} from "../src/shared/types";
+
+type CommandRequest = {
+  command: string;
+  args: Record<string, unknown>;
+};
+
+async function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  return (await browser.tauri.execute(
+    ({ core }, request: CommandRequest) => core.invoke(request.command, request.args),
+    { command, args },
+  )) as T;
+}
+
 describe("CLISwitch desktop shell", () => {
   const waitForSelectedConfiguration = async (name: string) => {
     await browser.waitUntil(
@@ -18,10 +40,13 @@ describe("CLISwitch desktop shell", () => {
     );
 
     const cliCards = await $$(".cli-card-grid .card");
-    await expect(cliCards).toBeElementsArrayOfSize(3);
+    await expect(cliCards).toBeElementsArrayOfSize(4);
     for (const version of await $$(".cli-card-grid small")) {
       await expect(version).toHaveText("fixture-cli 0.1.0");
     }
+    await expect(
+      $("//*[contains(@class, 'cli-card-grid')]//*[contains(., 'Qwen Code')]"),
+    ).toBeDisplayed();
   });
 
   it("creates a named configuration and keeps the three-section navigation usable", async () => {
@@ -41,5 +66,149 @@ describe("CLISwitch desktop shell", () => {
     await navigation[0].click();
     await expect($("h1")).toHaveText(expect.stringMatching(/Configurations|配置/));
     await waitForSelectedConfiguration("E2E configuration");
+  });
+
+  it("imports Qwen and completes preview, A/B/A switching, rescan, and restore", async () => {
+    const originalScan = await invoke<ScanSnapshot>("scan_clis");
+    const originalQwen = originalScan.items.find((item) => item.cliId === "qwen");
+    const originalDigest = originalQwen?.current?.sources.find(
+      (source) => source.sourceId === "qwen-settings",
+    )?.digest;
+    expect(originalDigest).toBeTruthy();
+
+    const navigation = await $$("nav button");
+    await navigation[2].click();
+    await expect($("h1")).toHaveText(expect.stringMatching(/Settings|设置/));
+    const riskCheckbox = await $(".risk-card input[type=checkbox]");
+    if (!(await riskCheckbox.isSelected())) await riskCheckbox.click();
+    await $(".page-header button").click();
+    await browser.waitUntil(async () => {
+      const settings = await invoke<AppSettings>("get_settings");
+      return settings.plaintextRiskAccepted;
+    });
+
+    await navigation[0].click();
+    const scanButton = await $(
+      "//button[contains(normalize-space(.), 'Scan') or contains(normalize-space(.), '扫描')]",
+    );
+    await scanButton.click();
+    const manageCandidate = await $(
+      "//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]//button[contains(normalize-space(.), 'Manage') or contains(normalize-space(.), '管理')]",
+    );
+    await manageCandidate.waitForClickable();
+    await manageCandidate.click();
+    const candidateDialog = await $("[role=dialog]");
+    await candidateDialog.$("input:not(#candidate-model)").setValue("Qwen account A");
+    await candidateDialog.$("#candidate-model").setValue("fixture-qwen-model");
+    await candidateDialog.$(".modal-footer button:last-child").click();
+
+    const qwenCard = await $("//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]");
+    await browser.waitUntil(async () => (await qwenCard.getText()).includes("Qwen account A"));
+
+    await $(
+      "//button[contains(normalize-space(.), 'Save as new configuration') or contains(normalize-space(.), '保存为新配置')]",
+    ).click();
+    const saveCurrentDialog = await $("[role=dialog]");
+    await saveCurrentDialog.$("input").setValue("Qwen account A configuration");
+    await saveCurrentDialog.$(".modal-footer button:last-child").click();
+    await $(
+      "//button[@role='tab' and normalize-space()='Qwen account A configuration']",
+    ).waitForExist();
+
+    const providers = await invoke<PublicProvider[]>("list_providers");
+    const providerA = providers.find((provider) => provider.name === "Qwen account A");
+    expect(providerA?.connections).toHaveLength(1);
+    const connectionA = providerA!.connections[0];
+    const providerBDraft: ApiProviderDraft = {
+      name: "Qwen account B",
+      connections: [
+        {
+          credentialSlotId: "api-key",
+          protocol: "openai-chat",
+          endpoint: "https://qwen-e2e.invalid/v1",
+          authType: "bearer",
+          apiKey: "fixture-qwen-key-b-not-real",
+          defaultModel: "fixture-qwen-model",
+        },
+      ],
+    };
+    const providerB = await invoke<PublicProvider>("create_provider", { draft: providerBDraft });
+    const configurationB = await invoke<SavedConfiguration>("create_configuration", {
+      request: {
+        name: "Qwen account B configuration",
+        targets: [
+          {
+            targetType: "api",
+            cliId: "qwen",
+            providerId: providerB.id,
+            connectionId: providerB.connections[0].id,
+            model: "fixture-qwen-model",
+          },
+        ],
+      },
+    });
+    await browser.refresh();
+    await expect($("h1")).toHaveText(expect.stringMatching(/Configurations|配置/));
+
+    const applyConfiguration = async (name: string, expectedConnectionId: string) => {
+      await $(`//button[@role='tab' and normalize-space()=${JSON.stringify(name)}]`).click();
+      await waitForSelectedConfiguration(name);
+      await $(".configuration-header .section-actions button:last-child").click();
+      await browser.waitUntil(
+        async () => {
+          const snapshot = await invoke<AppSnapshot>("get_app_snapshot");
+          const run = snapshot.latestApply;
+          if (!run?.finishedAt) return false;
+          const item = run.items.find((candidate) => candidate.cliId === "qwen");
+          return item?.state === "success" || item?.state === "unchanged";
+        },
+        { timeout: 30_000, timeoutMsg: `Qwen apply did not finish for ${name}` },
+      );
+      await $(
+        "//*[@role='dialog']//*[contains(@class, 'modal-footer')]//button[contains(normalize-space(.), 'Close') or contains(normalize-space(.), '关闭')]",
+      ).click();
+      const scan = await invoke<ScanSnapshot>("scan_clis");
+      const qwen = scan.items.find((item) => item.cliId === "qwen");
+      expect(qwen?.current?.managedConnectionId).toBe(expectedConnectionId);
+    };
+
+    await $("//button[@role='tab' and normalize-space()='Qwen account A configuration']").click();
+    const qwenTarget = await $(
+      "//*[contains(@class, 'target-list')]//*[contains(@class, 'card')][contains(., 'Qwen Code')]",
+    );
+    await qwenTarget.$("button").click();
+    const previewDialog = await $("[role=dialog]");
+    await expect(previewDialog).toHaveText(expect.stringMatching(/Qwen Code/));
+    await expect(previewDialog).toHaveText(expect.stringMatching(/settings\.json/));
+    await previewDialog.$(".modal-footer button").click();
+
+    await applyConfiguration("Qwen account A configuration", connectionA.id);
+    await applyConfiguration("Qwen account B configuration", providerB.connections[0].id);
+    await applyConfiguration("Qwen account A configuration", connectionA.id);
+
+    await $(
+      "//button[@role='tab' and (normalize-space()='Current configuration' or normalize-space()='当前配置')]",
+    ).click();
+    const qwenBackupButton = await $(
+      "//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]//button[contains(normalize-space(.), 'Backups') or contains(normalize-space(.), '备份')]",
+    );
+    await qwenBackupButton.click();
+    const backupRows = await $$("[role=dialog] .backup-row");
+    expect(backupRows.length).toBeGreaterThanOrEqual(3);
+    await backupRows[backupRows.length - 1].$("button").click();
+    const restoreDialog = await $$("[role=dialog]");
+    await restoreDialog[restoreDialog.length - 1].$(".modal-footer button:last-child").click();
+
+    await browser.waitUntil(async () => {
+      const backups = await invoke<BackupMetadata[]>("list_backups", { cliId: "qwen" });
+      return backups.length >= 4;
+    });
+    const restoredScan = await invoke<ScanSnapshot>("scan_clis");
+    const restoredQwen = restoredScan.items.find((item) => item.cliId === "qwen");
+    expect(
+      restoredQwen?.current?.sources.find((source) => source.sourceId === "qwen-settings")?.digest,
+    ).toBe(originalDigest);
+    expect(restoredQwen?.current?.managedConnectionId).toBe(connectionA.id);
+    expect(configurationB.targets[0]).toMatchObject({ cliId: "qwen" });
   });
 });

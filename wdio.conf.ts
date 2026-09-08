@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { createTauriCapabilities } from "@wdio/tauri-service";
@@ -33,11 +33,41 @@ for (const directory of [fixtureBin, home, roamingAppData, localAppData]) {
 
 const isWindows = process.platform === "win32";
 const fixture = resolve(isWindows ? "e2e/fixtures/fake-cli.ps1" : "e2e/fixtures/fake-cli.sh");
-for (const command of ["claude", "codex", "opencode"]) {
+for (const command of ["claude", "codex", "opencode", "qwen"]) {
   const destination = join(fixtureBin, `${command}${isWindows ? ".ps1" : ""}`);
   copyFileSync(fixture, destination);
   if (!isWindows) chmodSync(destination, 0o700);
 }
+
+const qwenHome = join(home, ".qwen");
+mkdirSync(qwenHome, { recursive: true });
+writeFileSync(
+  join(qwenHome, "settings.json"),
+  JSON.stringify(
+    {
+      $version: 4,
+      modelProviders: {
+        "e2e-source": [
+          {
+            id: "fixture-qwen-model",
+            name: "fixture-qwen-model",
+            envKey: "E2E_QWEN_FILE_KEY",
+            baseUrl: "https://qwen-e2e.invalid/v1",
+          },
+        ],
+      },
+      providerProtocol: { "e2e-source": "openai" },
+      env: { E2E_QWEN_FILE_KEY: "fixture-qwen-key-not-real" },
+      security: { auth: { selectedType: "openai" } },
+      model: {
+        name: "fixture-qwen-model",
+        baseUrl: "https://qwen-e2e.invalid/v1",
+      },
+    },
+    null,
+    2,
+  ),
+);
 
 const cargoTarget = process.env.CARGO_TARGET_DIR
   ? resolve(process.env.CARGO_TARGET_DIR)
@@ -53,6 +83,7 @@ const appEnvironment: Record<string, string> = {
   XDG_DATA_HOME: join(home, ".local", "share"),
   APPDATA: roamingAppData,
   LOCALAPPDATA: localAppData,
+  QWEN_HOME: qwenHome,
 };
 
 export const config: WebdriverIO.Config = {

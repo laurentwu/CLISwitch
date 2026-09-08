@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2, Circle, LoaderCircle, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command, onEvent } from "../../shared/ipc";
+import { diagnosticText } from "../../shared/diagnostics";
+import { cliDisplayName } from "../../shared/names";
 import type {
   ApplyPreview,
   ApplyPreviewFile,
@@ -209,7 +211,13 @@ export function ApplyPreviewDialog({
     <Modal
       open={open}
       wide
-      title={runId ? t("config.progress") : t("config.applyPreviewFor", { cli: target?.cliId })}
+      title={
+        runId
+          ? t("config.progress")
+          : t("config.applyPreviewFor", {
+              cli: target ? cliDisplayName(target.cliId) : undefined,
+            })
+      }
       onClose={close}
       footer={
         <>
@@ -270,7 +278,7 @@ export function ApplyPreviewDialog({
             <StateIcon state={item.state} />
             <div className="apply-content">
               <div className="card-title-row">
-                <strong>{item.cliId}</strong>
+                <strong>{cliDisplayName(item.cliId)}</strong>
                 <Badge tone={stateTone(item.state)}>{t(`status.${item.state}`)}</Badge>
               </div>
               {"providerName" in item ? (
@@ -295,12 +303,12 @@ export function ApplyPreviewDialog({
                   tone={item.state === "failed" ? "error" : "warning"}
                   title={t(`status.${item.state}`)}
                 >
-                  <p>{item.message}</p>
+                  <p>{diagnosticText(t, item.message)}</p>
                 </Alert>
               ) : null}
               {"warning" in item && item.warning ? (
                 <Alert compact tone="warning" title={t(`status.${item.state}`)}>
-                  <p>{item.warning}</p>
+                  <p>{diagnosticText(t, item.warning)}</p>
                 </Alert>
               ) : null}
             </div>

@@ -132,6 +132,21 @@ const RESOURCES: &[Resource] = &[
     resource!("opencode/zhipuai-coding-plan/provider.json"),
     resource!("opencode/zhipuai/opencode.json"),
     resource!("opencode/zhipuai/provider.json"),
+    resource!("qwen/deepseek/provider.json"),
+    resource!("qwen/deepseek/settings.json"),
+    resource!("qwen/opencode-go/provider.json"),
+    resource!("qwen/opencode-go/settings.json"),
+    resource!("qwen/opencode/provider.json"),
+    resource!("qwen/opencode/settings.json"),
+    resource!("qwen/settings.json"),
+    resource!("qwen/zai-coding-plan/provider.json"),
+    resource!("qwen/zai-coding-plan/settings.json"),
+    resource!("qwen/zai/provider.json"),
+    resource!("qwen/zai/settings.json"),
+    resource!("qwen/zhipuai-coding-plan/provider.json"),
+    resource!("qwen/zhipuai-coding-plan/settings.json"),
+    resource!("qwen/zhipuai/provider.json"),
+    resource!("qwen/zhipuai/settings.json"),
 ];
 
 #[derive(Deserialize)]
@@ -215,6 +230,7 @@ fn validate_bundled_templates_inner() -> Result<(), String> {
         "codex/config.toml",
         "codex/models.json",
         "opencode/opencode.json",
+        "qwen/settings.json",
     ]);
     for provider in PROVIDER_TEMPLATE_IDS {
         expected_paths.extend([
@@ -226,6 +242,8 @@ fn validate_bundled_templates_inner() -> Result<(), String> {
             opencode_provider_path(provider),
             opencode_config_path(provider),
             opencode_auth_path(provider),
+            qwen_provider_path(provider),
+            qwen_settings_path(provider),
         ]);
     }
     for model in DEEPSEEK_EXACT_MODEL_IDS {
@@ -234,7 +252,7 @@ fn validate_bundled_templates_inner() -> Result<(), String> {
     if paths != expected_paths {
         return Err("the config-template resource set is incomplete or contains extras".into());
     }
-    for cli in ["claude-code", "codex", "opencode"] {
+    for cli in ["claude-code", "codex", "opencode", "qwen"] {
         for provider in PROVIDER_TEMPLATE_IDS {
             if !provider_ids.contains(&(cli, provider)) {
                 return Err(format!(
@@ -373,6 +391,27 @@ fn expected_resource_metadata(path: &str) -> Option<ExpectedResourceMetadata> {
                 Some("openai-compatible"),
             ))
         }
+        ["qwen", "settings.json"] => Some((
+            "qwen-config",
+            Some("qwen"),
+            None,
+            None,
+            Some("openai-compatible"),
+        )),
+        ["qwen", provider, file @ ("provider.json" | "settings.json")] => {
+            let provider = known_template_id(Some(provider))?;
+            Some((
+                if *file == "provider.json" {
+                    "provider-identity"
+                } else {
+                    "qwen-config"
+                },
+                Some("qwen"),
+                Some(provider),
+                None,
+                Some("openai-compatible"),
+            ))
+        }
         _ => None,
     }
 }
@@ -412,6 +451,12 @@ fn validate_resource(entry: &ManifestResource, bytes: &[u8]) -> Result<(), Strin
             let value: Value = serde_json::from_str(text)
                 .map_err(|error| format!("invalid JSON template {}: {error}", entry.path))?;
             validate_opencode_auth_shape(&value, entry).map_err(|error| error.to_string())?;
+            validate_template_placeholders(&value, &entry.path)
+        }
+        "qwen-config" => {
+            let value: Value = serde_json::from_str(text)
+                .map_err(|error| format!("invalid JSON template {}: {error}", entry.path))?;
+            validate_qwen_template_shape(&value, &entry.path).map_err(|error| error.to_string())?;
             validate_template_placeholders(&value, &entry.path)
         }
         "codex-config" => {
@@ -465,6 +510,7 @@ fn validate_provider_identity(value: &Value, entry: &ManifestResource) -> AppRes
         Some("claude-code") => "anthropic-messages",
         Some("codex") => "responses",
         Some("opencode") => "openai-compatible",
+        Some("qwen") => "openai-compatible",
         _ => {
             return Err(AppError::Serialization(format!(
                 "provider identity has an invalid CLI in {}",
@@ -526,6 +572,69 @@ fn validate_claude_template_shape(value: &Value, path: &str) -> AppResult<()> {
                 "{path} model field {key} has an unsupported template value"
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_qwen_template_shape(value: &Value, path: &str) -> AppResult<()> {
+    let root = value
+        .as_object()
+        .ok_or_else(|| AppError::Serialization(format!("{path} root is not an object")))?;
+    reject_unknown_keys(
+        root.keys().map(String::as_str),
+        &["modelProviders", "providerProtocol", "env"],
+        path,
+    )?;
+    let providers = root
+        .get("modelProviders")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            AppError::Serialization(format!("{path} modelProviders is not an object"))
+        })?;
+    let protocols = root
+        .get("providerProtocol")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            AppError::Serialization(format!("{path} providerProtocol is not an object"))
+        })?;
+    let env = root
+        .get("env")
+        .and_then(Value::as_object)
+        .ok_or_else(|| AppError::Serialization(format!("{path} env is not an object")))?;
+    if providers.len() != 1 || protocols.len() != 1 || env.len() != 1 {
+        return Err(AppError::Serialization(format!(
+            "{path} must contain one provider, protocol, and environment binding"
+        )));
+    }
+    let (provider_id, models) = providers.iter().next().expect("checked length");
+    if protocols.get(provider_id).and_then(Value::as_str) != Some("openai") {
+        return Err(AppError::Serialization(format!(
+            "{path} must map its provider to the openai protocol"
+        )));
+    }
+    let models = models
+        .as_array()
+        .filter(|models| models.len() == 1)
+        .ok_or_else(|| AppError::Serialization(format!("{path} must contain one model")))?;
+    let model = models[0]
+        .as_object()
+        .ok_or_else(|| AppError::Serialization(format!("{path} model is not an object")))?;
+    reject_unknown_keys(
+        model.keys().map(String::as_str),
+        &["id", "name", "envKey", "baseUrl"],
+        path,
+    )?;
+    for key in ["id", "name", "envKey", "baseUrl"] {
+        required_string(
+            model
+                .get(key)
+                .ok_or_else(|| AppError::Serialization(format!("{path} model has no {key}")))?,
+        )?;
+    }
+    if env.values().any(|value| value.as_str().is_none()) {
+        return Err(AppError::Serialization(format!(
+            "{path} environment credential must be a string"
+        )));
     }
     Ok(())
 }
@@ -991,6 +1100,13 @@ pub struct TemplateBindings<'a> {
     pub api_key: &'a str,
     pub model: &'a str,
     pub model_catalog_path: Option<&'a Path>,
+    pub qwen: Option<QwenTemplateBindings<'a>>,
+}
+
+#[derive(Clone, Copy)]
+pub struct QwenTemplateBindings<'a> {
+    pub group_id: &'a str,
+    pub env_key: &'a str,
 }
 
 pub struct ResolvedTemplates {
@@ -1032,10 +1148,21 @@ pub struct OpenCodeManagedConfig {
     pub reasoning: bool,
 }
 
+pub struct QwenManagedConfig {
+    pub group_id: String,
+    pub protocol: String,
+    pub model: String,
+    pub endpoint: String,
+    pub env_key: String,
+    pub api_key: String,
+    pub model_entry: Value,
+}
+
 pub enum RenderedManagedConfig {
     Claude(ClaudeManagedConfig),
     Codex(CodexManagedConfig),
     OpenCode(OpenCodeManagedConfig),
+    Qwen(QwenManagedConfig),
 }
 
 pub fn resolve_templates(selection: &TemplateSelection<'_>) -> AppResult<ResolvedTemplates> {
@@ -1052,6 +1179,9 @@ pub fn resolve_templates(selection: &TemplateSelection<'_>) -> AppResult<Resolve
         CliId::Codex if selection.protocol != CliProtocol::OpenaiResponses => Err(
             AppError::Validation("Codex templates require the Responses protocol".into()),
         ),
+        CliId::Qwen if selection.protocol != CliProtocol::OpenaiChat => Err(AppError::Validation(
+            "Qwen Code templates require OpenAI Chat Completions".into(),
+        )),
         CliId::ClaudeCode => {
             let template_id = known_template_id(selection.template_id);
             let config_path = template_id
@@ -1103,6 +1233,18 @@ pub fn resolve_templates(selection: &TemplateSelection<'_>) -> AppResult<Resolve
                 auth_path,
             })
         }
+        CliId::Qwen => {
+            let template_id = known_template_id(selection.template_id);
+            Ok(ResolvedTemplates {
+                cli_id: selection.cli_id,
+                protocol: selection.protocol,
+                config_path: template_id
+                    .map(qwen_settings_path)
+                    .unwrap_or("qwen/settings.json"),
+                model_catalog_path: None,
+                auth_path: None,
+            })
+        }
     }
 }
 
@@ -1121,7 +1263,57 @@ pub fn render_managed_config(
         CliId::Opencode => {
             render_opencode(templates, bindings).map(RenderedManagedConfig::OpenCode)
         }
+        CliId::Qwen => render_qwen(templates, bindings).map(RenderedManagedConfig::Qwen),
     }
+}
+
+fn render_qwen(
+    templates: &ResolvedTemplates,
+    bindings: &TemplateBindings<'_>,
+) -> AppResult<QwenManagedConfig> {
+    let template: Value =
+        serde_json::from_str(resource_text(templates.config_path)?).map_err(|error| {
+            AppError::Serialization(format!(
+                "invalid JSON template {}: {error}",
+                templates.config_path
+            ))
+        })?;
+    validate_qwen_template_shape(&template, templates.config_path)?;
+    validate_template_placeholders(&template, templates.config_path)
+        .map_err(AppError::Serialization)?;
+    let qwen = bindings
+        .qwen
+        .ok_or_else(|| AppError::Validation("Qwen template bindings are unavailable".into()))?;
+    if qwen.group_id.trim().is_empty() || !valid_qwen_env_key(qwen.env_key) {
+        return Err(AppError::Validation(
+            "Qwen group and environment bindings are invalid".into(),
+        ));
+    }
+    let model_entry = serde_json::json!({
+        "id": bindings.model,
+        "name": bindings.model,
+        "envKey": qwen.env_key,
+        "baseUrl": bindings.endpoint,
+    });
+    Ok(QwenManagedConfig {
+        group_id: qwen.group_id.into(),
+        protocol: "openai".into(),
+        model: bindings.model.into(),
+        endpoint: bindings.endpoint.into(),
+        env_key: qwen.env_key.into(),
+        api_key: bindings.api_key.into(),
+        model_entry,
+    })
+}
+
+fn valid_qwen_env_key(value: &str) -> bool {
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_uppercase())
+        && characters.all(|character| {
+            character == '_' || character.is_ascii_uppercase() || character.is_ascii_digit()
+        })
 }
 
 fn render_claude(
@@ -1684,6 +1876,32 @@ fn opencode_auth_path(template_id: &str) -> &'static str {
     }
 }
 
+fn qwen_provider_path(template_id: &str) -> &'static str {
+    match template_id {
+        "deepseek" => "qwen/deepseek/provider.json",
+        "zhipuai" => "qwen/zhipuai/provider.json",
+        "zhipuai-coding-plan" => "qwen/zhipuai-coding-plan/provider.json",
+        "zai" => "qwen/zai/provider.json",
+        "zai-coding-plan" => "qwen/zai-coding-plan/provider.json",
+        "opencode" => "qwen/opencode/provider.json",
+        "opencode-go" => "qwen/opencode-go/provider.json",
+        _ => unreachable!("known provider template"),
+    }
+}
+
+fn qwen_settings_path(template_id: &str) -> &'static str {
+    match template_id {
+        "deepseek" => "qwen/deepseek/settings.json",
+        "zhipuai" => "qwen/zhipuai/settings.json",
+        "zhipuai-coding-plan" => "qwen/zhipuai-coding-plan/settings.json",
+        "zai" => "qwen/zai/settings.json",
+        "zai-coding-plan" => "qwen/zai-coding-plan/settings.json",
+        "opencode" => "qwen/opencode/settings.json",
+        "opencode-go" => "qwen/opencode-go/settings.json",
+        _ => unreachable!("known provider template"),
+    }
+}
+
 fn reject_unknown_keys<'a>(
     actual: impl Iterator<Item = &'a str>,
     allowed: &[&str],
@@ -1741,6 +1959,7 @@ mod tests {
             api_key: "fixture-<model-id>-key",
             model,
             model_catalog_path: Some(catalog),
+            qwen: None,
         }
     }
 
@@ -1756,7 +1975,7 @@ mod tests {
     #[test]
     fn bundled_resources_are_complete_and_match_the_manifest() {
         validate_bundled_templates().unwrap();
-        assert_eq!(RESOURCES.len(), 64);
+        assert_eq!(RESOURCES.len(), 79);
         for (path, expected) in [
             (
                 "claude/settings.json",
@@ -1773,6 +1992,10 @@ mod tests {
             (
                 "opencode/opencode.json",
                 "95d89faa35e342a41ae64dc8ef292975ee3a2ecd63e9e9954d50a260dfe3e524",
+            ),
+            (
+                "qwen/settings.json",
+                "012c170be01b332e3114330430cdff89b88b7a1b9df6bf86ee27de1255681b19",
             ),
         ] {
             assert_eq!(
@@ -1848,6 +2071,19 @@ mod tests {
             validate_opencode_auth_shape(&auth, &manifest_entry("opencode/deepseek/auth.json"))
                 .is_err()
         );
+
+        let mut qwen: Value =
+            serde_json::from_str(resource_text("qwen/settings.json").unwrap()).unwrap();
+        qwen["modelProviders"]["<provider-id>"][0]
+            .as_object_mut()
+            .unwrap()
+            .insert("future".into(), Value::Bool(true));
+        assert!(validate_qwen_template_shape(&qwen, "fixture").is_err());
+
+        let mut qwen_protocol: Value =
+            serde_json::from_str(resource_text("qwen/settings.json").unwrap()).unwrap();
+        qwen_protocol["providerProtocol"]["<provider-id>"] = Value::String("future".into());
+        assert!(validate_qwen_template_shape(&qwen_protocol, "fixture").is_err());
     }
 
     #[test]
@@ -1870,6 +2106,7 @@ mod tests {
             api_key: "fixture-<model-id>-key",
             model,
             model_catalog_path: Some(catalog),
+            qwen: None,
         };
         let mut value = serde_json::json!({
             "<provider-id>": ["<model-id>", "<model-description>", "<your-api-key>"]

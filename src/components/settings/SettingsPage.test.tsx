@@ -169,4 +169,67 @@ describe("SettingsPage provider database", () => {
       expect(commandMock).toHaveBeenCalledWith("set_ui_zoom", { uiZoomPercent: 100 }),
     );
   });
+
+  it("shows, clears, and persists Qwen executable and configuration paths", async () => {
+    const qwenSnapshot: AppSnapshot = {
+      ...snapshot,
+      settings: {
+        ...snapshot.settings,
+        manualLocations: [
+          {
+            cliId: "qwen",
+            executablePath: "/fixture/bin/qwen",
+            configDirectory: "/fixture/.qwen",
+          },
+        ],
+      },
+    };
+    commandMock.mockImplementation((name: string, args?: Record<string, unknown>) => {
+      if (name === "get_catalog_status") return Promise.resolve(bundledStatus);
+      if (name === "update_settings") {
+        return Promise.resolve({
+          ...(args?.settings as AppSnapshot["settings"]),
+          revision: 2,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${name}`));
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsPage snapshot={qwenSnapshot} onError={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    const row = screen.getByText("Qwen Code").closest(".location-row");
+    expect(row).not.toBeNull();
+    expect(row!.querySelector('input[value="/fixture/bin/qwen"]')).not.toBeNull();
+    expect(row!.querySelector('input[value="/fixture/.qwen"]')).not.toBeNull();
+    const clearButtons = Array.from(row!.querySelectorAll("button")).filter(
+      (button) => button.textContent === "清除",
+    );
+    expect(clearButtons).toHaveLength(2);
+    fireEvent.click(clearButtons[0]);
+    fireEvent.click(clearButtons[1]);
+    expect(useUiStore.getState().dirty).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith("update_settings", {
+        settings: expect.objectContaining({
+          manualLocations: [
+            {
+              cliId: "qwen",
+              executablePath: null,
+              configDirectory: null,
+            },
+          ],
+        }),
+        expectedRevision: 1,
+      }),
+    );
+  });
 });

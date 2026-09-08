@@ -1,0 +1,18 @@
+{
+  "modelProviders": {
+    "zai-coding-plan": [
+      {
+        "id": "<model-id>",
+        "name": "<model-name>",
+        "envKey": "ZHIPU_API_KEY",
+        "baseUrl": "https://api.z.ai/api/coding/paas/v4"
+      }
+    ]
+  },
+  "providerProtocol": {
+    "zai-coding-plan": "openai"
+  },
+  "env": {
+    "ZHIPU_API_KEY": "<your-api-key>"
+  }
+}
