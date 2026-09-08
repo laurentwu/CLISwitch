@@ -114,6 +114,8 @@ export const zhCN = {
       QWEN_INVALID_BASE_URL: "Qwen 模型条目的 base URL 无效或不安全。",
       QWEN_INVALID_ENV_KEY: "Qwen 模型条目的环境变量名无效。",
       QWEN_MISSING_FILE_CREDENTIAL: "Qwen 设置文件中没有被引用的 API Key。",
+      QWEN_EXTERNAL_CREDENTIAL_REFERENCE:
+        "Qwen 会从外部环境变量解析此 API Key；当前仅支持文件内凭据。",
       QWEN_SPECIAL_ONLY_MODEL: "专用 Qwen 模型不能作为主模型。",
       QWEN_SELECTED_ROUTE_NOT_FOUND: "所选 Qwen 模型和 base URL 未对应到已配置路由。",
       QWEN_AMBIGUOUS_ROUTE: "存在多个协议、模型和 base URL 相同的 Qwen 路由。",

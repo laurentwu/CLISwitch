@@ -142,6 +142,9 @@ never change this template version. Selected models remain user values, not a te
   `CLISWITCH_QWEN_KEY_<CONNECTION UUID>` identifiers. The latter is stored in the same file's
   `env` object; CLISwitch never reads an external variable value. If that variable exists in the
   current process environment, applying is blocked.
+- Qwen v0.23 resolves both `$VAR` and `${VAR}` references recursively. CLISwitch diagnoses these
+  forms instead of importing or writing them as file-local credentials; environment-backed
+  credentials remain outside this compatibility baseline.
 - The current route is selected only when the auth type, model name, and optional exact base URL
   identify one primary OpenAI model. File candidates are grouped by endpoint and identical file
   credential. Matching a saved connection requires a unique endpoint/auth/key identity and records

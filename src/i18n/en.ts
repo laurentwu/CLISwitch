@@ -121,6 +121,8 @@ export const en = {
       QWEN_INVALID_ENV_KEY: "A Qwen model entry has an invalid environment-variable name.",
       QWEN_MISSING_FILE_CREDENTIAL:
         "The referenced API key is missing from the Qwen settings file.",
+      QWEN_EXTERNAL_CREDENTIAL_REFERENCE:
+        "Qwen resolves this API key from an external environment variable; only file-local credentials are supported.",
       QWEN_SPECIAL_ONLY_MODEL: "A special-purpose Qwen model cannot be used as the primary model.",
       QWEN_SELECTED_ROUTE_NOT_FOUND:
         "The selected Qwen model and base URL do not identify a configured route.",

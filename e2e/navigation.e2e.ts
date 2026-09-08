@@ -1,5 +1,6 @@
 import type {
   ApiProviderDraft,
+  ApplyRunSnapshot,
   AppSettings,
   AppSnapshot,
   BackupMetadata,
@@ -198,27 +199,48 @@ describe("CLISwitch desktop shell", () => {
     });
     await browser.refresh();
     await expect($("h1")).toHaveText(expect.stringMatching(/Configurations|配置/));
+    const configurationA = (await invoke<SavedConfiguration[]>("list_configurations")).find(
+      (configuration) => configuration.name === "Qwen account A configuration",
+    );
+    expect(configurationA).toBeDefined();
+    const initialBackups = await invoke<BackupMetadata[]>("list_backups", { cliId: "qwen" });
+    expect(initialBackups).toHaveLength(0);
 
-    const applyConfiguration = async (name: string, expectedConnectionId: string) => {
+    const applyConfiguration = async (
+      name: string,
+      configurationId: string,
+      expectedConnectionId: string,
+    ) => {
       await $(`//button[@role='tab' and normalize-space()=${JSON.stringify(name)}]`).click();
       await waitForSelectedConfiguration(name);
+      const previousRunId = (await invoke<AppSnapshot>("get_app_snapshot")).latestApply?.id;
       await $(".configuration-header .section-actions button:last-child").click();
+      let completedRun: ApplyRunSnapshot | undefined;
       await browser.waitUntil(
         async () => {
           const snapshot = await invoke<AppSnapshot>("get_app_snapshot");
           const run = snapshot.latestApply;
-          if (!run?.finishedAt) return false;
+          if (
+            !run?.finishedAt ||
+            run.id === previousRunId ||
+            run.configurationId !== configurationId
+          )
+            return false;
           const item = run.items.find((candidate) => candidate.cliId === "qwen");
-          return item?.state === "success" || item?.state === "unchanged";
+          if (item?.state !== "success" && item?.state !== "unchanged") return false;
+          completedRun = run;
+          return true;
         },
         { timeout: 30_000, timeoutMsg: `Qwen apply did not finish for ${name}` },
       );
+      if (!completedRun) throw new Error(`Qwen apply finished without a snapshot for ${name}`);
       await $(
         "//*[@role='dialog']//*[contains(@class, 'modal-footer')]//button[contains(normalize-space(.), 'Close') or contains(normalize-space(.), '关闭')]",
       ).click();
       const scan = await scanWhenIdle();
       const qwen = scan.items.find((item) => item.cliId === "qwen");
       expect(qwen?.current?.managedConnectionId).toBe(expectedConnectionId);
+      return completedRun;
     };
 
     await $("//button[@role='tab' and normalize-space()='Qwen account A configuration']").click();
@@ -231,9 +253,30 @@ describe("CLISwitch desktop shell", () => {
     await expect(previewDialog).toHaveText(expect.stringMatching(/settings\.json/));
     await previewDialog.$(".modal-footer button").click();
 
-    await applyConfiguration("Qwen account A configuration", connectionA.id);
-    await applyConfiguration("Qwen account B configuration", providerB.connections[0].id);
-    await applyConfiguration("Qwen account A configuration", connectionA.id);
+    const runs = [
+      await applyConfiguration("Qwen account A configuration", configurationA!.id, connectionA.id),
+      await applyConfiguration(
+        "Qwen account B configuration",
+        configurationB.id,
+        providerB.connections[0].id,
+      ),
+      await applyConfiguration("Qwen account A configuration", configurationA!.id, connectionA.id),
+    ];
+    const successfulWrites = runs.filter(
+      (run) => run.items.find((item) => item.cliId === "qwen")?.state === "success",
+    ).length;
+    expect(successfulWrites).toBeGreaterThanOrEqual(2);
+    let backupsAfterApply: BackupMetadata[] = [];
+    await browser.waitUntil(
+      async () => {
+        backupsAfterApply = await invoke<BackupMetadata[]>("list_backups", { cliId: "qwen" });
+        return backupsAfterApply.length === successfulWrites;
+      },
+      {
+        timeout: 30_000,
+        timeoutMsg: "Expected each successful Qwen write to create a backup",
+      },
+    );
 
     await $(
       "//button[@role='tab' and (normalize-space()='Current configuration' or normalize-space()='当前配置')]",
@@ -242,20 +285,27 @@ describe("CLISwitch desktop shell", () => {
       "//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]//button[contains(normalize-space(.), 'Backups') or contains(normalize-space(.), '备份')]",
     );
     await qwenBackupButton.click();
-    await browser.waitUntil(async () => (await $$("[role=dialog] .backup-row")).length >= 3, {
-      timeout: 30_000,
-      timeoutMsg: "Expected Qwen backups to load",
-    });
+    await browser.waitUntil(
+      async () => (await $$("[role=dialog] .backup-row")).length === backupsAfterApply.length,
+      {
+        timeout: 30_000,
+        timeoutMsg: "Expected Qwen backups to load",
+      },
+    );
     const backupRows = await $$("[role=dialog] .backup-row");
-    expect(backupRows.length).toBeGreaterThanOrEqual(3);
+    expect(backupRows.length).toBe(backupsAfterApply.length);
     await backupRows[backupRows.length - 1].$("button").click();
     const restoreDialog = await $$("[role=dialog]");
     await restoreDialog[restoreDialog.length - 1].$(".modal-footer button:last-child").click();
 
-    await browser.waitUntil(async () => {
-      const backups = await invoke<BackupMetadata[]>("list_backups", { cliId: "qwen" });
-      return backups.length >= 4;
-    });
+    const backupsBeforeRestore = new Set(backupsAfterApply.map((backup) => backup.id));
+    await browser.waitUntil(
+      async () => {
+        const backups = await invoke<BackupMetadata[]>("list_backups", { cliId: "qwen" });
+        return backups.some((backup) => !backupsBeforeRestore.has(backup.id));
+      },
+      { timeoutMsg: "Expected Qwen restore to create an undo backup" },
+    );
     const restoredScan = await scanWhenIdle();
     const restoredQwen = restoredScan.items.find((item) => item.cliId === "qwen");
     expect(

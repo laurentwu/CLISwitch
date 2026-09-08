@@ -2718,6 +2718,44 @@ async fn qwen_scan_merges_models_by_file_credential_and_uses_explicit_selection(
 }
 
 #[tokio::test]
+async fn qwen_scan_does_not_import_external_credential_references() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+
+    for reference in ["$QWEN_EXTERNAL_KEY", "${QWEN_EXTERNAL_KEY}"] {
+        let source = r#"{
+          "$version": 4,
+          "modelProviders": {
+            "custom": [{ "id": "fixture-model", "envKey": "CUSTOM_KEY", "baseUrl": "https://gateway.invalid/v1" }]
+          },
+          "providerProtocol": { "custom": "openai" },
+          "env": { "CUSTOM_KEY": "EXTERNAL_REFERENCE" },
+          "security": { "auth": { "selectedType": "openai" } },
+          "model": { "name": "fixture-model", "baseUrl": "https://gateway.invalid/v1" }
+        }"#
+        .replace("EXTERNAL_REFERENCE", reference);
+        write_fixture(&paths.config_file, &source).await;
+
+        let read = adapter.read_current(&paths, &host).await.unwrap();
+        assert!(read.unmanaged_api_candidates.is_empty());
+        assert_eq!(read.scan_status_hint, Some(ScanStatus::PartiallyDetected));
+        assert!(
+            read.current
+                .diagnostics
+                .contains(&"QWEN_EXTERNAL_CREDENTIAL_REFERENCE".into())
+        );
+        assert!(
+            !read
+                .current
+                .diagnostics
+                .contains(&"QWEN_MISSING_FILE_CREDENTIAL".into())
+        );
+    }
+}
+
+#[tokio::test]
 async fn qwen_same_route_switches_accounts_in_place_and_is_byte_idempotent() {
     let temp = TempDir::new().unwrap();
     let adapter = QwenAdapter;
@@ -3137,6 +3175,44 @@ async fn qwen_write_rejects_extra_authentication_and_conflicting_policies() {
             .unwrap_err();
         assert!(error.to_string().contains(code));
         assert_eq!(tokio::fs::read(&paths.config_file).await.unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn qwen_write_rejects_external_credential_references_without_side_effects() {
+    let temp = TempDir::new().unwrap();
+    let adapter = QwenAdapter;
+    let host = environment(temp.path());
+    let paths = adapter.resolve_paths(&host, None);
+    let source = "{}\n";
+    write_fixture(&paths.config_file, source).await;
+    let (mut provider, connection_id) = provider(CliProtocol::OpenaiChat);
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Qwen,
+        provider_id: provider.id,
+        connection_id,
+        model: "fixture-model".into(),
+    };
+
+    for reference in ["$QWEN_EXTERNAL_KEY", "${QWEN_EXTERNAL_KEY}"] {
+        let ProviderData::Api(api) = &mut provider.data else {
+            unreachable!("fixture provider is API-backed");
+        };
+        api.connections[0].api_key = reference.into();
+
+        let error = adapter
+            .plan_write(&paths, &target, &provider, &host)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("QWEN_EXTERNAL_CREDENTIAL_REFERENCE")
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&paths.config_file).await.unwrap(),
+            source
+        );
     }
 }
 

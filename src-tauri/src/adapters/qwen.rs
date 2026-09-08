@@ -172,12 +172,47 @@ fn valid_env_name(name: &str) -> bool {
         && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
-fn file_credential(env: Option<&Map<String, Value>>, env_key: &str) -> Option<String> {
-    let value = nonempty_string(env?.get(env_key))?;
-    if value.contains("${") || value.contains("$(") || value.contains('`') {
-        return None;
+fn contains_qwen_env_reference(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'$' {
+            continue;
+        }
+        let Some(next) = bytes.get(index + 1) else {
+            continue;
+        };
+        if next.is_ascii_alphanumeric() || *next == b'_' {
+            return true;
+        }
+        if *next == b'{'
+            && bytes[index + 2..]
+                .iter()
+                .position(|candidate| *candidate == b'}')
+                .is_some_and(|closing| closing > 0)
+        {
+            return true;
+        }
     }
-    Some(value.to_string())
+    false
+}
+
+enum FileCredential {
+    Missing,
+    ExternalReference,
+    Literal(String),
+}
+
+fn file_credential(env: Option<&Map<String, Value>>, env_key: &str) -> FileCredential {
+    let Some(value) = nonempty_string(env.and_then(|env| env.get(env_key))) else {
+        return FileCredential::Missing;
+    };
+    if contains_qwen_env_reference(value) {
+        return FileCredential::ExternalReference;
+    }
+    if value.contains("${") || value.contains("$(") || value.contains('`') {
+        return FileCredential::Missing;
+    }
+    FileCredential::Literal(value.to_string())
 }
 
 fn is_special_only(model: &Map<String, Value>) -> bool {
@@ -314,7 +349,6 @@ fn analyze_qwen(value: &Value, environment: &HostEnvironment) -> AppResult<QwenA
                         .ok_or_else(|| AppError::Unsupported("QWEN_INVALID_ENV_KEY".into()))?,
                     None => DEFAULT_OPENAI_ENV_KEY,
                 };
-                let credential = file_credential(env, env_key);
                 if env
                     .and_then(|env| env.get(env_key))
                     .is_some_and(|value| !value.is_string())
@@ -323,9 +357,17 @@ fn analyze_qwen(value: &Value, environment: &HostEnvironment) -> AppResult<QwenA
                         "QWEN_ENV_CREDENTIAL_NOT_STRING".into(),
                     ));
                 }
-                if credential.is_none() {
-                    diagnostics.push("QWEN_MISSING_FILE_CREDENTIAL".into());
-                }
+                let credential = match file_credential(env, env_key) {
+                    FileCredential::Missing => {
+                        diagnostics.push("QWEN_MISSING_FILE_CREDENTIAL".into());
+                        None
+                    }
+                    FileCredential::ExternalReference => {
+                        diagnostics.push("QWEN_EXTERNAL_CREDENTIAL_REFERENCE".into());
+                        None
+                    }
+                    FileCredential::Literal(value) => Some(value),
+                };
                 let special_only = is_special_only(entry);
                 if special_only {
                     diagnostics.push("QWEN_SPECIAL_ONLY_MODEL".into());
@@ -697,6 +739,11 @@ impl CliAdapter for QwenAdapter {
             || connection.auth_type != ConnectionAuthType::Bearer
         {
             return Err(AppError::Validation("QWEN_INCOMPATIBLE_CONNECTION".into()));
+        }
+        if contains_qwen_env_reference(&connection.api_key) {
+            return Err(AppError::Unsupported(
+                "QWEN_EXTERNAL_CREDENTIAL_REFERENCE".into(),
+            ));
         }
         let catalog = runtime_catalog()?;
         validate_connection_identity(&catalog, provider, connection)?;
