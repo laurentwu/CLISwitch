@@ -390,7 +390,7 @@ fn supported_clis(protocol: CliProtocol) -> Vec<CliId> {
     match protocol {
         CliProtocol::AnthropicMessages => vec![CliId::ClaudeCode, CliId::Opencode],
         CliProtocol::OpenaiResponses => vec![CliId::Codex, CliId::Opencode],
-        CliProtocol::OpenaiChat => vec![CliId::Opencode],
+        CliProtocol::OpenaiChat => vec![CliId::Opencode, CliId::Qwen],
     }
 }
 
@@ -1728,6 +1728,85 @@ mod tests {
     }
 
     #[test]
+    fn qwen_catalog_support_is_limited_to_real_openai_chat_endpoints() {
+        let catalog = ProviderCatalog::load_legacy().unwrap();
+        assert!(catalog.supports_protocol(CliId::Qwen, CliProtocol::OpenaiChat));
+        assert!(!catalog.supports_protocol(CliId::Qwen, CliProtocol::OpenaiResponses));
+        assert!(!catalog.supports_protocol(CliId::Qwen, CliProtocol::AnthropicMessages));
+        assert!(
+            catalog
+                .api_relation(CliId::Qwen, "glm-coding-plan", "openai-chat")
+                .is_some()
+        );
+        assert!(
+            catalog
+                .api_relation(CliId::Qwen, "glm-coding-plan", "anthropic")
+                .is_none()
+        );
+        assert!(catalog.relations.iter().all(|relation| !matches!(
+            relation,
+            CliProviderRelation::Auth(relation) if relation.cli_id == CliId::Qwen
+        )));
+        for relation in catalog
+            .relations
+            .iter()
+            .filter_map(|relation| match relation {
+                CliProviderRelation::Api(relation) if relation.cli_id == CliId::Qwen => {
+                    Some(relation)
+                }
+                _ => None,
+            })
+        {
+            let endpoint = catalog
+                .api_template(&relation.provider_template_id)
+                .unwrap()
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.id == relation.endpoint_id)
+                .unwrap();
+            assert_eq!(endpoint.protocol, CliProtocol::OpenaiChat);
+            assert!(relation.provider_package.is_none());
+            assert!(relation.default);
+        }
+
+        let dynamic =
+            ProviderCatalog::from_cli_adapter(CliAdapterCatalog::bundled().unwrap()).unwrap();
+        for info in dynamic
+            .provider_info
+            .as_deref()
+            .unwrap()
+            .iter()
+            .filter(|info| info.selectable)
+        {
+            let has_chat = info.endpoints.iter().any(|endpoint| {
+                endpoint.selectable && endpoint.protocol == Some(CliProtocol::OpenaiChat)
+            });
+            assert_eq!(info.supported_clis.contains(&CliId::Qwen), has_chat);
+        }
+        for relation in dynamic
+            .relations
+            .iter()
+            .filter_map(|relation| match relation {
+                CliProviderRelation::Api(relation) if relation.cli_id == CliId::Qwen => {
+                    Some(relation)
+                }
+                _ => None,
+            })
+        {
+            let endpoint = dynamic
+                .api_template(&relation.provider_template_id)
+                .unwrap()
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.id == relation.endpoint_id)
+                .unwrap();
+            assert_eq!(endpoint.protocol, CliProtocol::OpenaiChat);
+            assert!(relation.provider_package.is_none());
+            assert!(relation.default);
+        }
+    }
+
+    #[test]
     fn sanitized_provider_ids_get_unique_relation_ids() {
         let value = serde_json::json!([
             {
@@ -1759,9 +1838,9 @@ mod tests {
                 CliProviderRelation::Auth(_) => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(ids.len(), 2);
-        assert_ne!(ids[0], ids[1]);
-        assert!(ids.iter().any(|id| id.ends_with("-2")));
+        assert_eq!(ids.len(), 4);
+        assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
+        assert_eq!(ids.iter().filter(|id| id.ends_with("-2")).count(), 2);
     }
 
     #[test]

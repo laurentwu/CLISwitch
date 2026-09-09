@@ -1,6 +1,6 @@
 # CLISwitch
 
-CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and safely switching user-level configurations for Claude Code, Codex CLI, and OpenCode. Version 0.1 targets Windows, macOS, and Linux; mobile platforms are intentionally out of scope.
+CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and safely switching user-level configurations for Claude Code, Codex CLI, OpenCode, and Qwen Code. Version 0.1 targets Windows, macOS, and Linux; mobile platforms are intentionally out of scope.
 
 > **Credential warning:** CLISwitch deliberately stores and displays API keys and OAuth material in plaintext. File permissions are not encryption. Read [SECURITY_MODEL.md](SECURITY_MODEL.md) before entering credentials.
 
@@ -13,10 +13,11 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 - Local discovery with explicit executable and config-directory overrides.
 - Endpoint + key providers with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages connections.
 - Provider endpoint data sourced from a bundled [CLIAdapter](https://github.com/laurentwu/CLIAdapter) snapshot, with a private local cache and a manual update action in Settings.
-- Audited CLI configuration templates pinned to a fixed CLIAdapter commit and shipped with each app version; provider-specific templates fall back to generic Claude Code, Codex CLI, or OpenCode templates.
+- Audited CLI configuration templates pinned to a fixed CLIAdapter commit and shipped with each app version; provider-specific templates fall back to generic Claude Code, Codex CLI, OpenCode, or Qwen Code templates.
 - Every upstream provider is visible by name and ID. A provider contributes only the one to three protocol endpoints it declares, and only endpoints which pass the fixed protocol and security policy are selectable.
 - Models are not merged from an external catalog: each API provider requires a selected or manually entered model ID before saving. Saved connections and short-lived API candidates discovered from CLI files can request their live `/models` list. Custom providers remain available for endpoints outside the catalog.
 - Anthropic OAuth for Claude Code and Codex OAuth for Codex CLI, using installed official CLIs or offline auth-file import.
+- Qwen Code v0.23-compatible API Key/OpenAI Chat configuration, including exact model/base-URL selection and safe same-route account switching.
 - Full plaintext viewing, copying, and editing of API keys and OAuth source content.
 - Per-CLI file previews, save-before-apply, optimistic digest conflict checks, sequential per-CLI writes, atomic replacement, verification, rollback, cancellation, and retry of failed items only.
 - Credential-bearing backups with tombstones and the latest five versions retained per source file.

@@ -47,6 +47,13 @@ const catalog: ProviderCatalog = {
       authModes: [],
       protocolAdapters: [],
     },
+    {
+      id: "qwen",
+      name: "Qwen Code",
+      protocols: ["openai-chat"],
+      authModes: [],
+      protocolAdapters: [],
+    },
   ],
   providerTemplates: [
     {
@@ -93,6 +100,16 @@ const catalog: ProviderCatalog = {
       mode: "api",
       id: "opencode-plan-chat",
       cliId: "opencode",
+      providerTemplateId: "multi-endpoint-plan",
+      endpointId: "chat",
+      authOptionId: "bearer",
+      default: true,
+      nativeProviderIds: [],
+    },
+    {
+      mode: "api",
+      id: "qwen-plan-chat",
+      cliId: "qwen",
       providerTemplateId: "multi-endpoint-plan",
       endpointId: "chat",
       authOptionId: "bearer",
@@ -165,6 +182,12 @@ describe("provider catalog selectors", () => {
       connectionsForCli(catalog, "opencode", templatedApiProvider).map((candidate) => candidate.id),
     ).toEqual(["anthropic-connection", "chat-connection"]);
     expect(preferredConnectionForCli(catalog, "opencode", templatedApiProvider)?.id).toBe(
+      "chat-connection",
+    );
+    expect(
+      connectionsForCli(catalog, "qwen", templatedApiProvider).map((candidate) => candidate.id),
+    ).toEqual(["chat-connection"]);
+    expect(preferredConnectionForCli(catalog, "qwen", templatedApiProvider)?.id).toBe(
       "chat-connection",
     );
     expect(providerSupportsCli(catalog, "codex", templatedApiProvider)).toBe(false);

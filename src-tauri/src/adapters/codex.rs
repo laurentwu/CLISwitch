@@ -291,11 +291,13 @@ impl CliAdapter for CodexAdapter {
                 },
                 model,
                 managed_provider_id,
+                managed_connection_id: None,
                 sources,
                 externally_overridden: forced_login.is_some(),
                 diagnostics,
             },
             unmanaged_api_candidates,
+            scan_status_hint: None,
         })
     }
 
@@ -304,6 +306,7 @@ impl CliAdapter for CodexAdapter {
         paths: &AdapterPaths,
         target: &ConfigurationTarget,
         provider: &ProviderProfile,
+        _environment: &HostEnvironment,
     ) -> AppResult<AdapterWritePlan> {
         let (config_source, config_digest) =
             read_file_snapshot(&paths.config_file, &paths.config_directory).await?;
@@ -344,6 +347,7 @@ impl CliAdapter for CodexAdapter {
                         api_key: &connection.api_key,
                         model: target.model(),
                         model_catalog_path: Some(&model_catalog),
+                        qwen: None,
                     },
                 )?;
                 let RenderedManagedConfig::Codex(rendered) = rendered else {

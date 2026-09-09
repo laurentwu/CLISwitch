@@ -1,0 +1,18 @@
+{
+  "modelProviders": {
+    "opencode-go": [
+      {
+        "id": "<model-id>",
+        "name": "<model-name>",
+        "envKey": "OPENCODE_API_KEY",
+        "baseUrl": "https://opencode.ai/zen/go/v1"
+      }
+    ]
+  },
+  "providerProtocol": {
+    "opencode-go": "openai"
+  },
+  "env": {
+    "OPENCODE_API_KEY": "<your-api-key>"
+  }
+}

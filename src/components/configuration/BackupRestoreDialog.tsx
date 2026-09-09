@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
+import { cliDisplayName } from "../../shared/names";
 import type { BackupMetadata, CliId, RestorePreview, ScanSnapshot } from "../../shared/types";
 import { Badge, Button, EmptyState, ErrorAlert, Modal, Spinner } from "../ui";
 
@@ -80,7 +81,7 @@ export function BackupRestoreDialog({
           {backups.data?.map((backup) => (
             <article className="backup-row" key={backup.id}>
               <div>
-                <strong>{backup.cliId}</strong>
+                <strong>{cliDisplayName(backup.cliId)}</strong>
                 <div className="path-text">{backup.originalPath}</div>
                 <small>{new Date(backup.createdAt).toLocaleString()}</small>
               </div>

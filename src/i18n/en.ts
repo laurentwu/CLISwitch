@@ -6,6 +6,7 @@ export const en = {
       save: "Save",
       cancel: "Cancel",
       close: "Close",
+      clear: "Clear",
       create: "Create",
       delete: "Delete",
       duplicate: "Duplicate",
@@ -84,6 +85,70 @@ export const en = {
         oauthProgress: "OAuth progress could not be refreshed",
         liveUpdates: "Live progress updates are unavailable; timed refresh will continue",
       },
+    },
+    qwenDiagnostics: {
+      QWEN_RELATIVE_HOME:
+        "QWEN_HOME must be an absolute path, or set an absolute manual directory.",
+      QWEN_CONFIG_NOT_UTF8: "Qwen settings are not valid UTF-8.",
+      QWEN_MALFORMED_JSONC: "Qwen settings contain malformed JSON or JSONC.",
+      QWEN_ROOT_NOT_OBJECT: "Qwen settings must have a JSON object at the root.",
+      QWEN_INVALID_PROPERTY_NAME: "Qwen settings contain an invalid property name.",
+      QWEN_DUPLICATE_PROPERTY:
+        "Qwen settings contain duplicate properties and cannot be interpreted safely.",
+      QWEN_UNSUPPORTED_VERSION: "This Qwen settings version is outside the verified v0.23 schema.",
+      QWEN_MODEL_PROVIDERS_NOT_OBJECT: "Qwen modelProviders must be an object.",
+      QWEN_PROVIDER_PROTOCOL_NOT_OBJECT: "Qwen providerProtocol must be an object.",
+      QWEN_ENV_NOT_OBJECT: "Qwen env must be an object.",
+      QWEN_MODEL_NOT_OBJECT: "Modern Qwen model selection must be an object.",
+      QWEN_SECURITY_NOT_OBJECT: "Qwen security must be an object.",
+      QWEN_SECURITY_AUTH_NOT_OBJECT: "Qwen security.auth must be an object.",
+      QWEN_MANAGED_FIELD_NOT_OBJECT: "A managed Qwen field must be an object.",
+      QWEN_PROVIDER_PROTOCOL_NOT_STRING: "A Qwen provider protocol must be a string.",
+      QWEN_SELECTED_TYPE_NOT_STRING: "Qwen selectedType must be a string.",
+      QWEN_ENFORCED_TYPE_NOT_STRING: "Qwen enforcedType must be a string.",
+      QWEN_USE_EXTERNAL_NOT_BOOLEAN: "Qwen useExternal must be a boolean.",
+      QWEN_LEGACY_PROVIDER_SCHEMA:
+        "A legacy Qwen provider schema cannot be imported automatically.",
+      QWEN_UNSUPPORTED_PROTOCOL: "A Qwen provider uses a protocol outside OpenAI Chat support.",
+      QWEN_OPENAI_PROVIDER_NOT_ARRAY: "An OpenAI-compatible Qwen provider must be a model array.",
+      QWEN_OPENAI_MODEL_NOT_OBJECT: "An OpenAI-compatible Qwen model entry must be an object.",
+      QWEN_MODEL_ID_NOT_STRING: "A Qwen model ID must be a string.",
+      QWEN_BASE_URL_NOT_STRING: "A Qwen model base URL must be a string.",
+      QWEN_ENV_CREDENTIAL_NOT_STRING: "A Qwen file credential must be a string.",
+      QWEN_MISSING_MODEL_ID: "A Qwen model entry has no model ID.",
+      QWEN_MISSING_BASE_URL: "A Qwen model entry has no explicit base URL.",
+      QWEN_INVALID_BASE_URL: "A Qwen model entry has an unsafe or invalid base URL.",
+      QWEN_INVALID_ENV_KEY: "A Qwen model entry has an invalid environment-variable name.",
+      QWEN_MISSING_FILE_CREDENTIAL:
+        "The referenced API key is missing from the Qwen settings file.",
+      QWEN_EXTERNAL_CREDENTIAL_REFERENCE:
+        "Qwen resolves this API key from an external environment variable; only file-local credentials are supported.",
+      QWEN_SPECIAL_ONLY_MODEL: "A special-purpose Qwen model cannot be used as the primary model.",
+      QWEN_SELECTED_ROUTE_NOT_FOUND:
+        "The selected Qwen model and base URL do not identify a configured route.",
+      QWEN_AMBIGUOUS_ROUTE: "More than one Qwen route has the same protocol, model, and base URL.",
+      QWEN_MISSING_SELECTION:
+        "Qwen has provider candidates but no complete OpenAI primary-model selection.",
+      QWEN_UNSUPPORTED_AUTH:
+        "The current Qwen authentication type is outside API Key/OpenAI Chat support.",
+      QWEN_LEGACY_RUNTIME_CONFIG:
+        "Legacy Qwen runtime authentication cannot be imported automatically; configure a modern model provider first.",
+      QWEN_EXTERNAL_OVERRIDE:
+        "The current process environment overrides the selected Qwen file credential.",
+      QWEN_TARGET_ENV_OVERRIDE:
+        "The target CLISwitch Qwen key is already set in the process environment.",
+      QWEN_INCOMPATIBLE_CONNECTION:
+        "This connection is not a declared OpenAI Chat/Bearer target for Qwen Code.",
+      QWEN_EXTERNAL_AUTH_POLICY:
+        "Qwen external authentication policy is enabled and blocks managed writes.",
+      QWEN_ENFORCED_AUTH_CONFLICT: "Qwen enforces a different authentication type.",
+      QWEN_EXTRA_AUTH_SETTINGS: "The target Qwen route contains additional authentication headers.",
+      QWEN_GROUP_PROTOCOL_CONFLICT: "The managed Qwen group already exists with another protocol.",
+      QWEN_GROUP_TYPE_CONFLICT: "The managed Qwen group is not a model array.",
+      QWEN_RENDER_VERIFY_FAILED:
+        "The generated Qwen settings did not pass local semantic verification.",
+      QWEN_RESTART_REQUIRED: "Start a new Qwen Code session to use this file configuration.",
+      QWEN_OAUTH_UNSUPPORTED: "Qwen OAuth is outside this compatibility baseline.",
     },
     config: {
       title: "Configurations",

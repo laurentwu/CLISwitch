@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { uniqueCopyName, validateEntityName } from "./names";
+import { CLI_MARKS, cliDisplayName, uniqueCopyName, validateEntityName } from "./names";
 
 describe("entity names", () => {
   const existing = [{ id: "one", name: "Development" }];
@@ -18,5 +18,10 @@ describe("entity names", () => {
     expect(uniqueCopyName("Development", "copy", [...existing, { name: "development copy" }])).toBe(
       "Development copy 2",
     );
+  });
+
+  it("uses stable names and marks for every CLI", () => {
+    expect(cliDisplayName("qwen")).toBe("Qwen Code");
+    expect(CLI_MARKS.qwen).toBe("QW");
   });
 });

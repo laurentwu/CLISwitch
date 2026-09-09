@@ -1,0 +1,18 @@
+{
+  "modelProviders": {
+    "<provider-id>": [
+      {
+        "id": "<model-id>",
+        "name": "<model-name>",
+        "envKey": "<provider-key>",
+        "baseUrl": "<base-url>"
+      }
+    ]
+  },
+  "providerProtocol": {
+    "<provider-id>": "openai"
+  },
+  "env": {
+    "<provider-key>": "<your-api-key>"
+  }
+}

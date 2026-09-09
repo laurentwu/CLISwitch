@@ -68,6 +68,48 @@ describe("CurrentConfigurationTab", () => {
     commandMock.mockReset();
   });
 
+  it("always shows one correctly named Qwen Code card and translates fixed diagnostics", () => {
+    const client = new QueryClient();
+    const scan: ScanSnapshot = {
+      ...codexOAuthScan,
+      items: [
+        {
+          cliId: "qwen",
+          label: "unexpected fallback label",
+          status: "partially-detected",
+          executablePath: "/fixture/bin/qwen",
+          configDirectory: "/fixture/.qwen",
+          source: "manual override",
+          current: {
+            model: "qwen-model",
+            sources: [],
+            externallyOverridden: false,
+            diagnostics: ["QWEN_AMBIGUOUS_ROUTE"],
+          },
+        },
+      ],
+    };
+    const view = render(
+      <QueryClientProvider client={client}>
+        <CurrentConfigurationTab
+          scan={scan}
+          configurations={[]}
+          providers={[]}
+          catalog={catalog}
+          onError={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getAllByRole("heading", { name: "Qwen Code" })).toHaveLength(1);
+    expect(screen.queryByText("unexpected fallback label")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("存在多个协议、模型和 base URL 相同的 Qwen 路由。"),
+    ).toBeInTheDocument();
+    expect(view.container.querySelectorAll(".cli-mark")).toHaveLength(4);
+    expect(screen.getByText("QW", { selector: ".cli-mark" })).toBeInTheDocument();
+  });
+
   it("labels successful scan diagnostics without calling the scan a failure", () => {
     const client = new QueryClient();
     const diagnostic =

@@ -769,6 +769,46 @@ fn supports_current_api_connection(
     }
 }
 
+fn current_api_connection<'a>(
+    catalog: &ProviderCatalog,
+    cli_id: CliId,
+    template_id: Option<&str>,
+    connections: &'a [crate::domain::ProviderConnection],
+    current: &crate::domain::CurrentCliConfiguration,
+) -> Option<&'a crate::domain::ProviderConnection> {
+    let connection = if cli_id == CliId::Qwen {
+        let connection_id = current.managed_connection_id?;
+        connections
+            .iter()
+            .find(|connection| connection.id == connection_id)
+    } else if let Some(connection_id) = current.managed_connection_id {
+        connections
+            .iter()
+            .find(|connection| connection.id == connection_id)
+    } else {
+        connections.iter().find(|connection| {
+            current.protocol == Some(connection.protocol)
+                && supports_current_api_connection(
+                    catalog,
+                    cli_id,
+                    template_id,
+                    connection.template_endpoint_id.as_deref(),
+                    connection.protocol,
+                )
+        })
+    };
+    connection.filter(|connection| {
+        current.protocol == Some(connection.protocol)
+            && supports_current_api_connection(
+                catalog,
+                cli_id,
+                template_id,
+                connection.template_endpoint_id.as_deref(),
+                connection.protocol,
+            )
+    })
+}
+
 #[tauri::command]
 pub async fn save_current_as_configuration(
     state: State<'_, AppState>,
@@ -785,22 +825,20 @@ pub async fn save_current_as_configuration(
         let Some(current) = item.current else {
             continue;
         };
-        let (Some(provider_id), Some(model)) = (current.managed_provider_id, current.model) else {
+        let (Some(provider_id), Some(model)) = (current.managed_provider_id, current.model.clone())
+        else {
             continue;
         };
         let provider = state.repository.get_provider(provider_id).await?;
         match &provider.data {
             ProviderData::Api(api) => {
-                if let Some(connection) = api.connections.iter().find(|connection| {
-                    current.protocol == Some(connection.protocol)
-                        && supports_current_api_connection(
-                            &catalog,
-                            item.cli_id,
-                            provider.template_id.as_deref(),
-                            connection.template_endpoint_id.as_deref(),
-                            connection.protocol,
-                        )
-                }) {
+                if let Some(connection) = current_api_connection(
+                    &catalog,
+                    item.cli_id,
+                    provider.template_id.as_deref(),
+                    &api.connections,
+                    &current,
+                ) {
                     targets.push(ConfigurationTarget::Api {
                         cli_id: item.cli_id,
                         provider_id,
@@ -1483,6 +1521,51 @@ mod tests {
         assert!(connection.default_model.is_empty());
         assert!(connection.validate_without_default_model().is_ok());
         assert!(connection.validate().is_err());
+    }
+
+    #[test]
+    fn qwen_current_connection_requires_and_uses_the_exact_managed_connection_id() {
+        let catalog = crate::catalog::legacy_catalog().unwrap();
+        let make_connection = |endpoint: &str| crate::domain::ProviderConnection {
+            id: Uuid::new_v4(),
+            template_endpoint_id: None,
+            credential_slot_id: "api-key".into(),
+            protocol: CliProtocol::OpenaiChat,
+            endpoint: Url::parse(endpoint).unwrap(),
+            auth_type: ConnectionAuthType::Bearer,
+            api_key: "fixture-key".into(),
+            default_model: "fixture-model".into(),
+            verification: VerificationInfo::default(),
+        };
+        let connections = vec![
+            make_connection("https://first.example/v1"),
+            make_connection("https://second.example/v1"),
+        ];
+        let mut current = crate::domain::CurrentCliConfiguration {
+            provider_name: Some("fixture".into()),
+            protocol: Some(CliProtocol::OpenaiChat),
+            auth_kind: Some("api".into()),
+            model: Some("fixture-model".into()),
+            managed_provider_id: Some(Uuid::new_v4()),
+            managed_connection_id: None,
+            sources: Vec::new(),
+            externally_overridden: false,
+            diagnostics: Vec::new(),
+        };
+        assert!(
+            current_api_connection(catalog, CliId::Qwen, None, &connections, &current).is_none()
+        );
+
+        current.managed_connection_id = Some(connections[1].id);
+        assert_eq!(
+            current_api_connection(catalog, CliId::Qwen, None, &connections, &current)
+                .map(|connection| connection.id),
+            Some(connections[1].id)
+        );
+        current.managed_connection_id = Some(Uuid::new_v4());
+        assert!(
+            current_api_connection(catalog, CliId::Qwen, None, &connections, &current).is_none()
+        );
     }
 
     #[test]

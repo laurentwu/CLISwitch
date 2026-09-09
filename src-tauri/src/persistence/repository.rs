@@ -1246,6 +1246,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn qwen_manual_path_and_target_survive_repository_reopen_without_altering_old_targets() {
+        let (_temp, paths, repository) = repository().await;
+        let mut settings = repository.get_settings().await.unwrap();
+        assert_eq!(settings.manual_locations.len(), CliId::ALL.len());
+        let qwen = settings
+            .manual_locations
+            .iter_mut()
+            .find(|location| location.cli_id == CliId::Qwen)
+            .unwrap();
+        qwen.executable_path = Some(std::path::PathBuf::from("/fixture/bin/qwen"));
+        qwen.config_directory = Some(std::path::PathBuf::from("/fixture/qwen-home"));
+        repository
+            .update_settings(&settings, settings.revision)
+            .await
+            .unwrap();
+
+        let mut provider = api_provider("Qwen persistence provider");
+        let ProviderData::Api(api) = &mut provider.data else {
+            unreachable!()
+        };
+        api.connections[0].protocol = CliProtocol::OpenaiChat;
+        let connection_id = api.connections[0].id;
+        repository.insert_provider(&provider, None).await.unwrap();
+        let qwen_configuration = configuration(
+            "Qwen target",
+            vec![ConfigurationTarget::Api {
+                cli_id: CliId::Qwen,
+                provider_id: provider.id,
+                connection_id,
+                model: "fixture/model".into(),
+            }],
+        );
+        repository
+            .insert_configuration(&qwen_configuration)
+            .await
+            .unwrap();
+        let old_configuration = configuration(
+            "Old target",
+            vec![ConfigurationTarget::Api {
+                cli_id: CliId::Opencode,
+                provider_id: provider.id,
+                connection_id,
+                model: "fixture/model".into(),
+            }],
+        );
+        repository
+            .insert_configuration(&old_configuration)
+            .await
+            .unwrap();
+        drop(repository);
+
+        let reopened = Repository::open(&paths.database, Redactor::default())
+            .await
+            .unwrap();
+        let persisted_settings = reopened.get_settings().await.unwrap();
+        let qwen_location = persisted_settings
+            .manual_locations
+            .iter()
+            .find(|location| location.cli_id == CliId::Qwen)
+            .unwrap();
+        assert_eq!(
+            qwen_location.config_directory.as_deref(),
+            Some(Path::new("/fixture/qwen-home"))
+        );
+        let persisted_qwen = reopened
+            .get_configuration(qwen_configuration.id)
+            .await
+            .unwrap();
+        assert!(matches!(
+            persisted_qwen.targets.as_slice(),
+            [ConfigurationTarget::Api {
+                cli_id: CliId::Qwen,
+                connection_id: persisted_connection,
+                ..
+            }] if *persisted_connection == connection_id
+        ));
+        let persisted_old = reopened
+            .get_configuration(old_configuration.id)
+            .await
+            .unwrap();
+        assert_eq!(persisted_old.targets.len(), 1);
+        assert_eq!(persisted_old.targets[0].cli_id(), CliId::Opencode);
+    }
+
+    #[tokio::test]
     async fn template_migration_preserves_legacy_providers_and_targets_as_custom_data() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)

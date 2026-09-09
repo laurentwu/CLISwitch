@@ -1,6 +1,6 @@
 # CLISwitch
 
-CLISwitch 是一个基于 Tauri 2 的本地桌面应用，用于查看、保存并安全切换 Claude Code、Codex CLI 与 OpenCode 的用户级配置。0.1 面向 Windows、macOS 和 Linux，不支持移动端。
+CLISwitch 是一个基于 Tauri 2 的本地桌面应用，用于查看、保存并安全切换 Claude Code、Codex CLI、OpenCode 与 Qwen Code 的用户级配置。0.1 面向 Windows、macOS 和 Linux，不支持移动端。
 
 > **凭据警告：** CLISwitch 有意以明文保存并显示 API Key 和 OAuth 内容。文件权限不等于加密。录入凭据前请阅读 [SECURITY_MODEL.md](SECURITY_MODEL.md)。
 
@@ -13,10 +13,11 @@ CLISwitch 是一个基于 Tauri 2 的本地桌面应用，用于查看、保存�
 - 支持自动发现，以及手工指定 CLI 可执行文件和配置目录。
 - 端点 + Key 供应商可配置 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 接入方式。
 - Provider 端点数据来自随软件内置的 [CLIAdapter](https://github.com/laurentwu/CLIAdapter) 快照；应用使用私有本地缓存，并可在设置页手动更新。
-- CLI 配置模板固定到经审查的 CLIAdapter 提交并随应用版本发布；供应商专用模板缺失时回退对应的 Claude Code、Codex CLI 或 OpenCode 通用模板。
+- CLI 配置模板固定到经审查的 CLIAdapter 提交并随应用版本发布；供应商专用模板缺失时回退对应的 Claude Code、Codex CLI、OpenCode 或 Qwen Code 通用模板。
 - 所有上游 Provider 都按名称和 ID 显示。每个 Provider 只提供自身声明的 1～3 个协议端点，且只有通过固定协议和安全策略校验的端点可选。
 - 不从外部目录合并模型；保存 API Provider 前必须选择或手工填写模型 ID。已保存的连接和从 CLI 文件扫描到的短期 API 候选均可实时请求其 `/models` 列表；同时保留自定义 Provider。
 - Claude Code 支持 Anthropic OAuth，Codex CLI 支持 Codex OAuth；可调用已安装的官方 CLI 登录，也可离线导入 auth 文件。
+- Qwen Code 支持经 v0.23 验证的 API Key/OpenAI Chat 配置，包括模型与地址精确选择，以及同路由账号安全切换。
 - API Key 与 OAuth 原文均完整明文显示、复制和编辑；OAuth 原文允许保存任意 UTF-8 内容，即使格式已损坏。
 - 按 CLI 查看文件预览、先保存再应用、摘要冲突检测、按 CLI 顺序执行、原子替换、写后验证、失败回滚、取消，以及只重试失败项。
 - 含凭据的备份与 tombstone 恢复；每个源文件仅保留最近 5 份。

@@ -365,6 +365,7 @@ impl CliAdapter for ClaudeCodeAdapter {
                 auth_kind,
                 model,
                 managed_provider_id: None,
+                managed_connection_id: None,
                 sources,
                 externally_overridden,
                 diagnostics: if externally_overridden {
@@ -374,6 +375,7 @@ impl CliAdapter for ClaudeCodeAdapter {
                 },
             },
             unmanaged_api_candidates,
+            scan_status_hint: None,
         })
     }
 
@@ -382,6 +384,7 @@ impl CliAdapter for ClaudeCodeAdapter {
         paths: &AdapterPaths,
         target: &ConfigurationTarget,
         provider: &ProviderProfile,
+        _environment: &HostEnvironment,
     ) -> AppResult<AdapterWritePlan> {
         let (config_source, config_digest) =
             read_file_snapshot(&paths.config_file, &paths.config_directory).await?;
@@ -420,6 +423,7 @@ impl CliAdapter for ClaudeCodeAdapter {
                         api_key: &connection.api_key,
                         model,
                         model_catalog_path: None,
+                        qwen: None,
                     },
                 )?;
                 let RenderedManagedConfig::Claude(rendered) = rendered else {

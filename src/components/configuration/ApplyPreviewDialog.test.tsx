@@ -125,4 +125,44 @@ describe("ApplyPreviewDialog", () => {
       expect(commandMock).toHaveBeenCalledWith("start_apply", { previewId: retryPreview.id }),
     );
   });
+
+  it("uses the Qwen product name, settings path, and translated conflict diagnostic", async () => {
+    const qwenTarget: ConfigurationTarget = {
+      ...target,
+      cliId: "qwen",
+    };
+    const qwenPreview: ApplyPreview = {
+      ...preview,
+      items: [
+        {
+          cliId: "qwen",
+          state: "incompatible",
+          path: "/fixture/.qwen/settings.json",
+          providerName: "Fixture provider",
+          protocol: "openai-chat",
+          model: "fixture-model",
+          changes: [],
+          files: [],
+          warning: "Unsupported: QWEN_AMBIGUOUS_ROUTE",
+        },
+      ],
+    };
+    commandMock.mockResolvedValue(qwenPreview);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApplyPreviewDialog
+          configuration={configuration}
+          target={qwenTarget}
+          open
+          onClose={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("/fixture/.qwen/settings.json")).toBeInTheDocument();
+    expect(screen.getAllByText("Qwen Code").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText("存在多个协议、模型和 base URL 相同的 Qwen 路由。"),
+    ).toBeInTheDocument();
+  });
 });

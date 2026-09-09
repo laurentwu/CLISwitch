@@ -46,8 +46,8 @@ impl HostEnvironment {
             "LOCALAPPDATA",
             "OPENCODE_CONFIG",
             "OPENCODE_CONFIG_DIR",
+            "QWEN_HOME",
         ];
-        const PRESENCE_APPROVED: &[&str] = &crate::config_templates::CLAUDE_MANAGED_ENV_FIELDS;
         let variables = VALUE_APPROVED
             .iter()
             .filter_map(|name| {
@@ -56,10 +56,9 @@ impl HostEnvironment {
                     .map(|value| ((*name).to_string(), value))
             })
             .collect();
-        let present_variables = PRESENCE_APPROVED
-            .iter()
-            .filter(|name| std::env::var_os(name).is_some())
-            .map(|name| (*name).to_string())
+        let present_variables = std::env::vars_os()
+            .filter_map(|(name, _)| name.into_string().ok())
+            .filter(|name| valid_environment_name(name))
             .collect();
         Ok(Self {
             home,
@@ -80,8 +79,26 @@ impl HostEnvironment {
     }
 
     pub fn is_present(&self, key: &str) -> bool {
-        self.variables.contains_key(key) || self.present_variables.contains(key)
+        if self.os == "windows" {
+            self.variables
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case(key))
+                || self
+                    .present_variables
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(key))
+        } else {
+            self.variables.contains_key(key) || self.present_variables.contains(key)
+        }
     }
+}
+
+fn valid_environment_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +133,7 @@ pub struct AdapterApiCandidate {
 pub struct AdapterReadResult {
     pub current: CurrentCliConfiguration,
     pub unmanaged_api_candidates: Vec<AdapterApiCandidate>,
+    pub scan_status_hint: Option<crate::domain::ScanStatus>,
 }
 
 #[derive(Clone)]
@@ -165,6 +183,7 @@ pub trait CliAdapter: Send + Sync {
         paths: &AdapterPaths,
         target: &ConfigurationTarget,
         provider: &ProviderProfile,
+        environment: &HostEnvironment,
     ) -> AppResult<AdapterWritePlan>;
     async fn verify_applied(&self, plan: &AdapterWritePlan) -> AppResult<bool> {
         for file in &plan.files {
@@ -249,6 +268,25 @@ pub fn namespaced_provider_id(provider_id: uuid::Uuid) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_presence_uses_windows_case_rules_only_on_windows() {
+        let mut environment = HostEnvironment {
+            home: PathBuf::from("/fixture"),
+            variables: BTreeMap::from([("APPDATA".into(), "fixture".into())]),
+            present_variables: HashSet::from(["openai_api_key".into()]),
+            os: "windows".into(),
+        };
+
+        assert!(environment.is_present("appdata"));
+        assert!(environment.is_present("OPENAI_API_KEY"));
+
+        environment.os = "linux".into();
+        assert!(!environment.is_present("appdata"));
+        assert!(!environment.is_present("OPENAI_API_KEY"));
+        assert!(environment.is_present("APPDATA"));
+        assert!(environment.is_present("openai_api_key"));
+    }
 
     #[tokio::test]
     async fn source_snapshot_is_non_mutating_and_hashes_the_same_bytes() {

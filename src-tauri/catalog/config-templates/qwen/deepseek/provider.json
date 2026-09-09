@@ -1,0 +1,10 @@
+{
+  "id": "deepseek",
+  "name": "DeepSeek",
+  "env": [
+    "DEEPSEEK_API_KEY"
+  ],
+  "protocol": "openai-compatible",
+  "base_url": "https://api.deepseek.com",
+  "docs": "https://api-docs.deepseek.com/quick_start/pricing"
+}

@@ -1,15 +1,16 @@
 # CLI support baseline
 
-This matrix is the compatibility contract for CLISwitch 0.1, reviewed 2026-09-06 against the
+This matrix is the compatibility contract for CLISwitch 0.1, reviewed 2026-09-07 against the
 stable public CLI schemas. CLISwitch fingerprints the supported shape and refuses known
 incompatible shapes rather than replacing an entire file. Re-test these mappings before each
 release because upstream CLIs can change independently.
 
-| CLI         | Discovery and user files                                                                                                                                                                     | API protocols                                     | OAuth                                                                    | Schema fingerprint                                                     |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| Claude Code | `claude`; `CLAUDE_CONFIG_DIR` or `~/.claude`; `settings.json`; Linux/Windows `.credentials.json`                                                                                             | Anthropic Messages                                | Anthropic only; official `claude auth login`; macOS `claude setup-token` | `stable-2026-09:templated-model-slots+env/.credentials.json`           |
-| Codex CLI   | `codex`; `CODEX_HOME` or `~/.codex`; `config.toml`; `auth.json`; CLISwitch-owned `cliswitch-models/<provider UUID>-<connection UUID>.json`                                                   | OpenAI Responses only                             | Codex only; official `codex login`; file credential store                | `stable-2026-09:templated-responses+model-catalog/file-auth`           |
-| OpenCode    | `opencode`; `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`; `opencode.jsonc` preferred over `opencode.json`; `$XDG_DATA_HOME/opencode/auth.json`; `$XDG_STATE_HOME/opencode/model.json` | OpenAI Chat, OpenAI Responses, Anthropic Messages | Not supported in 0.1                                                     | `stable-v1:templated-provider-leaves+auth.type-api+state.model.recent` |
+| CLI         | Discovery and user files                                                                                                                                                                     | API protocols                                     | OAuth                                                                    | Schema fingerprint                                                              |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| Claude Code | `claude`; `CLAUDE_CONFIG_DIR` or `~/.claude`; `settings.json`; Linux/Windows `.credentials.json`                                                                                             | Anthropic Messages                                | Anthropic only; official `claude auth login`; macOS `claude setup-token` | `stable-2026-09:templated-model-slots+env/.credentials.json`                    |
+| Codex CLI   | `codex`; `CODEX_HOME` or `~/.codex`; `config.toml`; `auth.json`; CLISwitch-owned `cliswitch-models/<provider UUID>-<connection UUID>.json`                                                   | OpenAI Responses only                             | Codex only; official `codex login`; file credential store                | `stable-2026-09:templated-responses+model-catalog/file-auth`                    |
+| OpenCode    | `opencode`; `$XDG_CONFIG_HOME/opencode` or `~/.config/opencode`; `opencode.jsonc` preferred over `opencode.json`; `$XDG_DATA_HOME/opencode/auth.json`; `$XDG_STATE_HOME/opencode/model.json` | OpenAI Chat, OpenAI Responses, Anthropic Messages | Not supported in 0.1                                                     | `stable-v1:templated-provider-leaves+auth.type-api+state.model.recent`          |
+| Qwen Code   | `qwen`; `QWEN_HOME` or `~/.qwen`; `settings.json`                                                                                                                                            | OpenAI Chat only                                  | Not supported; legacy Qwen OAuth tokens are not read                     | `stable-v0.23:templated-modelProviders+providerProtocol+file-env+model.baseUrl` |
 
 Executable discovery uses, in order, a user-approved manual path, the process PATH, an approved
 login-shell PATH on Unix, and documented/common per-user install locations. Config-directory
@@ -25,11 +26,11 @@ missing protocol connection.
 
 Source protocols are mapped to fixed built-in adapters:
 
-| Source protocol      | Internal protocol       | Supported CLIs        | OpenCode package            |
-| -------------------- | ----------------------- | --------------------- | --------------------------- |
-| `anthropic-messages` | Anthropic Messages      | Claude Code, OpenCode | `@ai-sdk/anthropic`         |
-| `responses`          | OpenAI Responses        | Codex CLI, OpenCode   | `@ai-sdk/openai`            |
-| `openai-compatible`  | OpenAI Chat Completions | OpenCode              | `@ai-sdk/openai-compatible` |
+| Source protocol      | Internal protocol       | Supported CLIs        | OpenCode package                                        |
+| -------------------- | ----------------------- | --------------------- | ------------------------------------------------------- |
+| `anthropic-messages` | Anthropic Messages      | Claude Code, OpenCode | `@ai-sdk/anthropic`                                     |
+| `responses`          | OpenAI Responses        | Codex CLI, OpenCode   | `@ai-sdk/openai`                                        |
+| `openai-compatible`  | OpenAI Chat Completions | OpenCode, Qwen Code   | `@ai-sdk/openai-compatible` for OpenCode; none for Qwen |
 
 For OpenCode, `openai-compatible` is the native choice when it is declared. Otherwise the user
 must select one of the provider's actual compatible endpoints. Claude Code and Codex CLI likewise
@@ -127,6 +128,40 @@ never change this template version. Selected models remain user values, not a te
   `options.apiKey` is removed; `auth.json` receives `type = "api"` and the key. Known OAuth fields
   on that same auth entry are cleared while unknown fields and other auth entries remain.
 
+### Qwen Code v0.23 schema
+
+- CLISwitch supports the modern array-shaped `modelProviders` schema with explicit `openai`
+  `providerProtocol`, file-local `env` credentials, `security.auth.selectedType = "openai"`, and
+  paired `model.name`/`model.baseUrl` selection. `$version` may be absent or numeric `4`; other
+  declared versions, legacy provider objects, legacy runtime auth, OAuth, Anthropic, Responses,
+  Gemini, and Vertex AI are diagnosed but not migrated or imported.
+- The directory precedence is an absolute manual override, non-empty `QWEN_HOME` (absolute or
+  `~`-expanded), then `~/.qwen`. A relative `QWEN_HOME` is retained as invalid and blocks reads and
+  writes instead of silently falling back.
+- Each saved connection uses `cliswitch_qwen_<connection UUID>` and
+  `CLISWITCH_QWEN_KEY_<CONNECTION UUID>` identifiers. The latter is stored in the same file's
+  `env` object; CLISwitch never reads an external variable value. If that variable exists in the
+  current process environment, applying is blocked.
+- Qwen v0.23 resolves both `$VAR` and `${VAR}` references recursively. CLISwitch diagnoses these
+  forms instead of importing or writing them as file-local credentials; environment-backed
+  credentials remain outside this compatibility baseline.
+- The current route is selected only when the auth type, model name, and optional exact base URL
+  identify one primary OpenAI model. File candidates are grouped by endpoint and identical file
+  credential. Matching a saved connection requires a unique endpoint/auth/key identity and records
+  its exact connection UUID; provider group names and `cliswitch_` prefixes are not identities.
+- Applying searches all primary OpenAI routes by normalized endpoint (trailing slash ignored only
+  for duplicate protection) plus the exact model ID. One match is patched in place; no match
+  appends to the connection group; multiple matches fail. `model.baseUrl` always receives the
+  actual saved endpoint so equal model IDs on different endpoints remain distinguishable.
+- Only model `id`, `name`, `baseUrl`, and `envKey`, the new group's protocol mapping, the target
+  file credential, and startup selection are managed. Comments, order, line endings, other
+  providers/models, generation settings, MCP/tools/theme, ordinary headers, and legacy auth fields
+  remain. Special-only models, external-auth policies, conflicting enforced auth, and additional
+  authentication headers block the target write.
+- Applying updates the user file for the next Qwen process; an already running Qwen session is not
+  hot-reloaded. Project `.env`, CLI arguments, policy, and variables from another launch context
+  remain outside the runtime-effect guarantee.
+
 ## Behavior outside the baseline
 
 Unreadable files, malformed roots, unsupported field types, beta/unknown managed schemas,
@@ -135,4 +170,4 @@ reported per CLI. One failed CLI does not stop the remaining queue. A missing CL
 does not cause CLISwitch to create a speculative configuration for it.
 
 OAuth is intentionally one-to-one: Anthropic OAuth can target only Claude Code, and Codex OAuth can
-target only Codex CLI. OpenCode uses endpoint + key providers only in 0.1.
+target only Codex CLI. OpenCode and Qwen Code use endpoint + key providers only in 0.1.
