@@ -142,8 +142,10 @@ describe("CLISwitch desktop shell", () => {
       },
       { timeout: 30_000, timeoutMsg: "Expected the UI scan to finish" },
     );
+    const qwenCardSelector =
+      "//*[contains(concat(' ', normalize-space(@class), ' '), ' cli-card-grid ')]//*[contains(concat(' ', normalize-space(@class), ' '), ' card ')][.//h3[normalize-space()='Qwen Code']]";
     const manageCandidate = await $(
-      "//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]//button[contains(normalize-space(.), 'as provider') or contains(normalize-space(.), '保存为供应商')]",
+      `${qwenCardSelector}//button[contains(normalize-space(.), 'as provider') or contains(normalize-space(.), '保存为供应商')]`,
     );
     await manageCandidate.waitForClickable();
     await manageCandidate.click();
@@ -152,7 +154,7 @@ describe("CLISwitch desktop shell", () => {
     await candidateDialog.$("#candidate-model").setValue("fixture-qwen-model");
     await candidateDialog.$(".modal-footer button:last-child").click();
 
-    const qwenCard = await $("//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]");
+    const qwenCard = await $(qwenCardSelector);
     await browser.waitUntil(async () => (await qwenCard.getText()).includes("Qwen account A"));
 
     await $(
@@ -245,7 +247,7 @@ describe("CLISwitch desktop shell", () => {
 
     await $("//button[@role='tab' and normalize-space()='Qwen account A configuration']").click();
     const qwenTarget = await $(
-      "//*[contains(@class, 'target-list')]//*[contains(@class, 'card')][contains(., 'Qwen Code')]",
+      "//*[contains(concat(' ', normalize-space(@class), ' '), ' target-list ')]//*[contains(concat(' ', normalize-space(@class), ' '), ' card ')][contains(., 'Qwen Code')]",
     );
     await qwenTarget.$("button").click();
     const previewDialog = await $("[role=dialog]");
@@ -282,7 +284,7 @@ describe("CLISwitch desktop shell", () => {
       "//button[@role='tab' and (normalize-space()='Current configuration' or normalize-space()='当前配置')]",
     ).click();
     const qwenBackupButton = await $(
-      "//*[contains(@class, 'card')][.//h3[normalize-space()='Qwen Code']]//button[contains(normalize-space(.), 'Backups') or contains(normalize-space(.), '备份')]",
+      `${qwenCardSelector}//button[contains(normalize-space(.), 'Backups') or contains(normalize-space(.), '备份')]`,
     );
     await qwenBackupButton.click();
     await browser.waitUntil(
