@@ -313,9 +313,10 @@ mod tests {
 
     struct BackupFixture {
         service: BackupService,
+        #[cfg(unix)]
         paths: PrivatePaths,
         root: PathBuf,
-        temp: TempDir,
+        _temp: TempDir,
     }
 
     async fn fixture() -> BackupFixture {
@@ -330,9 +331,10 @@ mod tests {
         tokio::fs::create_dir_all(&root).await.unwrap();
         BackupFixture {
             service,
+            #[cfg(unix)]
             paths,
             root,
-            temp,
+            _temp: temp,
         }
     }
 
@@ -441,7 +443,7 @@ mod tests {
         )
         .unwrap();
         tokio::fs::remove_file(&backup_path).await.unwrap();
-        let outside = fixture.temp.path().join("outside-secret");
+        let outside = fixture._temp.path().join("outside-secret");
         tokio::fs::write(&outside, b"must not be read")
             .await
             .unwrap();
