@@ -1233,6 +1233,38 @@ fn extract_setup_token(output: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::{persistence::repository::Repository, services::cli_manager::AdapterRegistry};
+    use tempfile::TempDir;
+
+    struct OAuthFixture {
+        service: OAuthService,
+        repository: Repository,
+        redactor: Redactor,
+        paths: PrivatePaths,
+        temp: TempDir,
+    }
+
+    async fn fixture() -> OAuthFixture {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = PrivatePaths::from_root(temp.path().join("data"));
+        paths.ensure().await.unwrap();
+        let redactor = Redactor::default();
+        let repository = Repository::open(&paths.database, redactor.clone())
+            .await
+            .unwrap();
+        let service = OAuthService::new(
+            repository.clone(),
+            paths.clone(),
+            AdapterRegistry::default(),
+            redactor.clone(),
+        );
+        OAuthFixture {
+            service,
+            repository,
+            redactor,
+            paths,
+            temp,
+        }
+    }
 
     #[test]
     fn control_output_is_bounded_and_cleaned() {
@@ -1296,14 +1328,8 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_oauth_account_or_digest_requires_updating_existing_profile() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let redactor = Redactor::default();
-        let repository = Repository::open(&paths.database, redactor.clone())
-            .await
-            .unwrap();
-        let service = OAuthService::new(repository, paths, AdapterRegistry::default(), redactor);
+        let fixture = fixture().await;
+        let service = &fixture.service;
         let payload =
             br#"{"tokens":{"account_id":"account-a","access_token":"fixture-token"}}"#.to_vec();
         service
@@ -1332,19 +1358,9 @@ mod tests {
 
     #[tokio::test]
     async fn saving_active_auth_reuses_and_refreshes_a_matching_provider() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let redactor = Redactor::default();
-        let repository = Repository::open(&paths.database, redactor.clone())
-            .await
-            .unwrap();
-        let service = OAuthService::new(
-            repository.clone(),
-            paths,
-            AdapterRegistry::default(),
-            redactor,
-        );
+        let fixture = fixture().await;
+        let service = &fixture.service;
+        let repository = &fixture.repository;
         let original =
             br#"{"tokens":{"account_id":"account-a","access_token":"old-token"}}"#.to_vec();
         let existing = service
@@ -1354,7 +1370,7 @@ mod tests {
         let refreshed =
             br#"{"tokens":{"account_id":"account-a","access_token":"new-token"}}"#.to_vec();
         let digest = bytes_digest(&refreshed);
-        let native_auth = temp.path().join("auth.json");
+        let native_auth = fixture.temp.path().join("auth.json");
         tokio::fs::write(&native_auth, &refreshed).await.unwrap();
         let settings = AppSettings {
             plaintext_risk_accepted: true,
@@ -1408,22 +1424,12 @@ mod tests {
 
     #[tokio::test]
     async fn saving_active_auth_enforces_plaintext_ack_and_codex_scope() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let redactor = Redactor::default();
-        let repository = Repository::open(&paths.database, redactor.clone())
-            .await
-            .unwrap();
-        let service = OAuthService::new(
-            repository.clone(),
-            paths,
-            AdapterRegistry::default(),
-            redactor,
-        );
+        let fixture = fixture().await;
+        let service = &fixture.service;
+        let repository = &fixture.repository;
         let content = br#"{"tokens":{"account_id":"account-a","access_token":"fixture-token"}}"#;
         let digest = bytes_digest(content);
-        let native_auth = temp.path().join("auth.json");
+        let native_auth = fixture.temp.path().join("auth.json");
         tokio::fs::write(&native_auth, content).await.unwrap();
 
         assert!(matches!(
@@ -1459,19 +1465,10 @@ mod tests {
 
     #[tokio::test]
     async fn replacement_and_strict_editor_update_exclude_the_current_profile() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let redactor = Redactor::default();
-        let repository = Repository::open(&paths.database, redactor.clone())
-            .await
-            .unwrap();
-        let service = OAuthService::new(
-            repository.clone(),
-            paths,
-            AdapterRegistry::default(),
-            redactor.clone(),
-        );
+        let fixture = fixture().await;
+        let service = &fixture.service;
+        let repository = &fixture.repository;
+        let redactor = &fixture.redactor;
         let first = service
             .import_bytes(
                 OAuthKind::Codex,
@@ -1514,19 +1511,10 @@ mod tests {
 
     #[tokio::test]
     async fn direct_raw_creation_requires_ack_and_validates_before_writing() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let redactor = Redactor::default();
-        let repository = Repository::open(&paths.database, redactor.clone())
-            .await
-            .unwrap();
-        let service = OAuthService::new(
-            repository.clone(),
-            paths.clone(),
-            AdapterRegistry::default(),
-            redactor,
-        );
+        let fixture = fixture().await;
+        let service = &fixture.service;
+        let repository = &fixture.repository;
+        let paths = &fixture.paths;
         let raw = r#"{"tokens":{"account_id":"account-a","access_token":"fixture-token"}}"#;
 
         assert!(matches!(
@@ -1576,19 +1564,10 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_duplicate_or_name_conflicting_update_keeps_file_and_profile_unchanged() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let redactor = Redactor::default();
-        let repository = Repository::open(&paths.database, redactor.clone())
-            .await
-            .unwrap();
-        let service = OAuthService::new(
-            repository.clone(),
-            paths.clone(),
-            AdapterRegistry::default(),
-            redactor,
-        );
+        let fixture = fixture().await;
+        let service = &fixture.service;
+        let repository = &fixture.repository;
+        let paths = &fixture.paths;
         let first_raw = r#"{"tokens":{"account_id":"account-a","access_token":"first-token"}}"#;
         let second_raw = r#"{"tokens":{"account_id":"account-b","access_token":"second-token"}}"#;
         let first = service
@@ -1660,19 +1639,10 @@ mod tests {
 
     #[tokio::test]
     async fn renaming_legacy_unvalidated_oauth_keeps_content_and_verification_state() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let redactor = Redactor::default();
-        let repository = Repository::open(&paths.database, redactor.clone())
-            .await
-            .unwrap();
-        let service = OAuthService::new(
-            repository.clone(),
-            paths.clone(),
-            AdapterRegistry::default(),
-            redactor,
-        );
+        let fixture = fixture().await;
+        let service = &fixture.service;
+        let repository = &fixture.repository;
+        let paths = &fixture.paths;
         let legacy_raw = "legacy UTF-8 content\nnot a recognized auth document";
         let legacy_id = Uuid::new_v4();
         let now = Utc::now();

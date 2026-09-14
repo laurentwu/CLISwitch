@@ -1,8 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { ProviderCatalog, ScanSnapshot } from "../../shared/types";
+import { renderWithQueryClient } from "../../test/render";
 import { CurrentConfigurationTab } from "./CurrentConfigurationTab";
 
 const commandMock = vi.hoisted(() => vi.fn());
@@ -69,7 +69,6 @@ describe("CurrentConfigurationTab", () => {
   });
 
   it("always shows one correctly named Qwen Code card and translates fixed diagnostics", () => {
-    const client = new QueryClient();
     const scan: ScanSnapshot = {
       ...codexOAuthScan,
       items: [
@@ -89,16 +88,14 @@ describe("CurrentConfigurationTab", () => {
         },
       ],
     };
-    const view = render(
-      <QueryClientProvider client={client}>
-        <CurrentConfigurationTab
-          scan={scan}
-          configurations={[]}
-          providers={[]}
-          catalog={catalog}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    const view = renderWithQueryClient(
+      <CurrentConfigurationTab
+        scan={scan}
+        configurations={[]}
+        providers={[]}
+        catalog={catalog}
+        onError={vi.fn()}
+      />,
     );
 
     expect(screen.getAllByRole("heading", { name: "Qwen Code" })).toHaveLength(1);
@@ -111,7 +108,6 @@ describe("CurrentConfigurationTab", () => {
   });
 
   it("labels successful scan diagnostics without calling the scan a failure", () => {
-    const client = new QueryClient();
     const diagnostic =
       "OpenCode has multiple configured models and no explicit or valid last-used model";
     const scan: ScanSnapshot = {
@@ -126,16 +122,14 @@ describe("CurrentConfigurationTab", () => {
         },
       ],
     };
-    render(
-      <QueryClientProvider client={client}>
-        <CurrentConfigurationTab
-          scan={scan}
-          configurations={[]}
-          providers={[]}
-          catalog={catalog}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <CurrentConfigurationTab
+        scan={scan}
+        configurations={[]}
+        providers={[]}
+        catalog={catalog}
+        onError={vi.fn()}
+      />,
     );
 
     expect(screen.getByText("扫描诊断")).toBeInTheDocument();
@@ -143,39 +137,21 @@ describe("CurrentConfigurationTab", () => {
     expect(screen.queryByText("扫描失败")).not.toBeInTheDocument();
   });
 
-  it("keeps CLI paths visible without offering path selection", () => {
-    const client = new QueryClient();
-    render(
-      <QueryClientProvider client={client}>
-        <CurrentConfigurationTab
-          scan={codexOAuthScan}
-          configurations={[]}
-          providers={[]}
-          catalog={catalog}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+  it("shows read-only Codex paths and offers an OAuth-named save dialog", () => {
+    renderWithQueryClient(
+      <CurrentConfigurationTab
+        scan={codexOAuthScan}
+        configurations={[]}
+        providers={[]}
+        catalog={catalog}
+        onError={vi.fn()}
+      />,
     );
 
     expect(screen.getByText("/fixture/bin/codex")).toBeInTheDocument();
     expect(screen.getByText("/fixture/.codex")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "选择可执行文件" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "选择配置目录" })).not.toBeInTheDocument();
-  });
-
-  it("offers to save detected Codex OAuth with an OAuth-specific default name", () => {
-    const client = new QueryClient();
-    render(
-      <QueryClientProvider client={client}>
-        <CurrentConfigurationTab
-          scan={codexOAuthScan}
-          configurations={[]}
-          providers={[]}
-          catalog={catalog}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
-    );
 
     fireEvent.click(screen.getByRole("button", { name: "将 Codex OAuth 保存为供应商" }));
     const dialog = screen.getByRole("dialog", { name: "保存未纳管供应商" });
@@ -184,7 +160,6 @@ describe("CurrentConfigurationTab", () => {
   });
 
   it("shows every detected OpenCode provider and lets the user choose its default model", () => {
-    const client = new QueryClient();
     const scan: ScanSnapshot = {
       id: "00000000-0000-4000-8000-000000000010",
       generatedAt: "2026-08-23T00:00:00Z",
@@ -233,16 +208,14 @@ describe("CurrentConfigurationTab", () => {
         },
       ],
     };
-    render(
-      <QueryClientProvider client={client}>
-        <CurrentConfigurationTab
-          scan={scan}
-          configurations={[]}
-          providers={[]}
-          catalog={catalog}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <CurrentConfigurationTab
+        scan={scan}
+        configurations={[]}
+        providers={[]}
+        catalog={catalog}
+        onError={vi.fn()}
+      />,
     );
 
     expect(
@@ -263,7 +236,6 @@ describe("CurrentConfigurationTab", () => {
 
   it("fetches suggestions without selecting a model for an API candidate", async () => {
     commandMock.mockResolvedValue(["fetched-first", "fetched-second"]);
-    const client = new QueryClient();
     const scan: ScanSnapshot = {
       ...codexOAuthScan,
       items: [
@@ -298,30 +270,28 @@ describe("CurrentConfigurationTab", () => {
         },
       ],
     };
-    render(
-      <QueryClientProvider client={client}>
-        <CurrentConfigurationTab
-          scan={scan}
-          configurations={[]}
-          providers={[]}
-          catalog={{
-            ...catalog,
-            providerTemplates: [
-              ...catalog.providerTemplates,
-              {
-                mode: "api",
-                id: "opencode-zen",
-                name: "OpenCode Zen",
-                category: "api",
-                modelRouting: true,
-                credentialSlots: [],
-                endpoints: [],
-              },
-            ],
-          }}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <CurrentConfigurationTab
+        scan={scan}
+        configurations={[]}
+        providers={[]}
+        catalog={{
+          ...catalog,
+          providerTemplates: [
+            ...catalog.providerTemplates,
+            {
+              mode: "api",
+              id: "opencode-zen",
+              name: "OpenCode Zen",
+              category: "api",
+              modelRouting: true,
+              credentialSlots: [],
+              endpoints: [],
+            },
+          ],
+        }}
+        onError={vi.fn()}
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "将 OpenCode Zen 保存为供应商" }));

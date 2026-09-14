@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { OAuthProviderDetail, ProviderCatalog, PublicProvider } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
+import { renderWithQueryClient } from "../../test/render";
 import { OAuthProviderEditor } from "./OAuthProviderEditor";
 
 const commandMock = vi.hoisted(() => vi.fn());
@@ -51,41 +51,42 @@ describe("OAuthProviderEditor", () => {
     useUiStore.setState({ dirty: false, saveCurrent: undefined });
   });
 
-  it("shows the complete raw credential and defers validation until save", () => {
-    const client = new QueryClient();
-    render(
-      <QueryClientProvider client={client}>
-        <OAuthProviderEditor
-          detail={detail}
-          publicProvider={publicProvider}
-          catalog={catalog}
-          providers={[publicProvider]}
-          onError={vi.fn()}
-          onStartFlow={vi.fn()}
-        />
-      </QueryClientProvider>,
+  it("shows the complete saved credential and prevents a no-op save", () => {
+    const onError = vi.fn();
+    renderWithQueryClient(
+      <OAuthProviderEditor
+        detail={detail}
+        publicProvider={publicProvider}
+        catalog={catalog}
+        providers={[publicProvider]}
+        onError={onError}
+        onStartFlow={vi.fn()}
+      />,
     );
     expect(screen.getByRole("textbox", { name: /OAuth 原始内容/ })).toHaveValue(detail.rawContent);
     expect(screen.getByText(/保存时会校验/)).toBeInTheDocument();
+
+    const save = screen.getByRole("button", { name: "保存" });
+    expect(save).toBeDisabled();
+    fireEvent.click(save);
+    expect(commandMock).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("uses the same header action order and reports inline duplicate-name validation", () => {
-    const client = new QueryClient();
     const other = { ...publicProvider, id: "other-id", name: "Existing" };
     const onDelete = vi.fn();
-    render(
-      <QueryClientProvider client={client}>
-        <OAuthProviderEditor
-          detail={detail}
-          publicProvider={publicProvider}
-          catalog={catalog}
-          providers={[publicProvider, other]}
-          onError={vi.fn()}
-          onStartFlow={vi.fn()}
-          onDelete={onDelete}
-          onDuplicate={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <OAuthProviderEditor
+        detail={detail}
+        publicProvider={publicProvider}
+        catalog={catalog}
+        providers={[publicProvider, other]}
+        onError={vi.fn()}
+        onStartFlow={vi.fn()}
+        onDelete={onDelete}
+        onDuplicate={vi.fn()}
+      />,
     );
 
     const header = screen.getByRole("heading", { name: detail.name }).closest("header");
@@ -103,18 +104,16 @@ describe("OAuthProviderEditor", () => {
 
   it("passes a prefilled draft to duplicate without creating immediately", () => {
     const onDuplicate = vi.fn();
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <OAuthProviderEditor
-          detail={detail}
-          publicProvider={publicProvider}
-          catalog={catalog}
-          providers={[publicProvider]}
-          onError={vi.fn()}
-          onStartFlow={vi.fn()}
-          onDuplicate={onDuplicate}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <OAuthProviderEditor
+        detail={detail}
+        publicProvider={publicProvider}
+        catalog={catalog}
+        providers={[publicProvider]}
+        onError={vi.fn()}
+        onStartFlow={vi.fn()}
+        onDuplicate={onDuplicate}
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "复制" }));
@@ -136,17 +135,15 @@ describe("OAuthProviderEditor", () => {
       }
       return undefined;
     });
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <OAuthProviderEditor
-          detail={detail}
-          publicProvider={publicProvider}
-          catalog={catalog}
-          providers={[publicProvider]}
-          onError={onError}
-          onStartFlow={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <OAuthProviderEditor
+        detail={detail}
+        publicProvider={publicProvider}
+        catalog={catalog}
+        providers={[publicProvider]}
+        onError={onError}
+        onStartFlow={vi.fn()}
+      />,
     );
     const raw = screen.getByRole("textbox", { name: /OAuth 原始内容/ });
     fireEvent.change(raw, { target: { value: "edited-secret-content" } });
@@ -161,47 +158,23 @@ describe("OAuthProviderEditor", () => {
     expect(raw).toHaveValue("edited-secret-content");
   });
 
-  it("disables a no-op edit save without changing the stored verification state", () => {
-    const onError = vi.fn();
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <OAuthProviderEditor
-          detail={detail}
-          publicProvider={publicProvider}
-          catalog={catalog}
-          providers={[publicProvider]}
-          onError={onError}
-          onStartFlow={vi.fn()}
-        />
-      </QueryClientProvider>,
-    );
-
-    const save = screen.getByRole("button", { name: "保存" });
-    expect(save).toBeDisabled();
-    fireEvent.click(save);
-    expect(commandMock).not.toHaveBeenCalled();
-    expect(onError).not.toHaveBeenCalled();
-  });
-
   it("creates OAuth from the raw editor only after content is provided", async () => {
     const onCreated = vi.fn();
     commandMock.mockImplementation(async (name: string) => {
       if (name === "create_oauth_provider") return { id: "created-oauth" };
       return undefined;
     });
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <OAuthProviderEditor
-          catalog={catalog}
-          initialTemplateId="codex-auth"
-          initialName="New Codex"
-          initialRaw=""
-          providers={[]}
-          onError={vi.fn()}
-          onStartFlow={vi.fn()}
-          onCreated={onCreated}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <OAuthProviderEditor
+        catalog={catalog}
+        initialTemplateId="codex-auth"
+        initialName="New Codex"
+        initialRaw=""
+        providers={[]}
+        onError={vi.fn()}
+        onStartFlow={vi.fn()}
+        onCreated={onCreated}
+      />,
     );
 
     const save = screen.getByRole("button", { name: "保存" });
@@ -227,18 +200,16 @@ describe("OAuthProviderEditor", () => {
       }
       return undefined;
     });
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <OAuthProviderEditor
-          catalog={catalog}
-          initialTemplateId="codex-auth"
-          initialName="Copied Codex"
-          initialRaw="copied-raw"
-          providers={[]}
-          onError={onError}
-          onStartFlow={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <OAuthProviderEditor
+        catalog={catalog}
+        initialTemplateId="codex-auth"
+        initialName="Copied Codex"
+        initialRaw="copied-raw"
+        providers={[]}
+        onError={onError}
+        onStartFlow={vi.fn()}
+      />,
     );
 
     const raw = screen.getByRole("textbox", { name: /OAuth 原始内容/ });

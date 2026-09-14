@@ -1,18 +1,18 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
-import type { AppSnapshot, PublicProvider, SavedConfiguration } from "../../shared/types";
+import type { PublicProvider, SavedConfiguration } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
+import { makeAppSnapshot } from "../../test/fixtures";
+import { renderWithQueryClient } from "../../test/render";
 import { ConfigurationPage } from "./ConfigurationPage";
 
 const commandMock = vi.hoisted(() => vi.fn());
 const onEventMock = vi.hoisted(() => vi.fn());
 vi.mock("../../shared/ipc", () => ({ command: commandMock, onEvent: onEventMock }));
 
-const snapshot: AppSnapshot = {
+const snapshot = makeAppSnapshot({
   catalog: {
-    schemaVersion: 1,
     clis: [
       {
         id: "claude-code",
@@ -39,17 +39,6 @@ const snapshot: AppSnapshot = {
     providerTemplates: [],
     relations: [],
   },
-  settings: {
-    language: "zh-cn",
-    theme: "system",
-    uiZoomPercent: 100,
-    scanOnStartup: false,
-    plaintextRiskAccepted: false,
-    revision: 1,
-    manualLocations: [],
-  },
-  providers: [],
-  configurations: [],
   current: {
     id: "scan-1",
     generatedAt: "2026-08-23T00:00:00Z",
@@ -74,12 +63,7 @@ const snapshot: AppSnapshot = {
       },
     ],
   },
-  latestApply: null,
-  configurationStatuses: {},
-  appDataDirectory: "/tmp/cliswitch",
-  backupBytes: 0,
-  appVersion: "0.1.0",
-};
+});
 
 const applyConfiguration: SavedConfiguration = {
   id: "configuration-apply",
@@ -133,14 +117,11 @@ describe("ConfigurationPage", () => {
   });
 
   it("omits the CLI subtitle and discovery source details", () => {
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
-    });
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ConfigurationPage snapshot={snapshot} guarded={(action) => action()} onError={vi.fn()} />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ConfigurationPage snapshot={snapshot} guarded={(action) => action()} onError={vi.fn()} />,
+      {
+        defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+      },
     );
 
     expect(screen.getByRole("heading", { name: "配置", level: 1 })).toBeInTheDocument();
@@ -158,14 +139,11 @@ describe("ConfigurationPage", () => {
       if (name === "list_providers") return snapshot.providers;
       return snapshot.current;
     });
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: 0 } },
-    });
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ConfigurationPage snapshot={snapshot} guarded={(action) => action()} onError={vi.fn()} />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ConfigurationPage snapshot={snapshot} guarded={(action) => action()} onError={vi.fn()} />,
+      {
+        defaultOptions: { queries: { retry: false, staleTime: 0 } },
+      },
     );
 
     expect(screen.getByText("测试供应商")).toBeInTheDocument();
@@ -199,18 +177,13 @@ describe("ConfigurationPage", () => {
       configurations: [applyConfiguration],
       providers: [applyProvider],
     };
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
-    });
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ConfigurationPage
-          snapshot={applySnapshot}
-          guarded={(action) => action()}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ConfigurationPage
+        snapshot={applySnapshot}
+        guarded={(action) => action()}
+        onError={vi.fn()}
+      />,
+      { defaultOptions: { queries: { retry: false, staleTime: Infinity } } },
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "应用" }));

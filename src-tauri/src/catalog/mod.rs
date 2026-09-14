@@ -1678,13 +1678,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_catalog_is_well_formed() {
-        ProviderCatalog::load_embedded().unwrap();
-    }
-
-    #[test]
     fn cli_adapter_bundle_contains_only_curated_multi_endpoint_providers() {
         let source = CliAdapterCatalog::bundled().unwrap();
+        assert!(source.provider("deepseek").is_some());
+        assert!(source.provider("zhipuai-coding-plan").is_some());
         assert_eq!(source.provider_count(), 7);
         let catalog = ProviderCatalog::from_cli_adapter(source).unwrap();
         let deepseek = catalog.dynamic_provider_info("deepseek").unwrap();

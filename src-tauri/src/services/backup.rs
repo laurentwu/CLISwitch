@@ -309,9 +309,16 @@ fn metadata_from_row(row: sqlx::sqlite::SqliteRow) -> AppResult<BackupMetadata> 
 mod tests {
     use super::*;
     use crate::{persistence::repository::Repository, services::redaction::Redactor};
+    use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn keeps_only_five_backups_per_source() {
+    struct BackupFixture {
+        service: BackupService,
+        paths: PrivatePaths,
+        root: PathBuf,
+        temp: TempDir,
+    }
+
+    async fn fixture() -> BackupFixture {
         let temp = tempfile::tempdir().unwrap();
         let paths = PrivatePaths::from_root(temp.path().join("data"));
         paths.ensure().await.unwrap();
@@ -321,44 +328,58 @@ mod tests {
         let service = BackupService::new(repository, paths.clone());
         let root = temp.path().join("config");
         tokio::fs::create_dir_all(&root).await.unwrap();
-        let path = root.join("settings.json");
+        BackupFixture {
+            service,
+            paths,
+            root,
+            temp,
+        }
+    }
+
+    #[tokio::test]
+    async fn keeps_only_five_backups_per_source() {
+        let fixture = fixture().await;
+        let path = fixture.root.join("settings.json");
         tokio::fs::write(&path, b"0").await.unwrap();
         for index in 0..7 {
             tokio::fs::write(&path, index.to_string()).await.unwrap();
-            let target = resolve_target(&path, &root).await.unwrap();
+            let target = resolve_target(&path, &fixture.root).await.unwrap();
             let expected = file_digest(&path).await.unwrap();
-            service
+            fixture
+                .service
                 .create(CliId::ClaudeCode, &target, None, true, expected.as_deref())
                 .await
                 .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
         assert_eq!(
-            service.list(Some(CliId::ClaudeCode)).await.unwrap().len(),
+            fixture
+                .service
+                .list(Some(CliId::ClaudeCode))
+                .await
+                .unwrap()
+                .len(),
             5
         );
     }
 
     #[tokio::test]
     async fn tombstone_rollback_removes_a_file_created_later() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let repository = Repository::open(&paths.database, Redactor::default())
-            .await
-            .unwrap();
-        let service = BackupService::new(repository, paths);
-        let root = temp.path().join("config");
-        tokio::fs::create_dir_all(&root).await.unwrap();
-        let path = root.join("auth.json");
-        let target = resolve_target(&path, &root).await.unwrap();
-        let tombstone = service
+        let fixture = fixture().await;
+        let path = fixture.root.join("auth.json");
+        let target = resolve_target(&path, &fixture.root).await.unwrap();
+        let tombstone = fixture
+            .service
             .create(CliId::Codex, &target, None, true, None)
             .await
             .unwrap();
         assert!(!tombstone.metadata.originally_existed);
         tokio::fs::write(&path, b"created later").await.unwrap();
-        service.rollback(&tombstone, &root).await.unwrap();
+        fixture
+            .service
+            .rollback(&tombstone, &fixture.root)
+            .await
+            .unwrap();
         assert!(!path.exists());
     }
 
@@ -367,23 +388,16 @@ mod tests {
     async fn rollback_restores_recorded_file_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let repository = Repository::open(&paths.database, Redactor::default())
-            .await
-            .unwrap();
-        let service = BackupService::new(repository, paths);
-        let root = temp.path().join("config");
-        tokio::fs::create_dir_all(&root).await.unwrap();
-        let path = root.join("settings.json");
+        let fixture = fixture().await;
+        let path = fixture.root.join("settings.json");
         tokio::fs::write(&path, b"original").await.unwrap();
         tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
             .await
             .unwrap();
-        let target = resolve_target(&path, &root).await.unwrap();
+        let target = resolve_target(&path, &fixture.root).await.unwrap();
         let expected = file_digest(&path).await.unwrap();
-        let record = service
+        let record = fixture
+            .service
             .create(CliId::ClaudeCode, &target, None, true, expected.as_deref())
             .await
             .unwrap();
@@ -391,7 +405,11 @@ mod tests {
         tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .await
             .unwrap();
-        service.rollback(&record, &root).await.unwrap();
+        fixture
+            .service
+            .rollback(&record, &fixture.root)
+            .await
+            .unwrap();
         assert_eq!(tokio::fs::read(&path).await.unwrap(), b"original");
         assert_eq!(
             tokio::fs::metadata(&path)
@@ -407,58 +425,44 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn backup_reads_reject_symlink_substitution() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let repository = Repository::open(&paths.database, Redactor::default())
-            .await
-            .unwrap();
-        let service = BackupService::new(repository, paths.clone());
-        let root = temp.path().join("config");
-        tokio::fs::create_dir_all(&root).await.unwrap();
-        let source = root.join("auth.json");
+        let fixture = fixture().await;
+        let source = fixture.root.join("auth.json");
         tokio::fs::write(&source, b"saved secret").await.unwrap();
-        let target = resolve_target(&source, &root).await.unwrap();
+        let target = resolve_target(&source, &fixture.root).await.unwrap();
         let expected = file_digest(&source).await.unwrap();
-        let record = service
+        let record = fixture
+            .service
             .create(CliId::Codex, &target, None, true, expected.as_deref())
             .await
             .unwrap();
         let backup_path = PrivatePaths::safe_relative(
-            &paths.root,
+            &fixture.paths.root,
             record.metadata.relative_backup_path.as_ref().unwrap(),
         )
         .unwrap();
         tokio::fs::remove_file(&backup_path).await.unwrap();
-        let outside = temp.path().join("outside-secret");
+        let outside = fixture.temp.path().join("outside-secret");
         tokio::fs::write(&outside, b"must not be read")
             .await
             .unwrap();
         std::os::unix::fs::symlink(&outside, &backup_path).unwrap();
 
         assert!(matches!(
-            service.get(record.metadata.id).await,
+            fixture.service.get(record.metadata.id).await,
             Err(AppError::Blocked(_))
         ));
     }
 
     #[tokio::test]
     async fn backup_creation_rejects_a_source_changed_after_preview() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let repository = Repository::open(&paths.database, Redactor::default())
-            .await
-            .unwrap();
-        let service = BackupService::new(repository, paths);
-        let root = temp.path().join("config");
-        tokio::fs::create_dir_all(&root).await.unwrap();
-        let path = root.join("settings.json");
+        let fixture = fixture().await;
+        let path = fixture.root.join("settings.json");
         tokio::fs::write(&path, b"after-preview").await.unwrap();
-        let target = resolve_target(&path, &root).await.unwrap();
+        let target = resolve_target(&path, &fixture.root).await.unwrap();
 
         assert!(matches!(
-            service
+            fixture
+                .service
                 .create(
                     CliId::ClaudeCode,
                     &target,
@@ -469,25 +473,18 @@ mod tests {
                 .await,
             Err(AppError::Conflict(_))
         ));
-        assert!(service.list(None).await.unwrap().is_empty());
+        assert!(fixture.service.list(None).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn restore_creates_an_undo_backup_before_replacing_the_current_file() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let repository = Repository::open(&paths.database, Redactor::default())
-            .await
-            .unwrap();
-        let service = BackupService::new(repository, paths);
-        let root = temp.path().join("config");
-        tokio::fs::create_dir_all(&root).await.unwrap();
-        let path = root.join("settings.json");
+        let fixture = fixture().await;
+        let path = fixture.root.join("settings.json");
         tokio::fs::write(&path, b"version one").await.unwrap();
-        let target = resolve_target(&path, &root).await.unwrap();
+        let target = resolve_target(&path, &fixture.root).await.unwrap();
         let first_digest = file_digest(&path).await.unwrap();
-        let first = service
+        let first = fixture
+            .service
             .create(
                 CliId::ClaudeCode,
                 &target,
@@ -500,13 +497,14 @@ mod tests {
         tokio::fs::write(&path, b"version two").await.unwrap();
         let second_digest = file_digest(&path).await.unwrap();
 
-        service
-            .restore(first.metadata.id, &root, second_digest.clone())
+        fixture
+            .service
+            .restore(first.metadata.id, &fixture.root, second_digest.clone())
             .await
             .unwrap();
 
         assert_eq!(tokio::fs::read(&path).await.unwrap(), b"version one");
-        let backups = service.list(Some(CliId::ClaudeCode)).await.unwrap();
+        let backups = fixture.service.list(Some(CliId::ClaudeCode)).await.unwrap();
         assert_eq!(backups.len(), 2);
         assert!(backups.iter().any(|backup| {
             backup.id != first.metadata.id && backup.original_digest == second_digest
@@ -515,31 +513,25 @@ mod tests {
 
     #[tokio::test]
     async fn restoring_a_tombstone_removes_the_later_file_and_keeps_an_undo() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = PrivatePaths::from_root(temp.path().join("data"));
-        paths.ensure().await.unwrap();
-        let repository = Repository::open(&paths.database, Redactor::default())
-            .await
-            .unwrap();
-        let service = BackupService::new(repository, paths);
-        let root = temp.path().join("config");
-        tokio::fs::create_dir_all(&root).await.unwrap();
-        let path = root.join("new-auth.json");
-        let target = resolve_target(&path, &root).await.unwrap();
-        let tombstone = service
+        let fixture = fixture().await;
+        let path = fixture.root.join("new-auth.json");
+        let target = resolve_target(&path, &fixture.root).await.unwrap();
+        let tombstone = fixture
+            .service
             .create(CliId::Codex, &target, None, true, None)
             .await
             .unwrap();
         tokio::fs::write(&path, b"created later").await.unwrap();
         let current_digest = file_digest(&path).await.unwrap();
 
-        service
-            .restore(tombstone.metadata.id, &root, current_digest.clone())
+        fixture
+            .service
+            .restore(tombstone.metadata.id, &fixture.root, current_digest.clone())
             .await
             .unwrap();
 
         assert!(!path.exists());
-        let backups = service.list(Some(CliId::Codex)).await.unwrap();
+        let backups = fixture.service.list(Some(CliId::Codex)).await.unwrap();
         assert_eq!(backups.len(), 2);
         assert!(backups.iter().any(|backup| {
             backup.id != tombstone.metadata.id && backup.original_digest == current_digest

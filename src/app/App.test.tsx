@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
-import type { AppSnapshot } from "../shared/types";
 import { useUiStore } from "../stores/ui";
+import { makeAppSnapshot } from "../test/fixtures";
+import { renderWithQueryClient } from "../test/render";
 import { App } from "./App";
 
 const commandMock = vi.hoisted(() => vi.fn());
@@ -19,26 +19,7 @@ vi.mock("../components/settings/SettingsPage", () => ({
   SettingsPage: () => <div>Settings page</div>,
 }));
 
-const snapshot: AppSnapshot = {
-  catalog: { schemaVersion: 1, clis: [], providerTemplates: [], relations: [] },
-  settings: {
-    language: "zh-cn",
-    theme: "system",
-    uiZoomPercent: 225,
-    scanOnStartup: false,
-    plaintextRiskAccepted: false,
-    revision: 1,
-    manualLocations: [],
-  },
-  providers: [],
-  configurations: [],
-  current: null,
-  latestApply: null,
-  configurationStatuses: {},
-  appDataDirectory: "/tmp/cliswitch",
-  backupBytes: 0,
-  appVersion: "0.1.0",
-};
+const snapshot = makeAppSnapshot({ settings: { uiZoomPercent: 225 } });
 
 function mockReadyAppCommands() {
   commandMock.mockImplementation((name: string) => {
@@ -57,14 +38,9 @@ function mockReadyAppCommands() {
 }
 
 function renderApp() {
-  const queryClient = new QueryClient({
+  return renderWithQueryClient(<App />, {
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <App />
-    </QueryClientProvider>,
-  );
 }
 
 async function openUnsavedChangesDialog() {

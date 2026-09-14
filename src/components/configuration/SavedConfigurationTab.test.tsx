@@ -1,10 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
 import type { ProviderCatalog, PublicProvider, SavedConfiguration } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { useNotificationStore } from "../../stores/notifications";
+import { renderWithQueryClient } from "../../test/render";
 import { NotificationViewport, useErrorNotifier } from "../ui";
 import { SavedConfigurationTab } from "./SavedConfigurationTab";
 
@@ -114,17 +114,15 @@ describe("SavedConfigurationTab", () => {
   });
 
   it("renders stable equal-width configuration actions with a concise apply label", () => {
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <SavedConfigurationTab
-          configuration={targetConfiguration}
-          providers={[provider]}
-          catalog={targetCatalog}
-          configurations={[targetConfiguration]}
-          onDeleted={vi.fn()}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <SavedConfigurationTab
+        configuration={targetConfiguration}
+        providers={[provider]}
+        catalog={targetCatalog}
+        configurations={[targetConfiguration]}
+        onDeleted={vi.fn()}
+        onError={vi.fn()}
+      />,
     );
 
     const actions = ["复制", "删除", "保存", "应用"].map((name) =>
@@ -142,11 +140,7 @@ describe("SavedConfigurationTab", () => {
   });
 
   it("reports guarded-save validation and keeps the pending transition blocked", async () => {
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <Harness />
-      </QueryClientProvider>,
-    );
+    renderWithQueryClient(<Harness />);
     fireEvent.change(screen.getByRole("textbox", { name: "名称" }), {
       target: { value: " existing " },
     });
@@ -187,17 +181,15 @@ describe("SavedConfigurationTab", () => {
     onEventMock.mockResolvedValue(() => undefined);
     useUiStore.setState({ dirty: true });
 
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <SavedConfigurationTab
-          configuration={targetConfiguration}
-          providers={[provider]}
-          catalog={targetCatalog}
-          configurations={[targetConfiguration]}
-          onDeleted={vi.fn()}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <SavedConfigurationTab
+        configuration={targetConfiguration}
+        providers={[provider]}
+        catalog={targetCatalog}
+        configurations={[targetConfiguration]}
+        onDeleted={vi.fn()}
+        onError={vi.fn()}
+      />,
     );
 
     expect(screen.getAllByRole("button", { name: /预览/ })).toHaveLength(4);
@@ -224,17 +216,15 @@ describe("SavedConfigurationTab", () => {
     useUiStore.setState({ dirty: true });
     const onError = vi.fn();
 
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <SavedConfigurationTab
-          configuration={targetConfiguration}
-          providers={[provider]}
-          catalog={targetCatalog}
-          configurations={[targetConfiguration]}
-          onDeleted={vi.fn()}
-          onError={onError}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <SavedConfigurationTab
+        configuration={targetConfiguration}
+        providers={[provider]}
+        catalog={targetCatalog}
+        configurations={[targetConfiguration]}
+        onDeleted={vi.fn()}
+        onError={onError}
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: /应用/ }));
@@ -332,17 +322,15 @@ describe("SavedConfigurationTab", () => {
       ],
     };
 
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <SavedConfigurationTab
-          configuration={namedConfiguration}
-          providers={[standardProvider, flashProvider]}
-          catalog={catalogProvider}
-          configurations={[namedConfiguration]}
-          onDeleted={vi.fn()}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <SavedConfigurationTab
+        configuration={namedConfiguration}
+        providers={[standardProvider, flashProvider]}
+        catalog={catalogProvider}
+        configurations={[namedConfiguration]}
+        onDeleted={vi.fn()}
+        onError={vi.fn()}
+      />,
     );
 
     expect(
