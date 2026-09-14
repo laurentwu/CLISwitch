@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { ApiProviderDetail, ProviderCatalog } from "../../shared/types";
 import { useNotificationStore } from "../../stores/notifications";
+import { renderWithQueryClient } from "../../test/render";
 import { NotificationViewport, useErrorNotifier } from "../ui";
 import { ApiProviderEditor } from "./ApiProviderEditor";
 
@@ -107,7 +107,7 @@ function SavedProviderEditor({ detail }: { detail: ApiProviderDetail }) {
   );
 }
 
-function savedProviderDetail(): ApiProviderDetail {
+function savedProviderDetail(defaultModel = "saved-default"): ApiProviderDetail {
   return {
     id: "provider-1",
     name: "Custom provider",
@@ -123,7 +123,7 @@ function savedProviderDetail(): ApiProviderDetail {
         endpoint: "https://example.test/v1",
         authType: "bearer",
         apiKey: "secret",
-        defaultModel: "saved-default",
+        defaultModel,
         verification: { status: "never-tested" },
       },
     ],
@@ -137,10 +137,8 @@ describe("ApiProviderEditor", () => {
   });
 
   it("expands a provider template into all endpoints and one shared credential input", () => {
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />,
     );
 
     fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
@@ -156,11 +154,11 @@ describe("ApiProviderEditor", () => {
 
   it("tests an unsaved provider with the current connection draft", async () => {
     commandMock.mockResolvedValue(undefined);
-    const { container } = render(
-      <QueryClientProvider client={new QueryClient()}>
+    const { container } = renderWithQueryClient(
+      <>
         <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />
         <NotificationViewport />
-      </QueryClientProvider>,
+      </>,
     );
 
     fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
@@ -187,10 +185,8 @@ describe("ApiProviderEditor", () => {
   });
 
   it("does not send an invalid unsaved connection to the backend", async () => {
-    const { container } = render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />
-      </QueryClientProvider>,
+    const { container } = renderWithQueryClient(
+      <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
@@ -205,11 +201,11 @@ describe("ApiProviderEditor", () => {
 
   it("fetches models for an unsaved provider and selects the first result", async () => {
     commandMock.mockResolvedValue(["fetched-first", "fetched-second"]);
-    render(
-      <QueryClientProvider client={new QueryClient()}>
+    renderWithQueryClient(
+      <>
         <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />
         <NotificationViewport />
-      </QueryClientProvider>,
+      </>,
     );
 
     fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
@@ -238,11 +234,11 @@ describe("ApiProviderEditor", () => {
 
   it("reports a successful connection test in a global toast", async () => {
     commandMock.mockResolvedValue(undefined);
-    const { container } = render(
-      <QueryClientProvider client={new QueryClient()}>
+    const { container } = renderWithQueryClient(
+      <>
         <SavedProviderEditor detail={savedProviderDetail()} />
         <NotificationViewport />
-      </QueryClientProvider>,
+      </>,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
@@ -257,11 +253,11 @@ describe("ApiProviderEditor", () => {
 
   it("reports a failed connection test through the global error toast", async () => {
     commandMock.mockRejectedValue({ code: "network", message: "upstream unavailable" });
-    render(
-      <QueryClientProvider client={new QueryClient()}>
+    renderWithQueryClient(
+      <>
         <SavedProviderEditor detail={savedProviderDetail()} />
         <NotificationViewport />
-      </QueryClientProvider>,
+      </>,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
@@ -274,15 +270,13 @@ describe("ApiProviderEditor", () => {
 
   it("creates a CLIAdapter provider with an endpoint identity and manual model", async () => {
     commandMock.mockResolvedValue({});
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApiProviderEditor
-          providers={[]}
-          catalog={cliAdapterCatalog}
-          onClose={vi.fn()}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ApiProviderEditor
+        providers={[]}
+        catalog={cliAdapterCatalog}
+        onClose={vi.fn()}
+        onError={vi.fn()}
+      />,
     );
 
     const templateSelect = screen.getByRole("combobox", { name: /Provider 模板/ });
@@ -342,16 +336,14 @@ describe("ApiProviderEditor", () => {
       ],
     };
     commandMock.mockResolvedValue({});
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApiProviderEditor
-          detail={detail}
-          providers={[]}
-          catalog={cliAdapterCatalog}
-          onClose={vi.fn()}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ApiProviderEditor
+        detail={detail}
+        providers={[]}
+        catalog={cliAdapterCatalog}
+        onClose={vi.fn()}
+        onError={vi.fn()}
+      />,
     );
 
     expect(screen.getByDisplayValue("https://old.example.test/v1")).toBeInTheDocument();
@@ -374,28 +366,26 @@ describe("ApiProviderEditor", () => {
 
   it("accepts HTTP endpoints across the IPv4 loopback range", async () => {
     commandMock.mockResolvedValue({});
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApiProviderEditor
-          initialDraft={{
-            name: "Loopback provider",
-            connections: [
-              {
-                credentialSlotId: "api-key",
-                protocol: "openai-chat",
-                endpoint: "http://127.0.0.2:11434/v1",
-                authType: "bearer",
-                apiKey: "fixture-key",
-                defaultModel: "fixture-model",
-              },
-            ],
-          }}
-          providers={[]}
-          catalog={catalog}
-          onClose={vi.fn()}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ApiProviderEditor
+        initialDraft={{
+          name: "Loopback provider",
+          connections: [
+            {
+              credentialSlotId: "api-key",
+              protocol: "openai-chat",
+              endpoint: "http://127.0.0.2:11434/v1",
+              authType: "bearer",
+              apiKey: "fixture-key",
+              defaultModel: "fixture-model",
+            },
+          ],
+        }}
+        providers={[]}
+        catalog={catalog}
+        onClose={vi.fn()}
+        onError={vi.fn()}
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
@@ -430,16 +420,14 @@ describe("ApiProviderEditor", () => {
     commandMock.mockImplementation((_name: string, args?: Record<string, unknown>) =>
       Promise.resolve([`fetched-${String(args?.connectionId)}`]),
     );
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApiProviderEditor
-          detail={detail}
-          providers={[]}
-          catalog={catalog}
-          onClose={vi.fn()}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ApiProviderEditor
+        detail={detail}
+        providers={[]}
+        catalog={catalog}
+        onClose={vi.fn()}
+        onError={vi.fn()}
+      />,
     );
 
     const fetchButtons = screen.getAllByRole("button", { name: "获取模型" });
@@ -459,107 +447,61 @@ describe("ApiProviderEditor", () => {
     expect(document.querySelector('datalist#models-0 option[value="fetched-first"]')).toBeNull();
   });
 
-  it("shows fetched models in the default-model suggestions and reports success in a toast", async () => {
-    const detail: ApiProviderDetail = {
-      id: "provider-1",
-      name: "Custom provider",
-      profileType: "api",
-      revision: 1,
-      createdAt: "2026-08-23T00:00:00Z",
-      updatedAt: "2026-08-23T00:00:00Z",
-      connections: [
-        {
-          id: "connection-1",
-          credentialSlotId: "api-key",
-          protocol: "openai-responses",
-          endpoint: "https://example.test/v1",
-          authType: "bearer",
-          apiKey: "secret",
-          defaultModel: "saved-default",
-          verification: { status: "never-tested" },
-        },
-      ],
-    };
-    commandMock
-      .mockResolvedValueOnce(["fetched-first", "fetched-second", "fetched-first"])
-      .mockResolvedValueOnce(["fetched-latest"]);
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApiProviderEditor
-          detail={detail}
-          providers={[]}
-          catalog={catalog}
-          onClose={vi.fn()}
-          onError={vi.fn()}
-        />
-        <NotificationViewport />
-      </QueryClientProvider>,
-    );
+  it.each([
+    {
+      case: "existing default",
+      defaultModel: "saved-default",
+      initialModels: ["fetched-first", "fetched-second", "fetched-first"],
+      expectedDefaultModel: "saved-default",
+    },
+    {
+      case: "empty default",
+      defaultModel: "",
+      initialModels: ["fetched-first", "fetched-second"],
+      expectedDefaultModel: "fetched-first",
+    },
+  ])(
+    "fetches and replaces saved-provider model suggestions with $case",
+    async ({ defaultModel, initialModels, expectedDefaultModel }) => {
+      commandMock.mockResolvedValueOnce(initialModels).mockResolvedValueOnce(["fetched-latest"]);
+      renderWithQueryClient(
+        <>
+          <SavedProviderEditor detail={savedProviderDetail(defaultModel)} />
+          <NotificationViewport />
+        </>,
+      );
 
-    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+      fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
 
-    await waitFor(() => {
+      await waitFor(() => {
+        expect(
+          document.querySelector('datalist#models-0 option[value="fetched-first"]'),
+        ).not.toBeNull();
+        expect(
+          document.querySelector('datalist#models-0 option[value="fetched-second"]'),
+        ).not.toBeNull();
+      });
       expect(
-        document.querySelector('datalist#models-0 option[value="fetched-first"]'),
-      ).not.toBeNull();
-      expect(
-        document.querySelector('datalist#models-0 option[value="fetched-second"]'),
-      ).not.toBeNull();
-    });
-    expect(
-      document.querySelectorAll('datalist#models-0 option[value="fetched-first"]'),
-    ).toHaveLength(1);
-    expect(screen.getByRole("combobox", { name: /默认模型/ })).toHaveValue("saved-default");
-    expect(screen.getByRole("status")).toHaveTextContent("获取模型成功");
+        document.querySelectorAll('datalist#models-0 option[value="fetched-first"]'),
+      ).toHaveLength(1);
+      expect(screen.getByRole("combobox", { name: /默认模型/ })).toHaveValue(expectedDefaultModel);
+      expect(screen.getByRole("status")).toHaveTextContent("获取模型成功");
 
-    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
+      if (!defaultModel) {
+        fireEvent.change(screen.getByRole("combobox", { name: /默认模型/ }), {
+          target: { value: "" },
+        });
+      }
+      fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
 
-    await waitFor(() => {
-      expect(
-        document.querySelector('datalist#models-0 option[value="fetched-latest"]'),
-      ).not.toBeNull();
-      expect(document.querySelector('datalist#models-0 option[value="fetched-first"]')).toBeNull();
-    });
-  });
-
-  it("selects the first fetched model when the default model is empty", async () => {
-    const detail: ApiProviderDetail = {
-      id: "provider-1",
-      name: "Custom provider",
-      profileType: "api",
-      revision: 1,
-      createdAt: "2026-08-23T00:00:00Z",
-      updatedAt: "2026-08-23T00:00:00Z",
-      connections: [
-        {
-          id: "connection-1",
-          credentialSlotId: "api-key",
-          protocol: "openai-responses",
-          endpoint: "https://example.test/v1",
-          authType: "bearer",
-          apiKey: "secret",
-          defaultModel: "",
-          verification: { status: "never-tested" },
-        },
-      ],
-    };
-    commandMock.mockResolvedValue(["fetched-first", "fetched-second"]);
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApiProviderEditor
-          detail={detail}
-          providers={[]}
-          catalog={catalog}
-          onClose={vi.fn()}
-          onError={vi.fn()}
-        />
-      </QueryClientProvider>,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "获取模型" }));
-
-    await waitFor(() =>
-      expect(screen.getByRole("combobox", { name: /默认模型/ })).toHaveValue("fetched-first"),
-    );
-  });
+      await waitFor(() => {
+        expect(
+          document.querySelector('datalist#models-0 option[value="fetched-latest"]'),
+        ).not.toBeNull();
+        expect(
+          document.querySelector('datalist#models-0 option[value="fetched-first"]'),
+        ).toBeNull();
+      });
+    },
+  );
 });

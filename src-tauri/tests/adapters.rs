@@ -1,10 +1,13 @@
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use chrono::Utc;
 use cliswitch_lib::{
     adapters::{
-        AdapterWritePlan, ClaudeCodeAdapter, CliAdapter, CodexAdapter, HostEnvironment,
-        OpenCodeAdapter, QwenAdapter, namespaced_provider_id,
+        AdapterPaths, AdapterWritePlan, ClaudeCodeAdapter, CliAdapter, CodexAdapter,
+        HostEnvironment, OpenCodeAdapter, QwenAdapter, namespaced_provider_id,
     },
     catalog::{legacy_catalog, runtime_catalog},
     domain::{
@@ -164,6 +167,57 @@ async fn write_fixture(path: &Path, content: &str) {
         .await
         .unwrap();
     tokio::fs::write(path, content).await.unwrap();
+}
+
+enum StateLocation {
+    Default,
+    Custom,
+}
+
+struct OpenCodeReadFixture {
+    adapter: OpenCodeAdapter,
+    host: HostEnvironment,
+    paths: AdapterPaths,
+    state_file: PathBuf,
+    temp: TempDir,
+}
+
+async fn opencode_read_fixture(
+    config: &str,
+    auth: Option<&str>,
+    state: Option<&str>,
+    state_location: StateLocation,
+) -> OpenCodeReadFixture {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let mut host = environment(temp.path());
+    let state_root = match state_location {
+        StateLocation::Default => temp.path().join(".local").join("state"),
+        StateLocation::Custom => {
+            let state_root = temp.path().join("custom-state");
+            host.variables.insert(
+                "XDG_STATE_HOME".into(),
+                state_root.to_string_lossy().into_owned(),
+            );
+            state_root
+        }
+    };
+    let paths = adapter.resolve_paths(&host, None);
+    write_fixture(&paths.config_file, config).await;
+    if let Some(auth) = auth {
+        write_fixture(paths.auth_file.as_ref().unwrap(), auth).await;
+    }
+    let state_file = state_root.join("opencode").join("model.json");
+    if let Some(state) = state {
+        write_fixture(&state_file, state).await;
+    }
+    OpenCodeReadFixture {
+        adapter,
+        host,
+        paths,
+        state_file,
+        temp,
+    }
 }
 
 async fn materialize_plan(plan: &AdapterWritePlan) {
@@ -584,105 +638,47 @@ async fn claude_template_matrix_replaces_all_managed_model_slots_and_tuning() {
         traffic: Option<&'static str>,
         timeout: Option<&'static str>,
     }
+    let deepseek = Expected {
+        anthropic: "selected-model[1m]",
+        haiku: Some("selected-model"),
+        sonnet: Some("selected-model[1m]"),
+        opus: Some("selected-model[1m]"),
+        subagent: Some("selected-model"),
+        effort: Some("max"),
+        compact: Some("786432"),
+        traffic: None,
+        timeout: None,
+    };
+    let zhipu = Expected {
+        anthropic: "selected-model",
+        haiku: Some("selected-model"),
+        sonnet: Some("selected-model"),
+        opus: Some("selected-model"),
+        subagent: None,
+        effort: None,
+        compact: Some("1000000"),
+        traffic: Some("1"),
+        timeout: Some("3000000"),
+    };
+    let opencode = Expected {
+        anthropic: "selected-model",
+        haiku: None,
+        sonnet: None,
+        opus: None,
+        subagent: None,
+        effort: None,
+        compact: None,
+        traffic: None,
+        timeout: None,
+    };
     let cases = [
-        (
-            "deepseek",
-            Expected {
-                anthropic: "selected-model[1m]",
-                haiku: Some("selected-model"),
-                sonnet: Some("selected-model[1m]"),
-                opus: Some("selected-model[1m]"),
-                subagent: Some("selected-model"),
-                effort: Some("max"),
-                compact: Some("786432"),
-                traffic: None,
-                timeout: None,
-            },
-        ),
-        (
-            "zhipuai",
-            Expected {
-                anthropic: "selected-model",
-                haiku: Some("selected-model"),
-                sonnet: Some("selected-model"),
-                opus: Some("selected-model"),
-                subagent: None,
-                effort: None,
-                compact: Some("1000000"),
-                traffic: Some("1"),
-                timeout: Some("3000000"),
-            },
-        ),
-        (
-            "zhipuai-coding-plan",
-            Expected {
-                anthropic: "selected-model",
-                haiku: Some("selected-model"),
-                sonnet: Some("selected-model"),
-                opus: Some("selected-model"),
-                subagent: None,
-                effort: None,
-                compact: Some("1000000"),
-                traffic: Some("1"),
-                timeout: Some("3000000"),
-            },
-        ),
-        (
-            "zai",
-            Expected {
-                anthropic: "selected-model",
-                haiku: Some("selected-model"),
-                sonnet: Some("selected-model"),
-                opus: Some("selected-model"),
-                subagent: None,
-                effort: None,
-                compact: Some("1000000"),
-                traffic: Some("1"),
-                timeout: Some("3000000"),
-            },
-        ),
-        (
-            "zai-coding-plan",
-            Expected {
-                anthropic: "selected-model",
-                haiku: Some("selected-model"),
-                sonnet: Some("selected-model"),
-                opus: Some("selected-model"),
-                subagent: None,
-                effort: None,
-                compact: Some("1000000"),
-                traffic: Some("1"),
-                timeout: Some("3000000"),
-            },
-        ),
-        (
-            "opencode",
-            Expected {
-                anthropic: "selected-model",
-                haiku: None,
-                sonnet: None,
-                opus: None,
-                subagent: None,
-                effort: None,
-                compact: None,
-                traffic: None,
-                timeout: None,
-            },
-        ),
-        (
-            "opencode-go",
-            Expected {
-                anthropic: "selected-model",
-                haiku: None,
-                sonnet: None,
-                opus: None,
-                subagent: None,
-                effort: None,
-                compact: None,
-                traffic: None,
-                timeout: None,
-            },
-        ),
+        ("deepseek", &deepseek),
+        ("zhipuai", &zhipu),
+        ("zhipuai-coding-plan", &zhipu),
+        ("zai", &zhipu),
+        ("zai-coding-plan", &zhipu),
+        ("opencode", &opencode),
+        ("opencode-go", &opencode),
     ];
     for (template_id, expected) in cases {
         let temp = TempDir::new().unwrap();
@@ -1957,17 +1953,7 @@ async fn opencode_cli_adapter_base_url_override_keeps_provider_transport() {
 
 #[tokio::test]
 async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
-    let temp = TempDir::new().unwrap();
-    let adapter = OpenCodeAdapter;
-    let mut host = environment(temp.path());
-    let state_home = temp.path().join("custom-state");
-    host.variables.insert(
-        "XDG_STATE_HOME".into(),
-        state_home.to_string_lossy().into_owned(),
-    );
-    let paths = adapter.resolve_paths(&host, None);
-    write_fixture(
-        &paths.config_file,
+    let fixture = opencode_read_fixture(
         r#"{
           "provider": {
             "zhipuai-coding-plan": {
@@ -1977,31 +1963,32 @@ async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
             }
           }
         }"#,
-    )
-    .await;
-    write_fixture(
-        paths.auth_file.as_ref().unwrap(),
-        r#"{
+        Some(
+            r#"{
           "zhipuai-coding-plan": {
             "type": "api",
             "key": "fixture-existing-key"
           }
         }"#,
-    )
-    .await;
-    let state_file = state_home.join("opencode").join("model.json");
-    write_fixture(
-        &state_file,
-        r#"{
+        ),
+        Some(
+            r#"{
           "recent": [
             { "providerID": "zhipuai-coding-plan", "modelID": "glm-5.3" },
             { "providerID": "zhipuai-coding-plan", "modelID": "glm-5.2" }
           ]
         }"#,
+        ),
+        StateLocation::Custom,
     )
     .await;
+    let _temp_guard = &fixture.temp;
 
-    let current = adapter.read_current(&paths, &host).await.unwrap();
+    let current = fixture
+        .adapter
+        .read_current(&fixture.paths, &fixture.host)
+        .await
+        .unwrap();
 
     assert_eq!(
         current.current.provider_name.as_deref(),
@@ -2029,7 +2016,6 @@ async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
         candidate.connection.endpoint.as_str(),
         "https://open.bigmodel.cn/api/coding/paas/v4"
     );
-    assert_eq!(candidate.available_models[0], "glm-5.3");
     assert_eq!(candidate.available_models, ["glm-5.3"]);
     assert!(candidate.is_current);
     assert!(current.current.diagnostics.is_empty());
@@ -2039,42 +2025,31 @@ async fn opencode_reads_the_last_used_model_when_no_default_is_configured() {
         .iter()
         .find(|source| source.source_id == "opencode-model-state")
         .unwrap();
-    assert_eq!(state_source.display_path, state_file);
+    assert_eq!(state_source.display_path, fixture.state_file);
     assert!(state_source.digest.is_some());
 }
 
 #[tokio::test]
 async fn opencode_explicit_default_model_takes_priority_over_last_used_state() {
-    let temp = TempDir::new().unwrap();
-    let adapter = OpenCodeAdapter;
-    let host = environment(temp.path());
-    let paths = adapter.resolve_paths(&host, None);
-    write_fixture(
-        &paths.config_file,
+    let fixture = opencode_read_fixture(
         include_str!("fixtures/opencode/opencode.jsonc"),
-    )
-    .await;
-    write_fixture(
-        paths.auth_file.as_ref().unwrap(),
-        include_str!("fixtures/opencode/auth.json"),
-    )
-    .await;
-    write_fixture(
-        &temp
-            .path()
-            .join(".local")
-            .join("state")
-            .join("opencode")
-            .join("model.json"),
-        r#"{
+        Some(include_str!("fixtures/opencode/auth.json")),
+        Some(
+            r#"{
           "recent": [
             { "providerID": "other-provider", "modelID": "other-model" }
           ]
         }"#,
+        ),
+        StateLocation::Default,
     )
     .await;
 
-    let current = adapter.read_current(&paths, &host).await.unwrap();
+    let current = fixture
+        .adapter
+        .read_current(&fixture.paths, &fixture.host)
+        .await
+        .unwrap();
 
     assert_eq!(
         current.current.provider_name.as_deref(),
@@ -2092,12 +2067,7 @@ async fn opencode_explicit_default_model_takes_priority_over_last_used_state() {
 
 #[tokio::test]
 async fn opencode_invalid_explicit_model_does_not_fall_back_to_last_used_state() {
-    let temp = TempDir::new().unwrap();
-    let adapter = OpenCodeAdapter;
-    let host = environment(temp.path());
-    let paths = adapter.resolve_paths(&host, None);
-    write_fixture(
-        &paths.config_file,
+    let fixture = opencode_read_fixture(
         r#"{
           "model": "missing-provider-separator",
           "provider": {
@@ -2106,24 +2076,23 @@ async fn opencode_invalid_explicit_model_does_not_fall_back_to_last_used_state()
             }
           }
         }"#,
-    )
-    .await;
-    write_fixture(
-        &temp
-            .path()
-            .join(".local")
-            .join("state")
-            .join("opencode")
-            .join("model.json"),
-        r#"{
+        None,
+        Some(
+            r#"{
           "recent": [
             { "providerID": "state-provider", "modelID": "state-model" }
           ]
         }"#,
+        ),
+        StateLocation::Default,
     )
     .await;
 
-    let current = adapter.read_current(&paths, &host).await.unwrap();
+    let current = fixture
+        .adapter
+        .read_current(&fixture.paths, &fixture.host)
+        .await
+        .unwrap();
 
     assert_eq!(current.current.provider_name, None);
     assert_eq!(current.current.model, None);
@@ -2145,12 +2114,7 @@ async fn opencode_invalid_explicit_model_does_not_fall_back_to_last_used_state()
 
 #[tokio::test]
 async fn opencode_falls_back_to_one_unambiguous_configured_model() {
-    let temp = TempDir::new().unwrap();
-    let adapter = OpenCodeAdapter;
-    let host = environment(temp.path());
-    let paths = adapter.resolve_paths(&host, None);
-    write_fixture(
-        &paths.config_file,
+    let fixture = opencode_read_fixture(
         r#"{
           "provider": {
             "only-provider": {
@@ -2160,10 +2124,17 @@ async fn opencode_falls_back_to_one_unambiguous_configured_model() {
             }
           }
         }"#,
+        None,
+        None,
+        StateLocation::Default,
     )
     .await;
 
-    let current = adapter.read_current(&paths, &host).await.unwrap();
+    let current = fixture
+        .adapter
+        .read_current(&fixture.paths, &fixture.host)
+        .await
+        .unwrap();
 
     assert_eq!(
         current.current.provider_name.as_deref(),
@@ -2182,12 +2153,7 @@ async fn opencode_falls_back_to_one_unambiguous_configured_model() {
 
 #[tokio::test]
 async fn opencode_invalid_recent_entry_falls_back_to_the_unique_configured_model() {
-    let temp = TempDir::new().unwrap();
-    let adapter = OpenCodeAdapter;
-    let host = environment(temp.path());
-    let paths = adapter.resolve_paths(&host, None);
-    write_fixture(
-        &paths.config_file,
+    let fixture = opencode_read_fixture(
         r#"{
           "provider": {
             "only-provider": {
@@ -2195,24 +2161,23 @@ async fn opencode_invalid_recent_entry_falls_back_to_the_unique_configured_model
             }
           }
         }"#,
-    )
-    .await;
-    write_fixture(
-        &temp
-            .path()
-            .join(".local")
-            .join("state")
-            .join("opencode")
-            .join("model.json"),
-        r#"{
+        None,
+        Some(
+            r#"{
           "recent": [
             { "providerID": "incomplete-provider" }
           ]
         }"#,
+        ),
+        StateLocation::Default,
     )
     .await;
 
-    let current = adapter.read_current(&paths, &host).await.unwrap();
+    let current = fixture
+        .adapter
+        .read_current(&fixture.paths, &fixture.host)
+        .await
+        .unwrap();
 
     assert_eq!(
         current.current.provider_name.as_deref(),
@@ -2238,12 +2203,7 @@ async fn opencode_invalid_recent_entry_falls_back_to_the_unique_configured_model
 
 #[tokio::test]
 async fn opencode_ignores_invalid_model_state_and_uses_the_unique_configured_model() {
-    let temp = TempDir::new().unwrap();
-    let adapter = OpenCodeAdapter;
-    let host = environment(temp.path());
-    let paths = adapter.resolve_paths(&host, None);
-    write_fixture(
-        &paths.config_file,
+    let fixture = opencode_read_fixture(
         r#"{
           "provider": {
             "only-provider": {
@@ -2251,20 +2211,17 @@ async fn opencode_ignores_invalid_model_state_and_uses_the_unique_configured_mod
             }
           }
         }"#,
-    )
-    .await;
-    write_fixture(
-        &temp
-            .path()
-            .join(".local")
-            .join("state")
-            .join("opencode")
-            .join("model.json"),
-        "{ invalid json",
+        None,
+        Some("{ invalid json"),
+        StateLocation::Default,
     )
     .await;
 
-    let current = adapter.read_current(&paths, &host).await.unwrap();
+    let current = fixture
+        .adapter
+        .read_current(&fixture.paths, &fixture.host)
+        .await
+        .unwrap();
 
     assert_eq!(
         current.current.provider_name.as_deref(),
@@ -2282,12 +2239,7 @@ async fn opencode_ignores_invalid_model_state_and_uses_the_unique_configured_mod
 
 #[tokio::test]
 async fn opencode_does_not_guess_between_ambiguous_configured_models() {
-    let temp = TempDir::new().unwrap();
-    let adapter = OpenCodeAdapter;
-    let host = environment(temp.path());
-    let paths = adapter.resolve_paths(&host, None);
-    write_fixture(
-        &paths.config_file,
+    let fixture = opencode_read_fixture(
         r#"{
           "provider": {
             "one-provider": {
@@ -2298,10 +2250,17 @@ async fn opencode_does_not_guess_between_ambiguous_configured_models() {
             }
           }
         }"#,
+        None,
+        None,
+        StateLocation::Default,
     )
     .await;
 
-    let current = adapter.read_current(&paths, &host).await.unwrap();
+    let current = fixture
+        .adapter
+        .read_current(&fixture.paths, &fixture.host)
+        .await
+        .unwrap();
 
     assert_eq!(current.current.provider_name, None);
     assert_eq!(current.current.model, None);

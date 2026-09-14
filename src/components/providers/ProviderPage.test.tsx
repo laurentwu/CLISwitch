@@ -1,14 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
-import type {
-  ApiProviderDetail,
-  AppSnapshot,
-  ProviderTemplate,
-  PublicProvider,
-} from "../../shared/types";
+import type { ApiProviderDetail, ProviderTemplate, PublicProvider } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
+import { makeAppSnapshot } from "../../test/fixtures";
+import { renderWithQueryClient } from "../../test/render";
 import { ProviderPage } from "./ProviderPage";
 import { CUSTOM_PROVIDER_TEMPLATE } from "./ProviderTemplateSelect";
 
@@ -40,10 +36,8 @@ function apiTemplate(id: string, name: string, category: string): ProviderTempla
   };
 }
 
-const snapshot: AppSnapshot = {
+const snapshot = makeAppSnapshot({
   catalog: {
-    schemaVersion: 1,
-    clis: [],
     providerTemplates: [
       apiTemplate("openai-api", "OpenAI", "api"),
       apiTemplate("glm-coding-plan", "GLM Coding Plan", "coding-plan"),
@@ -51,38 +45,18 @@ const snapshot: AppSnapshot = {
       { mode: "auth", id: "anthropic-auth", name: "Anthropic Account", authKind: "anthropic" },
       { mode: "auth", id: "codex-auth", name: "Codex Account", authKind: "codex" },
     ],
-    relations: [],
   },
-  settings: {
-    language: "zh-cn",
-    theme: "system",
-    uiZoomPercent: 100,
-    scanOnStartup: false,
-    plaintextRiskAccepted: false,
-    revision: 1,
-    manualLocations: [],
-  },
-  providers: [],
-  configurations: [],
-  current: null,
-  latestApply: null,
-  configurationStatuses: {},
-  appDataDirectory: "/tmp/cliswitch",
-  backupBytes: 0,
-  appVersion: "0.1.0",
-};
+});
 
 function renderPage(
   pageSnapshot = snapshot,
   guarded: (action: () => void) => void = (action) => action(),
 ) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
-  });
-  render(
-    <QueryClientProvider client={client}>
-      <ProviderPage snapshot={pageSnapshot} guarded={guarded} onError={vi.fn()} />
-    </QueryClientProvider>,
+  renderWithQueryClient(
+    <ProviderPage snapshot={pageSnapshot} guarded={guarded} onError={vi.fn()} />,
+    {
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    },
   );
 }
 

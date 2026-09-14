@@ -1,5 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type {
@@ -8,6 +7,7 @@ import type {
   ConfigurationTarget,
   SavedConfiguration,
 } from "../../shared/types";
+import { renderWithQueryClient } from "../../test/render";
 import { ApplyPreviewDialog } from "./ApplyPreviewDialog";
 
 const commandMock = vi.hoisted(() => vi.fn());
@@ -63,10 +63,8 @@ describe("ApplyPreviewDialog", () => {
   it("shows a read-only full-file preview for one CLI", async () => {
     commandMock.mockResolvedValue(preview);
     onEventMock.mockResolvedValue(() => undefined);
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApplyPreviewDialog configuration={configuration} target={target} open onClose={vi.fn()} />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ApplyPreviewDialog configuration={configuration} target={target} open onClose={vi.fn()} />,
     );
 
     expect(await screen.findByText("原文件")).toBeInTheDocument();
@@ -108,15 +106,13 @@ describe("ApplyPreviewDialog", () => {
       return undefined;
     });
     onEventMock.mockResolvedValue(() => undefined);
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApplyPreviewDialog
-          configuration={configuration}
-          initialRun={failedRun}
-          open
-          onClose={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ApplyPreviewDialog
+        configuration={configuration}
+        initialRun={failedRun}
+        open
+        onClose={vi.fn()}
+      />,
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "重试失败项" }));
@@ -148,15 +144,13 @@ describe("ApplyPreviewDialog", () => {
       ],
     };
     commandMock.mockResolvedValue(qwenPreview);
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ApplyPreviewDialog
-          configuration={configuration}
-          target={qwenTarget}
-          open
-          onClose={vi.fn()}
-        />
-      </QueryClientProvider>,
+    renderWithQueryClient(
+      <ApplyPreviewDialog
+        configuration={configuration}
+        target={qwenTarget}
+        open
+        onClose={vi.fn()}
+      />,
     );
 
     expect(await screen.findByText("/fixture/.qwen/settings.json")).toBeInTheDocument();

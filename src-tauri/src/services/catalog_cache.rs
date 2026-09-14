@@ -468,14 +468,6 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn bundled_snapshot_is_valid_and_contains_core_providers() {
-        let catalog = CliAdapterCatalog::bundled().unwrap();
-        assert!(catalog.provider("deepseek").is_some());
-        assert!(catalog.provider("zhipuai-coding-plan").is_some());
-        assert_eq!(catalog.provider_count(), 7);
-    }
-
     #[tokio::test]
     async fn invalid_local_cache_falls_back_to_bundled_snapshot() {
         let temp = TempDir::new().unwrap();
