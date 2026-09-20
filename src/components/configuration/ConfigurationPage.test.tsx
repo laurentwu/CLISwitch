@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { PublicProvider, SavedConfiguration } from "../../shared/types";
@@ -149,6 +150,35 @@ describe("ConfigurationPage", () => {
     expect(screen.getByText("测试供应商")).toBeInTheDocument();
     expect(await screen.findByText("无法刷新配置列表")).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveClass("alert-warning");
+  });
+
+  it("replaces the header toolbar when the active tab changes and respects its guard", async () => {
+    const guarded = vi.fn((action: () => void) => action());
+    renderWithQueryClient(
+      <ConfigurationPage
+        snapshot={{ ...snapshot, configurations: [applyConfiguration], providers: [applyProvider] }}
+        guarded={guarded}
+        onError={vi.fn()}
+      />,
+      { defaultOptions: { queries: { retry: false, staleTime: Infinity } } },
+    );
+    const header = screen.getByRole("heading", { name: "配置", level: 1 }).closest("header")!;
+    expect(within(header).getByRole("button", { name: "重新扫描" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: applyConfiguration.name }));
+    expect(within(header).queryByRole("button", { name: "重新扫描" })).not.toBeInTheDocument();
+    expect(within(header).getAllByRole("button", { name: "应用" })).toHaveLength(1);
+    guarded.mockImplementation(() => {});
+    await userEvent.click(screen.getByRole("tab", { name: "当前配置" }));
+    expect(screen.getByRole("tab", { name: applyConfiguration.name })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(within(header).getAllByRole("button", { name: "应用" })).toHaveLength(1);
+    guarded.mockImplementation((action) => action());
+    await userEvent.click(screen.getByRole("tab", { name: "当前配置" }));
+    expect(within(header).queryByRole("button", { name: "应用" })).not.toBeInTheDocument();
+    expect(within(header).getByRole("button", { name: "重新扫描" })).toBeInTheDocument();
+    expect(commandMock).not.toHaveBeenCalled();
   });
 
   it("keeps the apply progress dialog open when saving remounts the keyed tab", async () => {

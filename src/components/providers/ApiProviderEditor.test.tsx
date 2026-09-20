@@ -1,9 +1,13 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { ApiProviderDetail, ProviderCatalog } from "../../shared/types";
 import { useNotificationStore } from "../../stores/notifications";
+import { useUiStore } from "../../stores/ui";
+import { StrictMode } from "react";
 import { renderWithQueryClient } from "../../test/render";
+import { chooseSelectOption } from "../../test/select";
 import { NotificationViewport, useErrorNotifier } from "../ui";
 import { ApiProviderEditor } from "./ApiProviderEditor";
 
@@ -134,22 +138,59 @@ describe("ApiProviderEditor", () => {
   beforeEach(() => {
     commandMock.mockReset();
     useNotificationStore.getState().clear();
+    useUiStore.setState({ dirty: false, saveCurrent: undefined });
   });
 
-  it("expands a provider template into all endpoints and one shared credential input", () => {
+  it("does not mark a loaded provider dirty without an edit in StrictMode", async () => {
+    const detail = savedProviderDetail();
+    detail.connections.push({
+      ...detail.connections[0],
+      id: "second",
+      credentialSlotId: "second-key",
+      protocol: "anthropic-messages",
+    });
+    renderWithQueryClient(
+      <StrictMode>
+        <SavedProviderEditor detail={detail} />
+      </StrictMode>,
+    );
+    await waitFor(() =>
+      expect(screen.getAllByRole("textbox", { name: /API Key/ })[0]).toHaveValue("secret"),
+    );
+    expect(useUiStore.getState().dirty).toBe(false);
+    await userEvent.click(screen.getAllByRole("textbox", { name: /API Key/ })[0]);
+    await userEvent.tab();
+    expect(useUiStore.getState().dirty).toBe(false);
+  });
+
+  it("expands a provider template into all endpoints and one shared credential input", async () => {
     renderWithQueryClient(
       <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />,
     );
 
-    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
-      target: { value: "glm-coding-plan" },
-    });
+    await chooseSelectOption(
+      screen.getByRole("combobox", { name: /Provider 模板/ }),
+      "GLM Coding Plan",
+    );
 
     expect(screen.getByRole("heading", { name: "Anthropic Messages" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "OpenAI Chat Completions" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "OpenAI Responses" })).toBeInTheDocument();
     expect(screen.getAllByRole("textbox", { name: /Coding Plan API Key/ })).toHaveLength(1);
     expect(screen.getAllByDisplayValue("glm-suggested")).toHaveLength(3);
+  });
+
+  it("associates credential guidance with the credential input", () => {
+    renderWithQueryClient(
+      <ApiProviderEditor providers={[]} catalog={catalog} onClose={vi.fn()} onError={vi.fn()} />,
+    );
+
+    const credential = screen.getByRole("textbox", { name: /API Key/ });
+    const descriptionId = credential.getAttribute("aria-describedby");
+    expect(descriptionId).toBe("connection-0-credential-description");
+    expect(document.getElementById(descriptionId!)).toHaveTextContent(
+      "复制后秘密会进入操作系统剪贴板。",
+    );
   });
 
   it("tests an unsaved provider with the current connection draft", async () => {
@@ -166,7 +207,7 @@ describe("ApiProviderEditor", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("连接成功；未发送任何 prompt。");
+    expect(await screen.findByText("连接成功；未发送任何 prompt。")).toBeInTheDocument();
     expect(commandMock).toHaveBeenCalledWith("test_draft_connection", {
       draft: {
         templateId: undefined,
@@ -228,7 +269,7 @@ describe("ApiProviderEditor", () => {
     expect(
       document.querySelector('datalist#models-0 option[value="fetched-second"]'),
     ).not.toBeNull();
-    expect(screen.getByRole("status")).toHaveTextContent("获取模型成功");
+    expect(await screen.findByText("获取模型成功")).toBeInTheDocument();
     expect(commandMock).not.toHaveBeenCalledWith("create_provider", expect.anything());
   });
 
@@ -243,7 +284,7 @@ describe("ApiProviderEditor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("连接成功；未发送任何 prompt。");
+    expect(await screen.findByText("连接成功；未发送任何 prompt。")).toBeInTheDocument();
     expect(commandMock).toHaveBeenCalledWith("test_connection", {
       providerId: "provider-1",
       connectionId: "connection-1",
@@ -262,7 +303,8 @@ describe("ApiProviderEditor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
 
-    const notification = await screen.findByRole("alert");
+    const notification = (await screen.findByText("连接测试失败")).closest(".alert");
+    expect(notification).not.toBeNull();
     expect(notification).toHaveTextContent("连接测试失败");
     expect(notification).toHaveTextContent("请检查网络连接和服务地址后重试。");
     expect(notification).toHaveTextContent("upstream unavailable");
@@ -280,13 +322,14 @@ describe("ApiProviderEditor", () => {
     );
 
     const templateSelect = screen.getByRole("combobox", { name: /Provider 模板/ });
+    await userEvent.click(templateSelect);
     const disabledOption = screen.getByRole("option", {
       name: /Disabled Demo \(disabled-demo\)/,
     });
-    expect(disabledOption).toBeDisabled();
+    expect(disabledOption).toHaveAttribute("aria-disabled", "true");
     expect(disabledOption).toHaveAttribute("title", "provider adapter is unsupported");
 
-    fireEvent.change(templateSelect, { target: { value: "dynamic-demo" } });
+    await userEvent.click(screen.getByRole("option", { name: /Dynamic Demo \(dynamic-demo\)/ }));
 
     const model = screen.getByRole("combobox", { name: /默认模型/ });
     expect(model).toHaveValue("");
@@ -485,7 +528,7 @@ describe("ApiProviderEditor", () => {
         document.querySelectorAll('datalist#models-0 option[value="fetched-first"]'),
       ).toHaveLength(1);
       expect(screen.getByRole("combobox", { name: /默认模型/ })).toHaveValue(expectedDefaultModel);
-      expect(screen.getByRole("status")).toHaveTextContent("获取模型成功");
+      expect(await screen.findByText("获取模型成功")).toBeInTheDocument();
 
       if (!defaultModel) {
         fireEvent.change(screen.getByRole("combobox", { name: /默认模型/ }), {

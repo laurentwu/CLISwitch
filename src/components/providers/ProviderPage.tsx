@@ -17,15 +17,17 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmModal,
   EmptyState,
   ErrorAlert,
-  Modal,
+  Alert,
   Spinner,
   type ErrorReporter,
 } from "../ui";
 import { ApiProviderEditor } from "./ApiProviderEditor";
 import { OAuthFlowDialog } from "./OAuthFlowDialog";
 import { OAuthProviderEditor, type OAuthProviderDraft } from "./OAuthProviderEditor";
+import { PageHeader } from "../layout/PageHeader";
 
 type Flow = {
   kind: OAuthKind;
@@ -158,17 +160,17 @@ export function ProviderPage({
 
   return (
     <div className="page">
-      <header className="page-header">
-        <div>
-          <h1>{t("providers.title")}</h1>
-          <p>{t("settings.riskText")}</p>
-        </div>
-        <div className="section-actions">
+      <PageHeader
+        title={t("providers.title")}
+        actions={
           <Button variant="secondary" onClick={startAdd}>
             <Plus size={16} /> {t("providers.add")}
           </Button>
-        </div>
-      </header>
+        }
+      />
+      <Alert tone="warning" compact title={t("settings.riskTitle")}>
+        <p>{t("settings.riskText")}</p>
+      </Alert>
       {providers.isError ? (
         <ErrorAlert
           error={providers.error}
@@ -198,9 +200,7 @@ export function ProviderPage({
                     : provider.templateName || t("providers.customTemplate")}
                 </small>
               </span>
-              <Badge tone={provider.referencedBy.length ? "neutral" : "good"}>
-                {provider.referencedBy.length}
-              </Badge>
+              <Badge tone="neutral">{provider.referencedBy.length}</Badge>
             </button>
           ))}
           {!providers.data.length ? <EmptyState>{t("common.none")}</EmptyState> : null}
@@ -332,9 +332,10 @@ export function ProviderPage({
           }}
         />
       ) : null}
-      <Modal
+      <ConfirmModal
         open={Boolean(deleteProvider)}
         title={t("common.confirmDelete")}
+        description={`${deleteProvider?.name ?? ""}: ${t("providers.deleteWarning")}`}
         onClose={() => setDeleteProvider(undefined)}
         footer={
           <>
@@ -350,11 +351,7 @@ export function ProviderPage({
             </Button>
           </>
         }
-      >
-        <p>
-          {deleteProvider?.name}: {t("providers.deleteWarning")}
-        </p>
-      </Modal>
+      />
     </div>
   );
 }

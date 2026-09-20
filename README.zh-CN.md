@@ -10,6 +10,7 @@ CLISwitch 是一个基于 Tauri 2 的本地桌面应用，用于查看、保存�
 
 - 仅保留“配置、供应商、设置”三个顶层入口。
 - 配置区以“当前配置 / 命名配置 / ＋”横向并排展示。
+- 当前 CLI 配置按行展示，详情可独立展开；折叠时仍显示诊断与未纳管供应商操作。命名配置按 CLI 编辑，供应商采用列表/详情布局，设置分为六个开放区块。
 - 支持自动发现，以及手工指定 CLI 可执行文件和配置目录。
 - 端点 + Key 供应商可配置 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 接入方式。
 - Provider 端点数据来自随软件内置的 [CLIAdapter](https://github.com/laurentwu/CLIAdapter) 快照；应用使用私有本地缓存，并可在设置页手动更新。
@@ -24,6 +25,8 @@ CLISwitch 是一个基于 Tauri 2 的本地桌面应用，用于查看、保存�
 - 中英文、浅色/深色/跟随系统主题、100%～300% 界面缩放、单实例与窗口状态保存。
 - 无遥测、无自动更新、无远程脚本、无通用 shell/文件系统 IPC。
 
+中性界面使用 shadcn/ui Radix primitives（`radix-nova`、Lucide）、支持键盘的弹窗与下拉，以及 Sonner 通知。主题保存后生效，跟随系统模式响应系统外观变化；缩放实时预览，放弃未保存草稿后恢复已保存值。
+
 具体兼容版本、路径和字段映射见 [CLI_SUPPORT.md](CLI_SUPPORT.md)。CLISwitch 只管理用户级配置；环境变量、项目配置或企业策略仍可能覆盖它。
 
 ## 开发
@@ -35,6 +38,8 @@ corepack enable
 pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
+
+共享基础组件位于 `src/components/ui/primitives`，`components.json` 固定 registry 风格与路径别名。更新组件时使用固定版本的 `pnpm exec shadcn` CLI 与 Radix base，并保留应用的语义 token、本地化无障碍文案和焦点/通知适配层。UI 状态不另建设置持久化。
 
 可运行 `pnpm catalog:update` 更新仓库内置的 CLIAdapter Provider 快照。脚本只访问固定上游
 地址，校验 Provider ID 与其声明的协议端点，并生成摘要元数据。该命令不会更新
@@ -51,11 +56,16 @@ pnpm test
 cargo fmt --check --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-features
+pnpm build
+pnpm check:production-boundary
 pnpm test:e2e
 pnpm tauri build
 ```
 
 `pnpm test:e2e` 会生成独立的自动化测试 Debug 构建。WDIO 插件、全局 Tauri API 和测试权限不会进入正常生产构建。测试会创建临时 HOME/XDG/APPDATA，并只在其中放入假 CLI，绝不读取或修改真实用户配置。Linux 无界面 CI 应通过 `xvfb-run -a pnpm test:e2e` 运行。
+
+外观 E2E 覆盖主题保存、CLI 行展开、弹窗键盘焦点，以及全部支持缩放下的布局溢出。发布前仍需在各支持平台冒烟验证 WebView 和原生文件选择器。
+本次 UI 迁移已执行的检查与环境限制记录在 [e2e/VALIDATION.md](e2e/VALIDATION.md)。
 
 ## 构建与发布
 

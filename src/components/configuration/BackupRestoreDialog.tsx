@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
 import { cliDisplayName } from "../../shared/names";
 import type { BackupMetadata, CliId, RestorePreview, ScanSnapshot } from "../../shared/types";
-import { Badge, Button, EmptyState, ErrorAlert, Modal, Spinner } from "../ui";
+import { Badge, Button, ConfirmModal, EmptyState, ErrorAlert, Modal, Spinner } from "../ui";
 
 export function BackupRestoreDialog({
   open,
@@ -104,9 +104,12 @@ export function BackupRestoreDialog({
           ))}
         </div>
       </Modal>
-      <Modal
+      <ConfirmModal
         open={Boolean(restorePreview)}
         title={t("common.confirmRestore")}
+        description={
+          restorePreview?.restoresTombstone ? t("config.tombstone") : t("config.restore")
+        }
         onClose={closeRestorePreview}
         footer={
           <>
@@ -127,8 +130,7 @@ export function BackupRestoreDialog({
           <ErrorAlert error={restore.error} title={t("errors.operations.restore")} />
         ) : null}
         <div className="path-text">{restorePreview?.targetPath}</div>
-        <p>{restorePreview?.restoresTombstone ? t("config.tombstone") : t("config.restore")}</p>
-      </Modal>
+      </ConfirmModal>
     </>
   );
 }

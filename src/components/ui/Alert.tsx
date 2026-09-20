@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { clsx } from "clsx";
 import { errorGuidance, errorLevel, normalizeError, type AppFailure } from "../../shared/errors";
 import type { NotificationTone } from "../../stores/notifications";
+import { Alert as AlertPrimitive, AlertDescription, AlertTitle } from "./primitives/alert";
+import { Button as ButtonPrimitive } from "./primitives/button";
 
 function AlertIcon({ tone }: { tone: NotificationTone }) {
   if (tone === "success") return <CheckCircle2 size={18} />;
@@ -30,30 +32,31 @@ export function Alert({
 }>) {
   const { t } = useTranslation();
   return (
-    <div
+    <AlertPrimitive
+      variant={tone}
       className={clsx("alert", `alert-${tone}`, compact && "alert-compact")}
       role={announce ? (tone === "error" || tone === "warning" ? "alert" : "status") : undefined}
     >
       <span className="alert-icon" aria-hidden="true">
         <AlertIcon tone={tone} />
       </span>
-      <div className="alert-content">
-        <strong className="alert-title">{title}</strong>
+      <AlertDescription className="alert-content">
+        <AlertTitle className="alert-title">{title}</AlertTitle>
         {children}
-      </div>
+      </AlertDescription>
       {action ? <div className="alert-action">{action}</div> : null}
       {onDismiss ? (
-        <button
-          type="button"
+        <ButtonPrimitive
+          variant="ghost"
           className="alert-dismiss"
           aria-label={t("errors.dismiss")}
           title={t("errors.dismiss")}
           onClick={onDismiss}
         >
           <X size={16} />
-        </button>
+        </ButtonPrimitive>
       ) : null}
-    </div>
+    </AlertPrimitive>
   );
 }
 
@@ -109,9 +112,9 @@ export function ErrorAlert({
       announce
       action={
         onRetry ? (
-          <button type="button" className="button button-secondary" onClick={onRetry}>
+          <ButtonPrimitive type="button" variant="outline" onClick={onRetry}>
             {t("common.retry")}
-          </button>
+          </ButtonPrimitive>
         ) : undefined
       }
     >

@@ -1,10 +1,12 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../i18n";
 import { useUiStore } from "../stores/ui";
 import { makeAppSnapshot } from "../test/fixtures";
 import { renderWithQueryClient } from "../test/render";
 import { App } from "./App";
+import { ThemeProvider } from "./ThemeProvider";
 
 const commandMock = vi.hoisted(() => vi.fn());
 const onEventMock = vi.hoisted(() => vi.fn());
@@ -21,7 +23,7 @@ vi.mock("../components/settings/SettingsPage", () => ({
 
 const snapshot = makeAppSnapshot({ settings: { uiZoomPercent: 225 } });
 
-function mockReadyAppCommands() {
+function mockReadyAppCommands(snapshotValue = snapshot) {
   commandMock.mockImplementation((name: string) => {
     if (name === "get_startup_status") {
       return Promise.resolve({
@@ -31,16 +33,21 @@ function mockReadyAppCommands() {
         appDataDirectory: "/tmp/cliswitch",
       });
     }
-    if (name === "get_app_snapshot") return Promise.resolve(snapshot);
+    if (name === "get_app_snapshot") return Promise.resolve(snapshotValue);
     if (name === "set_ui_zoom" || name === "set_frontend_dirty") return Promise.resolve();
     return Promise.reject(new Error(`unexpected command: ${name}`));
   });
 }
 
 function renderApp() {
-  return renderWithQueryClient(<App />, {
-    defaultOptions: { queries: { retry: false } },
-  });
+  return renderWithQueryClient(
+    <ThemeProvider>
+      <App />
+    </ThemeProvider>,
+    {
+      defaultOptions: { queries: { retry: false } },
+    },
+  );
 }
 
 async function openUnsavedChangesDialog() {
@@ -54,6 +61,8 @@ describe("App startup", () => {
     commandMock.mockReset();
     onEventMock.mockReset();
     onEventMock.mockResolvedValue(vi.fn());
+    document.documentElement.classList.remove("dark");
+    delete document.documentElement.dataset.theme;
     useUiStore.setState({
       navigation: "configuration",
       configurationId: "current",
@@ -71,6 +80,15 @@ describe("App startup", () => {
     );
   });
 
+  it("applies the persisted theme from the application snapshot", async () => {
+    mockReadyAppCommands(makeAppSnapshot({ settings: { theme: "dark" } }));
+    renderApp();
+
+    await screen.findByText("Configuration page");
+    expect(document.documentElement).toHaveClass("dark");
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+  });
+
   it("presents the unsaved changes actions in the confirmed layout", async () => {
     mockReadyAppCommands();
     useUiStore.setState({ dirty: true, saveCurrent: vi.fn().mockResolvedValue(true) });
@@ -83,7 +101,8 @@ describe("App startup", () => {
     expect(footer).not.toBeNull();
     const actions = within(footer as HTMLElement).getAllByRole("button");
     expect(actions.map((action) => action.textContent)).toEqual(["不保存", "取消", "保存"]);
-    expect(actions[0]).toHaveClass("button-secondary", "unsaved-dialog-discard");
+    expect(actions[0]).toHaveAttribute("data-variant", "outline");
+    expect(actions[0]).toHaveClass("unsaved-dialog-discard");
     expect(within(dialog).getByRole("button", { name: "关闭对话框" })).toBeInTheDocument();
   });
 
@@ -101,7 +120,8 @@ describe("App startup", () => {
     expect(screen.queryByRole("dialog", { name: "是否保存更改？" })).not.toBeInTheDocument();
 
     dialog = await openUnsavedChangesDialog();
-    fireEvent.mouseDown(dialog.parentElement as HTMLElement);
+    const overlay = document.querySelector('[data-slot="dialog-overlay"]') as HTMLElement;
+    await userEvent.click(overlay);
     expect(screen.queryByRole("dialog", { name: "是否保存更改？" })).not.toBeInTheDocument();
     expect(screen.getByText("Configuration page")).toBeInTheDocument();
     expect(useUiStore.getState().dirty).toBe(true);

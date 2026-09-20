@@ -1,0 +1,63 @@
+# UI migration validation — 2026-09-20
+
+## Environment and boundaries
+
+Validated on Linux with Node.js 24.19.0, pnpm 11.21.0, Rust 1.88.0, Chrome and WebKitGTK
+2.52.6. All rendered data and CLI files were fixtures in temporary directories. No real user
+configuration, credentials, provider catalog updates, migrations, IPC contracts, or Tauri
+capabilities were changed.
+
+The four planning reference PNGs were available and inspected alongside implementation
+screenshots. The Browser connector was unavailable, so rendering checks used a temporary
+Playwright harness against Vite; its fake IPC lived outside the application sources. Desktop
+checks used the existing isolated WDIO/Tauri fixture environment.
+
+## Checks
+
+- Frozen dependency installation, formatting, lint, TypeScript, frontend tests, Rust formatting,
+  Clippy, and Rust tests passed. Frontend: 98 passed across 22 files. Rust: 227 passed, one existing
+  ignored platform test.
+- Production frontend build and production-boundary check passed. The frontend build reports a
+  non-fatal chunk-size warning. Linux AppImage and deb packaging succeeded.
+- The normal `xvfb-run -a pnpm test:e2e` was executed, but its embedded driver failed with
+  `Unsupported result type` before meaningful interaction checks could run.
+- Supplemental desktop validation used temporary tauri-driver 2.0.6 and WebKitWebDriver 2.52.6,
+  a separate embedded-driver port, and software compositing. All six tests in `appearance.e2e.ts`
+  and `navigation.e2e.ts` passed. Native `sendKeys` also failed on a plain, non-React input in this
+  environment, so this supplemental run populated fixture text through the native input value
+  setter plus a bubbling input event. Clicking, Select interaction, Escape, focus restoration,
+  resizing, backend IPC, apply and restore remained real. This is not a pass for the unmodified
+  default-driver suite or native typing.
+- No Windows/macOS WebView or native file-picker smoke test was available. Those remain release
+  validation requirements.
+
+## Render and interaction matrix
+
+Current and named configurations, API/OAuth editors, Settings, file preview, and startup failure
+were rendered in both languages and both explicit themes at the default window size. System
+appearance changes were checked in both directions. The dense configuration/provider/settings
+pages were checked at 1180×780, 900×620, and 1536×1024 with all nine zoom steps from 100% to 300%.
+Normal page content had no horizontal overflow. Dialog/notification interaction was additionally
+checked at default/minimum window sizes and 100%, 200%, and 300% equivalent CSS viewports.
+The final rendering run recorded 62 checked screenshots with no page overflow or browser errors,
+plus full-height Settings captures. At low window heights notifications join the dialog's scroll
+flow so their close/action controls remain reachable.
+
+| Review item          | Result                                                                                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Layout and density   | Left navigation, left-aligned configuration tabs, CLI rows, provider split view and six Settings sections match the specified structure.                |
+| Colors               | Paired neutral theme tokens; state and destructive colors are semantic. No decorative gradients were introduced.                                        |
+| Text hierarchy       | 24px page titles, 16px section headings, 14px body and controls, 12px secondary/path text.                                                              |
+| Icons                | Existing Lucide navigation/actions and CL/CO/OP/QW marks retained.                                                                                      |
+| Spacing              | 184px sidebar, 28px normal content padding, 236px provider list; responsive 60px icon navigation.                                                       |
+| Control states       | Radix selected/checked state selectors corrected; disabled, invalid, focus, loading, empty and alert states covered by rendering and interaction tests. |
+| Complete information | Full credential warning, connection metadata, references, diagnostics, file diffs and unmanaged-provider actions retained.                              |
+| Narrow viewports     | Wrapping actions, single-column forms, local tab/code scrolling, non-sticky short-window headers and scrollable dialogs keep controls reachable.        |
+
+Calculated token contrast: normal/state text pairs are at least 4.79:1; input boundaries against
+the page background are at least 3.23:1. Semantic foreground/background pairs remain intact in
+alerts and diff views.
+
+Temporary evidence for this session is under `/tmp/cliswitch-visual-qKHOQY/`: implementation PNGs,
+`report.json`, `e2e-verified.log`, frontend/Rust test logs and packaging logs. These files are not
+product assets and may be cleared with the temporary directory.

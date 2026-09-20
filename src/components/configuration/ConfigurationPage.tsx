@@ -17,6 +17,7 @@ import { ConfigurationTabs } from "./ConfigurationTabs";
 import { CurrentConfigurationTab } from "./CurrentConfigurationTab";
 import { ApplyPreviewDialog } from "./ApplyPreviewDialog";
 import { SavedConfigurationTab } from "./SavedConfigurationTab";
+import { PageHeader, PageToolbarProvider } from "../layout/PageHeader";
 
 export function ConfigurationPage({
   snapshot,
@@ -96,119 +97,120 @@ export function ConfigurationPage({
   });
   const nameIssue = validateEntityName(name, configurations.data);
   return (
-    <div className="page">
-      <header className="page-header">
-        <h1>{t("config.title")}</h1>
-      </header>
-      {configurations.isError ? (
-        <ErrorAlert
-          error={configurations.error}
-          title={t("errors.query.configurations")}
-          onRetry={() => void configurations.refetch()}
-          tone="warning"
-        />
-      ) : null}
-      {providers.isError ? (
-        <ErrorAlert
-          error={providers.error}
-          title={t("errors.query.providers")}
-          onRetry={() => void providers.refetch()}
-          tone="warning"
-        />
-      ) : null}
-      {scan.isError ? (
-        <ErrorAlert
-          error={scan.error}
-          title={t("errors.query.scan")}
-          onRetry={() => void scan.refetch()}
-          tone="warning"
-        />
-      ) : null}
-      <ConfigurationTabs
-        configurations={configurations.data}
-        active={active}
-        dirty={dirty}
-        onSelect={(id) =>
-          guarded(() => {
-            setDirty(false);
-            setActive(id);
-          })
-        }
-        onAdd={() => guarded(() => setAddOpen(true))}
-      />
-      {active === "current" ? (
-        <CurrentConfigurationTab
-          scan={scan.data}
+    <PageToolbarProvider>
+      <div className="page">
+        <PageHeader title={t("config.title")} />
+        {configurations.isError ? (
+          <ErrorAlert
+            error={configurations.error}
+            title={t("errors.query.configurations")}
+            onRetry={() => void configurations.refetch()}
+            tone="warning"
+          />
+        ) : null}
+        {providers.isError ? (
+          <ErrorAlert
+            error={providers.error}
+            title={t("errors.query.providers")}
+            onRetry={() => void providers.refetch()}
+            tone="warning"
+          />
+        ) : null}
+        {scan.isError ? (
+          <ErrorAlert
+            error={scan.error}
+            title={t("errors.query.scan")}
+            onRetry={() => void scan.refetch()}
+            tone="warning"
+          />
+        ) : null}
+        <ConfigurationTabs
           configurations={configurations.data}
-          providers={providers.data}
-          catalog={snapshot.catalog}
-          onError={onError}
-        />
-      ) : null}
-      {selected ? (
-        <SavedConfigurationTab
-          key={`${selected.id}:${selected.revision}`}
-          configuration={selected}
-          matchStatus={snapshot.configurationStatuses[selected.id]}
-          providers={providers.data}
-          catalog={snapshot.catalog}
-          configurations={configurations.data}
-          scan={scan.data}
-          onDeleted={() => setActive("current")}
-          onError={onError}
-          onPreview={(target) => {
-            setApplyDialog({ configurationId: selected.id, target });
-          }}
-          onApplyRun={(run) => {
-            setDismissedApplyId(undefined);
-            setApplyDialog({ configurationId: run.configurationId, run });
-          }}
-        />
-      ) : null}
-      {selected && visibleApplyDialog?.configurationId === selected.id ? (
-        <ApplyPreviewDialog
-          key={`${selected.id}:${selected.revision}:${visibleApplyDialog.target?.cliId ?? "apply"}:${visibleApplyDialog.run?.id ?? "none"}`}
-          configuration={selected}
-          target={visibleApplyDialog.target}
-          initialRun={visibleApplyDialog.run}
-          open
-          onClose={() => {
-            if (visibleApplyDialog.run) {
-              setDismissedApplyId(visibleApplyDialog.run.id);
-            }
-            setApplyDialog(undefined);
-          }}
-        />
-      ) : null}
-      <Modal
-        open={addOpen}
-        title={t("config.add")}
-        onClose={() => setAddOpen(false)}
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setAddOpen(false)}>
-              {t("common.cancel")}
-            </Button>
-            <Button
-              disabled={Boolean(nameIssue) || create.isPending}
-              onClick={() => create.mutate()}
-            >
-              {t("common.create")}
-            </Button>
-          </>
-        }
-      >
-        <Field
-          label={t("providers.name")}
-          hint={
-            nameIssue
-              ? t(`validation.name${nameIssue === "length" ? "Length" : "Duplicate"}`)
-              : undefined
+          active={active}
+          dirty={dirty}
+          onSelect={(id) =>
+            guarded(() => {
+              setDirty(false);
+              setActive(id);
+            })
+          }
+          onAdd={() => guarded(() => setAddOpen(true))}
+        >
+          {active === "current" ? (
+            <CurrentConfigurationTab
+              scan={scan.data}
+              configurations={configurations.data}
+              providers={providers.data}
+              catalog={snapshot.catalog}
+              onError={onError}
+            />
+          ) : null}
+          {selected ? (
+            <SavedConfigurationTab
+              key={`${selected.id}:${selected.revision}`}
+              configuration={selected}
+              matchStatus={snapshot.configurationStatuses[selected.id]}
+              providers={providers.data}
+              catalog={snapshot.catalog}
+              configurations={configurations.data}
+              scan={scan.data}
+              onDeleted={() => setActive("current")}
+              onError={onError}
+              onPreview={(target) => {
+                setApplyDialog({ configurationId: selected.id, target });
+              }}
+              onApplyRun={(run) => {
+                setDismissedApplyId(undefined);
+                setApplyDialog({ configurationId: run.configurationId, run });
+              }}
+            />
+          ) : null}
+        </ConfigurationTabs>
+        {selected && visibleApplyDialog?.configurationId === selected.id ? (
+          <ApplyPreviewDialog
+            key={`${selected.id}:${selected.revision}:${visibleApplyDialog.target?.cliId ?? "apply"}:${visibleApplyDialog.run?.id ?? "none"}`}
+            configuration={selected}
+            target={visibleApplyDialog.target}
+            initialRun={visibleApplyDialog.run}
+            open
+            onClose={() => {
+              if (visibleApplyDialog.run) {
+                setDismissedApplyId(visibleApplyDialog.run.id);
+              }
+              setApplyDialog(undefined);
+            }}
+          />
+        ) : null}
+        <Modal
+          open={addOpen}
+          title={t("config.add")}
+          onClose={() => setAddOpen(false)}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setAddOpen(false)}>
+                {t("common.cancel")}
+              </Button>
+              <Button
+                disabled={Boolean(nameIssue) || create.isPending}
+                onClick={() => create.mutate()}
+              >
+                {t("common.create")}
+              </Button>
+            </>
           }
         >
-          <Input autoFocus value={name} onChange={(event) => setName(event.target.value)} />
-        </Field>
-      </Modal>
-    </div>
+          <Field
+            label={t("providers.name")}
+            hint={
+              nameIssue
+                ? t(`validation.name${nameIssue === "length" ? "Length" : "Duplicate"}`)
+                : undefined
+            }
+          >
+            <Input autoFocus value={name} onChange={(event) => setName(event.target.value)} />
+          </Field>
+        </Modal>
+      </div>
+    </PageToolbarProvider>
   );
 }

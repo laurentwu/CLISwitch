@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { ProviderCatalog, ScanSnapshot } from "../../shared/types";
@@ -137,7 +138,7 @@ describe("CurrentConfigurationTab", () => {
     expect(screen.queryByText("扫描失败")).not.toBeInTheDocument();
   });
 
-  it("shows read-only Codex paths and offers an OAuth-named save dialog", () => {
+  it("keeps read-only Codex details collapsed and offers an OAuth-named save dialog", async () => {
     renderWithQueryClient(
       <CurrentConfigurationTab
         scan={codexOAuthScan}
@@ -148,6 +149,10 @@ describe("CurrentConfigurationTab", () => {
       />,
     );
 
+    expect(screen.queryByText("/fixture/bin/codex")).not.toBeInTheDocument();
+    const details = screen.getByRole("button", { name: "展开 Codex CLI 详情" });
+    details.focus();
+    await userEvent.keyboard("{Enter}");
     expect(screen.getByText("/fixture/bin/codex")).toBeInTheDocument();
     expect(screen.getByText("/fixture/.codex")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "选择可执行文件" })).not.toBeInTheDocument();
@@ -157,6 +162,72 @@ describe("CurrentConfigurationTab", () => {
     const dialog = screen.getByRole("dialog", { name: "保存未纳管供应商" });
     expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue("Codex OAuth");
     expect(within(dialog).queryByRole("button", { name: "获取模型" })).not.toBeInTheDocument();
+  });
+
+  it("keeps CLI expansion independent and retains it when scan data refreshes", () => {
+    const { rerender } = renderWithQueryClient(
+      <CurrentConfigurationTab
+        scan={codexOAuthScan}
+        configurations={[]}
+        providers={[]}
+        catalog={catalog}
+        onError={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "展开 Codex CLI 详情" }));
+    expect(screen.getByRole("button", { name: "收起 Codex CLI 详情" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开 Claude Code 详情" })).toBeDisabled();
+
+    rerender(
+      <CurrentConfigurationTab
+        scan={{ ...codexOAuthScan, generatedAt: "2026-08-23T00:01:00Z" }}
+        configurations={[]}
+        providers={[]}
+        catalog={catalog}
+        onError={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "收起 Codex CLI 详情" })).toBeInTheDocument();
+    expect(screen.getByText("/fixture/bin/codex")).toBeInTheDocument();
+  });
+
+  it("expands multiple CLI rows without IPC and keeps external overrides visible", async () => {
+    const scan: ScanSnapshot = {
+      ...codexOAuthScan,
+      items: [
+        codexOAuthScan.items[0],
+        {
+          ...codexOAuthScan.items[0],
+          cliId: "opencode",
+          configDirectory: "/fixture/.opencode",
+          current: { ...codexOAuthScan.items[0].current!, externallyOverridden: true },
+          providerCandidates: [],
+        },
+      ],
+    };
+    renderWithQueryClient(
+      <CurrentConfigurationTab
+        scan={scan}
+        configurations={[]}
+        providers={[]}
+        catalog={catalog}
+        onError={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("被外部覆盖")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "将 Codex OAuth 保存为供应商" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "展开 Codex CLI 详情" }));
+    await userEvent.click(screen.getByRole("button", { name: "展开 OpenCode 详情" }));
+    expect(screen.getByRole("button", { name: "收起 Codex CLI 详情" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "收起 OpenCode 详情" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(commandMock).not.toHaveBeenCalled();
   });
 
   it("shows every detected OpenCode provider and lets the user choose its default model", () => {

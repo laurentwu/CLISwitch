@@ -1,10 +1,13 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
-import type { AppSnapshot, CatalogStatus } from "../../shared/types";
+import { ThemeProvider } from "../../app/ThemeProvider";
+import { CLI_IDS, type AppSnapshot, type CatalogStatus } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { makeAppSnapshot } from "../../test/fixtures";
 import { renderWithQueryClient } from "../../test/render";
+import { chooseSelectOption } from "../../test/select";
 import { SettingsPage } from "./SettingsPage";
 
 const commandMock = vi.hoisted(() => vi.fn());
@@ -28,7 +31,42 @@ describe("SettingsPage provider database", () => {
   beforeEach(async () => {
     commandMock.mockReset();
     useUiStore.setState({ dirty: false, saveCurrent: undefined });
+    document.documentElement.classList.remove("dark");
+    delete document.documentElement.dataset.theme;
     await i18n.changeLanguage("zh-CN");
+  });
+
+  it("renders the six open settings sections in their fixed order", () => {
+    commandMock.mockResolvedValue(bundledStatus);
+    const view = renderWithQueryClient(
+      <SettingsPage
+        snapshot={makeAppSnapshot({
+          settings: {
+            manualLocations: CLI_IDS.map((cliId) => ({
+              cliId,
+              executablePath: null,
+              configDirectory: null,
+            })),
+          },
+        })}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(
+      Array.from(view.container.querySelectorAll(".settings-section"), (section) =>
+        section.querySelector("h2")?.textContent?.trim(),
+      ),
+    ).toEqual([
+      "外观与行为",
+      "明文凭据风险",
+      "CLI 路径覆盖",
+      "数据与备份",
+      "Provider 数据库",
+      "关于",
+    ]);
+    expect(view.container.querySelectorAll(".settings-section")).toHaveLength(6);
+    expect(screen.getAllByPlaceholderText("自动发现")).toHaveLength(8);
   });
 
   it("shows catalog status and replaces it after a successful manual update", async () => {
@@ -58,7 +96,7 @@ describe("SettingsPage provider database", () => {
     await waitFor(() => {
       expect(screen.getByText("8 个 provider")).toBeInTheDocument();
       expect(screen.getByText(/当前来源/)).toHaveTextContent("本地缓存");
-      expect(screen.getByRole("status")).toHaveTextContent("Provider 数据库已更新");
+      expect(screen.getByText("Provider 数据库已更新")).toBeInTheDocument();
     });
     expect(commandMock).toHaveBeenCalledWith("update_catalog");
   });
@@ -80,7 +118,8 @@ describe("SettingsPage provider database", () => {
     });
 
     const zoom = screen.getByRole("combobox", { name: "界面缩放" });
-    expect(Array.from((zoom as HTMLSelectElement).options, (option) => option.text)).toEqual([
+    await userEvent.click(zoom);
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
       "100%",
       "125%",
       "150%",
@@ -92,7 +131,7 @@ describe("SettingsPage provider database", () => {
       "300%",
     ]);
 
-    fireEvent.change(zoom, { target: { value: "175" } });
+    await userEvent.click(screen.getByRole("option", { name: "175%" }));
     await waitFor(() =>
       expect(commandMock).toHaveBeenCalledWith("set_ui_zoom", { uiZoomPercent: 175 }),
     );
@@ -117,9 +156,7 @@ describe("SettingsPage provider database", () => {
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
 
-    fireEvent.change(screen.getByRole("combobox", { name: "界面缩放" }), {
-      target: { value: "250" },
-    });
+    await chooseSelectOption(screen.getByRole("combobox", { name: "界面缩放" }), "250%");
     await waitFor(() =>
       expect(commandMock).toHaveBeenCalledWith("set_ui_zoom", { uiZoomPercent: 250 }),
     );
@@ -183,5 +220,53 @@ describe("SettingsPage provider database", () => {
         expectedRevision: 1,
       }),
     );
+  });
+
+  it("applies a theme draft only after a successful save", async () => {
+    const onError = vi.fn();
+    commandMock.mockImplementation((name: string, args?: Record<string, unknown>) => {
+      if (name === "get_catalog_status") return Promise.resolve(bundledStatus);
+      if (name === "update_settings") {
+        return Promise.resolve({
+          ...(args?.settings as AppSnapshot["settings"]),
+          revision: 2,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${name}`));
+    });
+    renderWithQueryClient(
+      <ThemeProvider>
+        <SettingsPage snapshot={snapshot} onError={onError} />
+      </ThemeProvider>,
+    );
+
+    await chooseSelectOption(screen.getByRole("combobox", { name: "主题" }), "深色");
+    expect(document.documentElement).not.toHaveClass("dark");
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(document.documentElement).toHaveClass("dark"));
+    expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("keeps the applied theme unchanged when saving the draft fails", async () => {
+    const onError = vi.fn();
+    commandMock.mockImplementation((name: string) => {
+      if (name === "get_catalog_status") return Promise.resolve(bundledStatus);
+      if (name === "update_settings") return Promise.reject(new Error("save failed"));
+      return Promise.reject(new Error(`unexpected command: ${name}`));
+    });
+    renderWithQueryClient(
+      <ThemeProvider>
+        <SettingsPage snapshot={snapshot} onError={onError} />
+      </ThemeProvider>,
+    );
+
+    await chooseSelectOption(screen.getByRole("combobox", { name: "主题" }), "深色");
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.any(Error), "save"));
+    expect(document.documentElement).not.toHaveClass("dark");
+    expect(document.documentElement).not.toHaveAttribute("data-theme", "dark");
   });
 });

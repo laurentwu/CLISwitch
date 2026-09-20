@@ -26,6 +26,8 @@ export function AppLayout({
             <button
               key={id}
               className={navigation === id ? "nav-item nav-item-active" : "nav-item"}
+              aria-label={t(`nav.${id}`)}
+              title={t(`nav.${id}`)}
               aria-current={navigation === id ? "page" : undefined}
               onClick={() => onNavigate(id)}
             >

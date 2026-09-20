@@ -1,12 +1,13 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import type { ApiProviderDetail, ProviderTemplate, PublicProvider } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { makeAppSnapshot } from "../../test/fixtures";
 import { renderWithQueryClient } from "../../test/render";
+import { chooseSelectOption } from "../../test/select";
 import { ProviderPage } from "./ProviderPage";
-import { CUSTOM_PROVIDER_TEMPLATE } from "./ProviderTemplateSelect";
 
 const commandMock = vi.hoisted(() => vi.fn());
 vi.mock("../../shared/ipc", () => ({
@@ -121,7 +122,7 @@ describe("ProviderPage", () => {
     expect(list).not.toHaveTextContent("OAuth");
   });
 
-  it("opens an inline add editor with OAuth and API template groups", () => {
+  it("opens an inline add editor with OAuth and API template groups", async () => {
     renderPage();
 
     const pageHeader = screen.getByRole("heading", { name: "供应商", level: 1 }).closest("header");
@@ -132,12 +133,14 @@ describe("ProviderPage", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "添加供应商", level: 2 })).toBeInTheDocument();
     const template = screen.getByRole("combobox", { name: /Provider 模板/ });
-    expect(template).toHaveValue("");
+    expect(template).toHaveTextContent("选择模板");
+    await userEvent.click(template);
     expect(screen.getByRole("group", { name: "OAuth" })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "官方 API" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Codex Account" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "GLM Coding Plan" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "自定义供应商" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("textbox", { name: /OAuth 原始内容/ })).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue("https://api.example.com/v1")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "添加接入方式" })).not.toBeInTheDocument();
@@ -146,29 +149,33 @@ describe("ProviderPage", () => {
     expect(commandMock).not.toHaveBeenCalled();
   });
 
-  it("shows API fields and defaults after an API template is selected", () => {
+  it("shows API fields and defaults after an API template is selected", async () => {
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: "添加" }));
 
-    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
-      target: { value: "glm-coding-plan" },
-    });
+    await chooseSelectOption(
+      screen.getByRole("combobox", { name: /Provider 模板/ }),
+      "GLM Coding Plan",
+    );
 
     expect(screen.getByRole("heading", { name: "GLM Coding Plan", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("GLM Coding Plan");
-    expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveValue("glm-coding-plan");
+    expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveTextContent(
+      "GLM Coding Plan",
+    );
     expect(screen.getByDisplayValue("https://glm-coding-plan.example.test/v1")).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: /OAuth 原始内容/ })).not.toBeInTheDocument();
     expect(commandMock).not.toHaveBeenCalled();
   });
 
-  it("shows custom API defaults when the custom option is selected", () => {
+  it("shows custom API defaults when the custom option is selected", async () => {
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: "添加" }));
 
-    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
-      target: { value: CUSTOM_PROVIDER_TEMPLATE },
-    });
+    await chooseSelectOption(
+      screen.getByRole("combobox", { name: /Provider 模板/ }),
+      "自定义供应商",
+    );
 
     expect(screen.getByRole("heading", { name: "自定义供应商", level: 2 })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("");
@@ -188,13 +195,12 @@ describe("ProviderPage", () => {
     } satisfies PublicProvider;
     commandMock.mockImplementation(async (name: string) => {
       if (name === "create_provider") return created;
+      if (name === "list_providers") return [created];
       return undefined;
     });
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: "添加" }));
-    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
-      target: { value: "openai-api" },
-    });
+    await chooseSelectOption(screen.getByRole("combobox", { name: /Provider 模板/ }), "OpenAI");
     fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
       target: { value: "api-secret" },
     });
@@ -213,33 +219,33 @@ describe("ProviderPage", () => {
     );
   });
 
-  it("guards a dirty inline editor before switching provider modes", () => {
+  it("guards a dirty inline editor before switching provider modes", async () => {
     const guarded = vi.fn((action: () => void) => action());
     renderPage(snapshot, guarded);
     fireEvent.click(screen.getByRole("button", { name: "添加" }));
     guarded.mockClear();
     guarded.mockImplementation(() => {});
-    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
-      target: { value: "openai-api" },
-    });
+    await chooseSelectOption(screen.getByRole("combobox", { name: /Provider 模板/ }), "OpenAI");
     fireEvent.change(screen.getByRole("textbox", { name: /API Key/ }), {
       target: { value: "unsaved-secret" },
     });
-    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
-      target: { value: "codex-auth" },
-    });
+    await chooseSelectOption(
+      screen.getByRole("combobox", { name: /Provider 模板/ }),
+      "Codex Account",
+    );
 
     expect(guarded).toHaveBeenCalledOnce();
-    expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveValue("openai-api");
+    expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveTextContent("OpenAI");
     expect(screen.getByDisplayValue("unsaved-secret")).toBeInTheDocument();
   });
 
-  it("switches to OAuth fields and starts official login from the editor", () => {
+  it("switches to OAuth fields and starts official login from the editor", async () => {
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: "添加" }));
-    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
-      target: { value: "codex-auth" },
-    });
+    await chooseSelectOption(
+      screen.getByRole("combobox", { name: /Provider 模板/ }),
+      "Codex Account",
+    );
 
     expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("Codex Account");
     expect(screen.getByRole("textbox", { name: /OAuth 原始内容/ })).toHaveValue("");
@@ -255,13 +261,14 @@ describe("ProviderPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("routes the OAuth editor import-auth button to the import flow", () => {
+  it("routes the OAuth editor import-auth button to the import flow", async () => {
     renderPage();
     expect(screen.queryByRole("button", { name: "导入" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "添加" }));
-    fireEvent.change(screen.getByRole("combobox", { name: /Provider 模板/ }), {
-      target: { value: "anthropic-auth" },
-    });
+    await chooseSelectOption(
+      screen.getByRole("combobox", { name: /Provider 模板/ }),
+      "Anthropic Account",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "导入 auth" }));
     const dialog = screen.getByRole("dialog", { name: "导入 auth" });
@@ -327,7 +334,7 @@ describe("ProviderPage", () => {
     fireEvent.click(within(editorHeader!).getByRole("button", { name: "复制" }));
 
     expect(screen.getByRole("textbox", { name: /^名称/ })).toHaveValue("Existing Provider 复制");
-    expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveValue("openai-api");
+    expect(screen.getByRole("combobox", { name: /Provider 模板/ })).toHaveTextContent("OpenAI");
     expect(screen.getByDisplayValue("test-secret")).toBeInTheDocument();
     expect(commandMock).not.toHaveBeenCalled();
   });

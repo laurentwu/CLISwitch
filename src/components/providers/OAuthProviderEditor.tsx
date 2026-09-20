@@ -186,7 +186,7 @@ export function OAuthProviderEditor({
         </div>
         <div className="section-actions">
           {detail && onDelete ? (
-            <Button variant="danger" disabled={deleteDisabled} onClick={onDelete}>
+            <Button variant="danger-outline" disabled={deleteDisabled} onClick={onDelete}>
               <Trash2 size={16} /> {t("common.delete")}
             </Button>
           ) : null}
@@ -206,6 +206,7 @@ export function OAuthProviderEditor({
       </header>
 
       <Card>
+        <h2>{t("providers.basicInformation")}</h2>
         <div className="form-grid two-columns">
           <Field
             label={t("providers.name")}

@@ -10,6 +10,7 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 
 - Three top-level sections: Configurations, Providers, and Settings.
 - A horizontal `Current configuration / named configurations / +` workspace.
+- Current CLI configurations appear as rows with independently expandable details; diagnostics and unmanaged-provider actions remain visible while collapsed. Named configurations are edited per CLI, providers use a list/detail layout, and Settings has six open sections.
 - Local discovery with explicit executable and config-directory overrides.
 - Endpoint + key providers with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages connections.
 - Provider endpoint data sourced from a bundled [CLIAdapter](https://github.com/laurentwu/CLIAdapter) snapshot, with a private local cache and a manual update action in Settings.
@@ -24,6 +25,8 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 - Chinese and English UI, light/dark/system themes, 100%–300% interface zoom, single-instance behavior, and persisted window state.
 - No telemetry, automatic updater, remote scripts, or generic shell/filesystem IPC.
 
+The neutral interface uses shadcn/ui Radix primitives (`radix-nova`, Lucide), keyboard-accessible dialogs and selects, and Sonner notifications. Theme changes take effect after saving; system mode follows OS appearance changes. Zoom previews immediately and returns to the saved value when an unsaved draft is discarded.
+
 The exact supported schemas and field mappings are recorded in [CLI_SUPPORT.md](CLI_SUPPORT.md). CLISwitch manages user-level configuration only; project configuration, environment variables, and enterprise policy can override it.
 
 ## Development
@@ -35,6 +38,8 @@ corepack enable
 pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
+
+Shared UI primitives live in `src/components/ui/primitives`; `components.json` pins the registry style and aliases. Use the pinned `pnpm exec shadcn` CLI with the Radix base when updating components, and retain the application's semantic tokens, localized accessibility labels, and focus/notification adapters. UI state does not introduce another settings store.
 
 Refresh the checked-in CLIAdapter provider snapshot with `pnpm catalog:update`. The updater uses the
 fixed upstream URL, validates provider identities and declared protocol endpoints, and records a
@@ -52,11 +57,16 @@ pnpm test
 cargo fmt --check --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-features
+pnpm build
+pnpm check:production-boundary
 pnpm test:e2e
 pnpm tauri build
 ```
 
 `pnpm test:e2e` builds a dedicated automation-enabled debug binary. Its WDIO plugins, global Tauri API, and permissions are absent from normal production builds. The test configuration creates isolated HOME/XDG/APPDATA trees and installs only fixture CLIs there.
+
+Appearance E2E covers saved themes, expandable CLI rows, dialog keyboard focus, and layout overflow at supported zoom levels. Release smoke checks still need each supported OS's WebView and native file picker.
+The UI migration's executed checks and environment limitations are recorded in [e2e/VALIDATION.md](e2e/VALIDATION.md).
 
 Linux development additionally needs WebKitGTK 4.1 and the other Tauri system packages. In headless CI, run E2E through `xvfb-run -a pnpm test:e2e`.
 
