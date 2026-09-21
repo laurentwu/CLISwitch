@@ -2,13 +2,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { AppLayout } from "../components/layout/AppLayout";
-import { Modal, Button, ErrorAlert, Spinner, useErrorNotifier } from "../components/ui";
+import {
+  Modal,
+  ConfirmModal,
+  Button,
+  ErrorAlert,
+  Spinner,
+  useErrorNotifier,
+} from "../components/ui";
 import { ConfigurationPage } from "../components/configuration/ConfigurationPage";
 import { ProviderPage } from "../components/providers/ProviderPage";
 import { SettingsPage } from "../components/settings/SettingsPage";
 import { command, onEvent } from "../shared/ipc";
 import type { AppSnapshot, CloseState, StartupStatus } from "../shared/types";
 import { useUiStore, type Navigation } from "../stores/ui";
+import { useAppTheme } from "./ThemeProvider";
 
 export function App() {
   const { t } = useTranslation();
@@ -71,6 +79,7 @@ export function App() {
 function ReadyApp() {
   const { t, i18n } = useTranslation();
   const reportError = useErrorNotifier();
+  const { applySavedTheme } = useAppTheme();
   const navigation = useUiStore((state) => state.navigation);
   const dirty = useUiStore((state) => state.dirty);
   const saveCurrent = useUiStore((state) => state.saveCurrent);
@@ -78,6 +87,7 @@ function ReadyApp() {
   const setDirty = useUiStore((state) => state.setDirty);
   const [pending, setPending] = useState<null | (() => void)>(null);
   const [closeConfirmationOpen, setCloseConfirmationOpen] = useState(false);
+  const [savingPending, setSavingPending] = useState(false);
   const shutdownInFlight = useRef(false);
   const snapshot = useQuery({
     queryKey: ["app-snapshot"],
@@ -89,10 +99,8 @@ function ReadyApp() {
     if (!snapshot.data) return;
     const language = snapshot.data.settings.language === "zh-cn" ? "zh-CN" : "en";
     void i18n.changeLanguage(language);
-    const theme = snapshot.data.settings.theme;
-    document.documentElement.dataset.theme = theme;
-    if (theme === "system") delete document.documentElement.dataset.theme;
-  }, [snapshot.data, i18n]);
+    applySavedTheme(snapshot.data.settings.theme);
+  }, [applySavedTheme, snapshot.data, i18n]);
 
   useEffect(() => {
     if (savedZoomPercent === undefined) return;
@@ -205,6 +213,7 @@ function ReadyApp() {
       <Modal
         open={Boolean(pending)}
         title={t("unsavedChanges.title")}
+        description={t("unsavedChanges.prompt")}
         onClose={() => setPending(null)}
         footer={
           <>
@@ -223,8 +232,10 @@ function ReadyApp() {
               {t("common.cancel")}
             </Button>
             <Button
-              disabled={!saveCurrent}
+              disabled={!saveCurrent || savingPending}
               onClick={async () => {
+                if (savingPending) return;
+                setSavingPending(true);
                 try {
                   if (await saveCurrent?.()) {
                     setDirty(false);
@@ -233,6 +244,8 @@ function ReadyApp() {
                   }
                 } catch (error) {
                   reportError(error, "save");
+                } finally {
+                  setSavingPending(false);
                 }
               }}
             >
@@ -240,12 +253,11 @@ function ReadyApp() {
             </Button>
           </>
         }
-      >
-        <p>{t("unsavedChanges.prompt")}</p>
-      </Modal>
-      <Modal
+      />
+      <ConfirmModal
         open={closeConfirmationOpen}
         title={t("close.title")}
+        description={t("close.prompt")}
         onClose={() => setCloseConfirmationOpen(false)}
         footer={
           <>
@@ -257,9 +269,7 @@ function ReadyApp() {
             </Button>
           </>
         }
-      >
-        <p>{t("close.prompt")}</p>
-      </Modal>
+      />
     </>
   );
 }

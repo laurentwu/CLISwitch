@@ -5,6 +5,7 @@ import type { ProviderCatalog, PublicProvider, SavedConfiguration } from "../../
 import { useUiStore } from "../../stores/ui";
 import { useNotificationStore } from "../../stores/notifications";
 import { renderWithQueryClient } from "../../test/render";
+import { chooseSelectOption } from "../../test/select";
 import { NotificationViewport, useErrorNotifier } from "../ui";
 import { SavedConfigurationTab } from "./SavedConfigurationTab";
 
@@ -129,13 +130,22 @@ describe("SavedConfigurationTab", () => {
       screen.getByRole("button", { name }),
     );
     expect(i18n.t("config.apply", { lng: "en" })).toBe("Apply");
-    expect(actions[0].parentElement).toHaveClass("configuration-actions");
-    for (const action of actions) expect(action).toHaveClass("configuration-action");
+    const actionGroup = actions[0].parentElement!;
+    expect(actionGroup).toHaveClass(
+      "configuration-actions",
+      "grid",
+      "grid-cols-4",
+      "max-[1100px]:grid-cols-2",
+    );
+    for (const action of actions) {
+      expect(action).toHaveClass("configuration-action", "w-full");
+    }
 
     fireEvent.change(screen.getByRole("textbox", { name: "名称" }), {
       target: { value: "Changed" },
     });
-    expect(screen.getByLabelText("有未保存的修改")).toHaveClass("dirty-marker");
+    const dirtyMarker = screen.getByLabelText("有未保存的修改");
+    expect(dirtyMarker).toHaveClass("dirty-marker", "absolute");
     expect(screen.getByRole("button", { name: /保存/ })).toHaveClass("configuration-action");
   });
 
@@ -152,7 +162,7 @@ describe("SavedConfigurationTab", () => {
     });
 
     expect(saved).toBe(false);
-    const notification = screen.getByRole("alert");
+    const notification = (await screen.findByText("保存失败")).closest(".alert") as HTMLElement;
     expect(notification).toHaveClass("alert-warning");
     expect(within(notification).getByText("保存失败")).toBeInTheDocument();
     expect(
@@ -234,7 +244,7 @@ describe("SavedConfigurationTab", () => {
     expect(commandMock).not.toHaveBeenCalledWith("apply_configuration", expect.anything());
   });
 
-  it("distinguishes saved instances that use the same catalog provider", () => {
+  it("distinguishes saved instances that use the same catalog provider", async () => {
     const providerId = "zhipuai-coding-plan";
     const catalogProvider: ProviderCatalog = {
       ...targetCatalog,
@@ -333,19 +343,21 @@ describe("SavedConfigurationTab", () => {
       />,
     );
 
+    const targetProvider = screen.getByRole("combobox", { name: "供应商" });
+    fireEvent.click(targetProvider);
     expect(
-      screen.getAllByRole("option", {
+      screen.getByRole("option", {
         name: "Zhipu AI Coding Plan (zhipuai-coding-plan)",
       }),
-    ).toHaveLength(2);
+    ).toBeInTheDocument();
     expect(
-      screen.getAllByRole("option", {
+      screen.getByRole("option", {
         name: "Zhipu AI Coding Plan Flash (zhipuai-coding-plan)",
       }),
-    ).toHaveLength(2);
+    ).toBeInTheDocument();
+    fireEvent.keyDown(targetProvider, { key: "Escape" });
 
-    const targetProvider = screen.getByRole("combobox", { name: "供应商" });
-    fireEvent.change(targetProvider, { target: { value: flashProvider.id } });
-    expect(targetProvider).toHaveValue(flashProvider.id);
+    await chooseSelectOption(targetProvider, "Zhipu AI Coding Plan Flash (zhipuai-coding-plan)");
+    expect(targetProvider).toHaveTextContent("Zhipu AI Coding Plan Flash");
   });
 });

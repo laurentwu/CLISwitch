@@ -4,7 +4,7 @@ import { Copy, Eye, Play, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
 import { providerInstanceDisplayName, providerSupportsCli } from "../../shared/catalog";
-import { cliDisplayName, uniqueCopyName, validateEntityName } from "../../shared/names";
+import { CLI_MARKS, cliDisplayName, uniqueCopyName, validateEntityName } from "../../shared/names";
 import type {
   ApplyRunSnapshot,
   CliId,
@@ -16,8 +16,20 @@ import type {
 } from "../../shared/types";
 import { CLI_IDS } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
-import { Badge, Button, Card, Field, Input, Modal, Select, type ErrorReporter } from "../ui";
+import {
+  AppSelect,
+  Badge,
+  Button,
+  ConfirmModal,
+  Field,
+  Input,
+  Modal,
+  Spinner,
+  type ErrorReporter,
+} from "../ui";
+import { Checkbox } from "../ui/primitives/checkbox";
 import { CliTargetRow, makeTarget } from "./CliTargetRow";
+import { PageToolbarPortal } from "../layout/PageToolbarPortal";
 
 export function SavedConfigurationTab({
   configuration,
@@ -188,7 +200,7 @@ export function SavedConfigurationTab({
   );
   return (
     <div className="page-section">
-      <Card>
+      <section className="configuration-overview">
         <div className="configuration-header">
           <div className="configuration-name">
             <Field
@@ -207,47 +219,49 @@ export function SavedConfigurationTab({
               </Badge>
             ) : null}
           </div>
-          <div className="section-actions configuration-actions">
-            <Button
-              className="configuration-action"
-              variant="secondary"
-              onClick={() => {
-                setDuplicateName(
-                  uniqueCopyName(configuration.name, t("common.duplicate"), configurations),
-                );
-                setDuplicateOpen(true);
-              }}
-            >
-              <Copy size={16} /> {t("common.duplicate")}
-            </Button>
-            <Button
-              className="configuration-action"
-              variant="danger"
-              onClick={() => setDeleteOpen(true)}
-            >
-              <Trash2 size={16} /> {t("common.delete")}
-            </Button>
-            <Button
-              className="configuration-action"
-              disabled={save.isPending || Boolean(nameIssue) || !targetsValid}
-              onClick={() => save.mutate()}
-            >
-              <Save size={16} /> {t("common.save")}
-              {dirty ? (
-                <span className="dirty-marker" aria-label={t("config.unsavedMarker")}>
-                  •
-                </span>
-              ) : null}
-            </Button>
-            <Button
-              className="configuration-action"
-              disabled={!targetsValid || Boolean(nameIssue) || save.isPending || apply.isPending}
-              onClick={() => apply.mutate()}
-            >
-              {apply.isPending ? <span className="spinner" /> : <Play size={16} />}{" "}
-              {t("config.apply")}
-            </Button>
-          </div>
+          <PageToolbarPortal>
+            <div className="configuration-actions grid grid-cols-4 items-center justify-end gap-2 max-[1100px]:grid-cols-2">
+              <Button
+                className="configuration-action w-full"
+                variant="secondary"
+                onClick={() => {
+                  setDuplicateName(
+                    uniqueCopyName(configuration.name, t("common.duplicate"), configurations),
+                  );
+                  setDuplicateOpen(true);
+                }}
+              >
+                <Copy size={16} /> {t("common.duplicate")}
+              </Button>
+              <Button
+                className="configuration-action w-full"
+                variant="danger-outline"
+                onClick={() => setDeleteOpen(true)}
+              >
+                <Trash2 size={16} /> {t("common.delete")}
+              </Button>
+              <Button
+                className="configuration-action w-full"
+                variant="secondary"
+                disabled={save.isPending || Boolean(nameIssue) || !targetsValid}
+                onClick={() => save.mutate()}
+              >
+                <Save size={16} /> {t("common.save")}
+                {dirty ? (
+                  <span className="dirty-marker absolute" aria-label={t("config.unsavedMarker")}>
+                    •
+                  </span>
+                ) : null}
+              </Button>
+              <Button
+                className="configuration-action w-full"
+                disabled={!targetsValid || Boolean(nameIssue) || save.isPending || apply.isPending}
+                onClick={() => apply.mutate()}
+              >
+                {apply.isPending ? <Spinner /> : <Play size={16} />} {t("config.apply")}
+              </Button>
+            </div>
+          </PageToolbarPortal>
         </div>
         <p className="muted">
           {t("config.lastApplied")}:{" "}
@@ -257,32 +271,42 @@ export function SavedConfigurationTab({
           {configuration.lastApplySummary ? ` · ${configuration.lastApplySummary}` : ""}
         </p>
         <div className="sync-row">
-          <Select value={syncProvider} onChange={(event) => setSyncProvider(event.target.value)}>
-            <option value="">{t("config.provider")}</option>
-            {syncOptions.map((provider) => (
-              <option key={provider.id} value={provider.id}>
-                {providerInstanceDisplayName(catalog, provider)}
-              </option>
-            ))}
-          </Select>
+          <AppSelect
+            aria-label={t("config.syncProvider")}
+            value={syncProvider}
+            onValueChange={setSyncProvider}
+            allowEmpty
+            placeholder={t("config.provider")}
+            groups={[
+              {
+                options: syncOptions.map((provider) => ({
+                  value: provider.id,
+                  label: providerInstanceDisplayName(catalog, provider),
+                })),
+              },
+            ]}
+          />
           <Button variant="secondary" disabled={!syncProvider} onClick={sync}>
             {t("config.sync")}
           </Button>
         </div>
-      </Card>
+      </section>
       <div className="target-list">
         {CLI_IDS.map((cliId, index) => {
           const target = sortedTargets[index];
           const detected = scan?.items.find((item) => item.cliId === cliId);
           return (
-            <Card key={cliId}>
+            <section className="target-section" data-cli-id={cliId} key={cliId}>
               <div className="card-title-row">
-                <label className="switch-row">
-                  <input
-                    type="checkbox"
+                <label className="switch-row" htmlFor={`include-${cliId}`}>
+                  <Checkbox
+                    id={`include-${cliId}`}
                     checked={Boolean(target)}
-                    onChange={(event) => toggle(cliId, event.target.checked)}
+                    onCheckedChange={(checked) => toggle(cliId, checked === true)}
                   />
+                  <span className="cli-mark" aria-hidden="true">
+                    {CLI_MARKS[cliId]}
+                  </span>
                   <span>
                     {t("config.included")}: {cliDisplayName(cliId)}
                   </span>
@@ -310,7 +334,7 @@ export function SavedConfigurationTab({
                   onChange={(value) => updateTarget(cliId, value)}
                 />
               ) : null}
-            </Card>
+            </section>
           );
         })}
       </div>
@@ -351,9 +375,10 @@ export function SavedConfigurationTab({
           />
         </Field>
       </Modal>
-      <Modal
+      <ConfirmModal
         open={deleteOpen}
         title={t("common.confirmDelete")}
+        description={`${configuration.name}: ${t("config.deleteWarning")}`}
         onClose={() => setDeleteOpen(false)}
         footer={
           <>
@@ -365,11 +390,7 @@ export function SavedConfigurationTab({
             </Button>
           </>
         }
-      >
-        <p>
-          {configuration.name}: {t("config.deleteWarning")}
-        </p>
-      </Modal>
+      />
     </div>
   );
 }

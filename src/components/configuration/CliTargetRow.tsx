@@ -6,14 +6,13 @@ import {
   providerInstanceDisplayName,
   providerSupportsCli,
 } from "../../shared/catalog";
-import { cliDisplayName } from "../../shared/names";
 import type {
   CliId,
   ConfigurationTarget,
   ProviderCatalog,
   PublicProvider,
 } from "../../shared/types";
-import { Field, Input, Select } from "../ui";
+import { AppSelect, Field, Input } from "../ui";
 
 function compatibleProviders(catalog: ProviderCatalog, cliId: CliId, providers: PublicProvider[]) {
   return providers.filter((provider) => providerSupportsCli(catalog, cliId, provider));
@@ -57,29 +56,32 @@ export function CliTargetRow({
   const connections = selected?.kind === "api" ? connectionsForCli(catalog, cliId, selected) : [];
   return (
     <div className="target-grid">
-      <strong>{cliDisplayName(cliId)}</strong>
       <Field label={t("config.provider")}>
-        <Select
+        <AppSelect
           value={target.providerId}
-          onChange={(event) => {
-            const provider = providers.find((item) => item.id === event.target.value);
+          onValueChange={(value) => {
+            const provider = providers.find((item) => item.id === value);
             const next = provider && makeTarget(catalog, cliId, provider);
             if (next) onChange(next);
           }}
-        >
-          {compatible.map((provider) => (
-            <option key={provider.id} value={provider.id}>
-              {providerInstanceDisplayName(catalog, provider)}
-            </option>
-          ))}
-        </Select>
+          groups={[
+            {
+              options: compatible.map((provider) => ({
+                value: provider.id,
+                label: providerInstanceDisplayName(catalog, provider),
+              })),
+            },
+          ]}
+        />
       </Field>
       {target.targetType === "api" ? (
         <Field label={t("config.protocol")}>
-          <Select
+          <AppSelect
             value={target.connectionId}
-            onChange={(event) => {
-              const connection = connections.find((item) => item.id === event.target.value);
+            allowEmpty={!target.connectionId}
+            placeholder={t("config.selectEndpoint")}
+            onValueChange={(value) => {
+              const connection = connections.find((item) => item.id === value);
               if (connection)
                 onChange({
                   ...target,
@@ -87,16 +89,17 @@ export function CliTargetRow({
                   model: connection.defaultModel,
                 });
             }}
-          >
-            {!target.connectionId ? <option value="">{t("config.selectEndpoint")}</option> : null}
-            {connections.map((connection) => (
-              <option key={connection.id} value={connection.id}>
-                {selected
-                  ? connectionDisplayName(catalog, selected, connection)
-                  : connection.protocol}
-              </option>
-            ))}
-          </Select>
+            groups={[
+              {
+                options: connections.map((connection) => ({
+                  value: connection.id,
+                  label: selected
+                    ? connectionDisplayName(catalog, selected, connection)
+                    : connection.protocol,
+                })),
+              },
+            ]}
+          />
         </Field>
       ) : (
         <div className="oauth-target-label">

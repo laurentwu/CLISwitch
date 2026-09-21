@@ -5,6 +5,7 @@ import { command, onEvent } from "../../shared/ipc";
 import { validateEntityName } from "../../shared/names";
 import type { OAuthKind, OAuthSessionSnapshot, PublicProvider } from "../../shared/types";
 import { Badge, Button, ErrorAlert, Field, Input, Modal, Spinner } from "../ui";
+import { Checkbox } from "../ui/primitives/checkbox";
 
 export function OAuthFlowDialog({
   open,
@@ -170,11 +171,11 @@ export function OAuthFlowDialog({
             <Input autoFocus value={name} onChange={(event) => setName(event.target.value)} />
           </Field>
           {mode === "login" && kind === "codex" ? (
-            <label className="switch-row">
-              <input
-                type="checkbox"
+            <label className="switch-row" htmlFor="oauth-device-auth">
+              <Checkbox
+                id="oauth-device-auth"
                 checked={deviceAuth}
-                onChange={(event) => setDeviceAuth(event.target.checked)}
+                onCheckedChange={(checked) => setDeviceAuth(checked === true)}
               />
               {t("providers.deviceAuth")}
             </label>

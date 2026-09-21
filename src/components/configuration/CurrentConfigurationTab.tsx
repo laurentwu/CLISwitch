@@ -3,13 +3,11 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArchiveRestore, RefreshCw, Save } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
-import { diagnosticText } from "../../shared/diagnostics";
 import { catalogProviderInfo, providerDisplayName } from "../../shared/catalog";
-import { CLI_MARKS, cliDisplayName, validateEntityName } from "../../shared/names";
+import { validateEntityName } from "../../shared/names";
 import { useNotificationStore } from "../../stores/notifications";
 import type {
   CliId,
-  DetectedCli,
   DetectedProviderCandidate,
   ProviderCatalog,
   PublicProvider,
@@ -17,25 +15,10 @@ import type {
   ScanSnapshot,
 } from "../../shared/types";
 import { CLI_IDS } from "../../shared/types";
-import {
-  Alert,
-  Badge,
-  Button,
-  Card,
-  Field,
-  Input,
-  Modal,
-  Spinner,
-  type ErrorReporter,
-} from "../ui";
+import { Button, Card, Field, Input, Modal, Spinner, type ErrorReporter } from "../ui";
 import { BackupRestoreDialog } from "./BackupRestoreDialog";
-
-function statusTone(status: DetectedCli["status"]): "neutral" | "good" | "warn" | "bad" {
-  if (status === "detected") return "good";
-  if (["unmanaged", "partially-detected", "externally-overridden"].includes(status)) return "warn";
-  if (["unreadable", "invalid-config"].includes(status)) return "bad";
-  return "neutral";
-}
+import { CurrentCliRow } from "./CurrentCliRow";
+import { PageToolbarPortal } from "../layout/PageToolbarPortal";
 
 export function CurrentConfigurationTab({
   scan,
@@ -63,6 +46,7 @@ export function CurrentConfigurationTab({
   const [configurationName, setConfigurationName] = useState("");
   const [backupsOpen, setBackupsOpen] = useState(false);
   const [backupCli, setBackupCli] = useState<CliId>();
+  const [expandedCliIds, setExpandedCliIds] = useState<Set<CliId>>(() => new Set());
   const refresh = useMutation({
     mutationFn: () => command<ScanSnapshot>("scan_clis"),
     onSuccess: (value) => {
@@ -133,110 +117,65 @@ export function CurrentConfigurationTab({
     : t("providers.customTemplate");
   return (
     <div className="page-section">
-      <div className="section-actions">
-        <Button variant="secondary" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
-          {refresh.isPending ? <Spinner /> : <RefreshCw size={16} />} {t("config.scan")}
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={() => {
-            setBackupCli(undefined);
-            setBackupsOpen(true);
-          }}
-        >
-          <ArchiveRestore size={16} /> {t("config.backups")}
-        </Button>
-        <Button disabled={!scan} onClick={() => setSaveOpen(true)}>
-          <Save size={16} /> {t("config.saveCurrent")}
-        </Button>
-      </div>
-      <div className="cli-card-grid">
-        {CLI_IDS.map((cliId) => {
-          const item = scan?.items.find((candidate) => candidate.cliId === cliId);
-          const label = cliDisplayName(cliId);
-          if (!item) {
+      <PageToolbarPortal>
+        <div className="section-actions">
+          <Button variant="secondary" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
+            {refresh.isPending ? <Spinner /> : <RefreshCw size={16} />} {t("config.scan")}
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setBackupCli(undefined);
+              setBackupsOpen(true);
+            }}
+          >
+            <ArchiveRestore size={16} /> {t("config.backups")}
+          </Button>
+          <Button disabled={!scan} onClick={() => setSaveOpen(true)}>
+            <Save size={16} /> {t("config.saveCurrent")}
+          </Button>
+        </div>
+      </PageToolbarPortal>
+      <div>
+        <div className="current-cli-head" aria-hidden="true">
+          <span>CLI</span>
+          <span>{t("config.status")}</span>
+          <span>{t("config.provider")}</span>
+          <span>{t("config.model")}</span>
+          <span>{t("common.actions")}</span>
+        </div>
+        <div className="current-cli-list" role="list" aria-label={t("config.current")}>
+          {CLI_IDS.map((cliId) => {
+            const item = scan?.items.find((candidate) => candidate.cliId === cliId);
             return (
-              <Card key={cliId}>
-                <header className="card-title-row">
-                  <span className="cli-mark" aria-hidden="true">
-                    {CLI_MARKS[cliId]}
-                  </span>
-                  <h3>{label}</h3>
-                  <Badge>{t("config.notScanned")}</Badge>
-                </header>
-              </Card>
-            );
-          }
-          return (
-            <Card key={item.cliId}>
-              <header className="card-title-row">
-                <span className="cli-mark" aria-hidden="true">
-                  {CLI_MARKS[item.cliId]}
-                </span>
-                <div>
-                  <h3>{label}</h3>
-                  <small>{item.version ?? "—"}</small>
-                </div>
-                <Badge tone={statusTone(item.status)}>{t(`status.${item.status}`)}</Badge>
-              </header>
-              <dl className="detail-grid">
-                <dt>{t("config.executable")}</dt>
-                <dd className="path-text">{item.executablePath ?? "—"}</dd>
-                <dt>{t("config.directory")}</dt>
-                <dd className="path-text">{item.configDirectory}</dd>
-                <dt>{t("config.provider")}</dt>
-                <dd>{item.current?.providerName ?? "—"}</dd>
-                <dt>{t("config.protocol")}</dt>
-                <dd>{item.current?.protocol ?? "—"}</dd>
-                <dt>{t("providers.authType")}</dt>
-                <dd>{item.current?.authKind ?? "—"}</dd>
-                <dt>{t("config.model")}</dt>
-                <dd>{item.current?.model ?? "—"}</dd>
-              </dl>
-              {item.current?.diagnostics.map((message, index) => (
-                <Alert
-                  key={index}
-                  compact
-                  tone={statusTone(item.status) === "bad" ? "error" : "warning"}
-                  title={t("config.scanDiagnostic")}
-                >
-                  <p>{diagnosticText(t, message)}</p>
-                </Alert>
-              ))}
-              <div className="section-actions">
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setBackupCli(item.cliId);
+              <div role="listitem" key={cliId}>
+                <CurrentCliRow
+                  cliId={cliId}
+                  detected={item}
+                  expanded={expandedCliIds.has(cliId)}
+                  onExpandedChange={(expanded) =>
+                    setExpandedCliIds((current) => {
+                      const next = new Set(current);
+                      if (expanded) next.add(cliId);
+                      else next.delete(cliId);
+                      return next;
+                    })
+                  }
+                  onOpenBackups={(id) => {
+                    setBackupCli(id);
                     setBackupsOpen(true);
                   }}
-                >
-                  <ArchiveRestore size={15} /> {t("config.backups")}
-                </Button>
+                  onManageCandidate={(providerCandidate) => {
+                    setCandidate(providerCandidate);
+                    setCandidateName(providerCandidate.suggestedName);
+                    setCandidateModel(providerCandidate.defaultModel ?? "");
+                    setCandidateFetchedModels({});
+                  }}
+                />
               </div>
-              {item.providerCandidates?.length ? (
-                <div className="section-actions">
-                  {item.providerCandidates.map((providerCandidate) => (
-                    <Button
-                      key={providerCandidate.id}
-                      variant="secondary"
-                      onClick={() => {
-                        setCandidate(providerCandidate);
-                        setCandidateName(providerCandidate.suggestedName);
-                        setCandidateModel(providerCandidate.defaultModel ?? "");
-                        setCandidateFetchedModels({});
-                      }}
-                    >
-                      {t("config.manageCandidateNamed", {
-                        name: providerCandidate.suggestedName,
-                      })}
-                    </Button>
-                  ))}
-                </div>
-              ) : null}
-            </Card>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
       {!scan ? (
         <Card>

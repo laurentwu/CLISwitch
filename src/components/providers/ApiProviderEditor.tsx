@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useFieldArray, useForm, useWatch, type FieldPath } from "react-hook-form";
+import { Controller, useFieldArray, useForm, useWatch, type FieldPath } from "react-hook-form";
 import { z } from "zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Files, Plus, Save, Trash2, Wifi } from "lucide-react";
@@ -20,8 +20,14 @@ import type {
 } from "../../shared/types";
 import { useNotificationStore } from "../../stores/notifications";
 import { useUiStore } from "../../stores/ui";
-import { Alert, Badge, Button, Card, Field, Input, Select, type ErrorReporter } from "../ui";
+import { Alert, AppSelect, Badge, Button, Card, Field, Input, type ErrorReporter } from "../ui";
 import { CUSTOM_PROVIDER_TEMPLATE, ProviderTemplateSelect } from "./ProviderTemplateSelect";
+import {
+  InputGroup,
+  InputGroupInput,
+  InputGroupAddon,
+  InputGroupButton,
+} from "../ui/primitives/input-group";
 
 type EditorNotice = {
   tone: "success" | "info" | "warning";
@@ -519,7 +525,12 @@ export function ApiProviderEditor({
         </h2>
         <div className="section-actions">
           {detail && onDelete ? (
-            <Button variant="danger" type="button" disabled={deleteDisabled} onClick={onDelete}>
+            <Button
+              variant="danger-outline"
+              type="button"
+              disabled={deleteDisabled}
+              onClick={onDelete}
+            >
               <Trash2 size={16} /> {t("common.delete")}
             </Button>
           ) : null}
@@ -541,6 +552,7 @@ export function ApiProviderEditor({
           </Button>
         </div>
       </header>
+      <h2>{t("providers.basicInformation")}</h2>
       <div className="form-grid two-columns">
         <Field
           label={t("providers.name")}
@@ -560,20 +572,24 @@ export function ApiProviderEditor({
               onChange={chooseTemplate}
             />
           ) : (
-            <Select
+            <AppSelect
               value={templateId ?? ""}
-              onChange={(event) => chooseTemplate(event.target.value)}
-            >
-              <option value="">{t("providers.customTemplate")}</option>
-              {templates.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name}
-                </option>
-              ))}
-            </Select>
+              onValueChange={chooseTemplate}
+              allowEmpty
+              placeholder={t("providers.customTemplate")}
+              groups={[
+                {
+                  options: templates.map((template) => ({
+                    value: template.id,
+                    label: template.name,
+                  })),
+                },
+              ]}
+            />
           )}
         </Field>
       </div>
+      <h2>{t("providers.connections")}</h2>
       <div className="connection-list">
         {fields.fields.map((field, index) => {
           const connection = connections[index];
@@ -608,7 +624,12 @@ export function ApiProviderEditor({
           }
           return (
             <Card key={field.id}>
-              <input type="hidden" {...form.register(`connections.${index}.templateEndpointId`)} />
+              <input
+                type="hidden"
+                {...form.register(`connections.${index}.templateEndpointId`, {
+                  setValueAs: (value: string | undefined) => value || undefined,
+                })}
+              />
               <input type="hidden" {...form.register(`connections.${index}.credentialSlotId`)} />
               {!isFirstForSlot ? (
                 <input type="hidden" {...form.register(`connections.${index}.apiKey`)} />
@@ -638,7 +659,7 @@ export function ApiProviderEditor({
                 {!selectedTemplate ? (
                   <Button
                     type="button"
-                    variant="danger"
+                    variant="danger-outline"
                     disabled={fields.fields.length === 1}
                     onClick={() => fields.remove(index)}
                   >
@@ -647,32 +668,78 @@ export function ApiProviderEditor({
                 ) : null}
               </div>
               <div className="form-grid two-columns">
-                <Field label={t("config.protocol")}>
+                <Field label={t("config.protocol")} controlId={`connection-${index}-protocol`}>
                   {selectedTemplate ? (
                     <>
                       <input type="hidden" {...form.register(`connections.${index}.protocol`)} />
-                      <Input value={connection?.protocol ?? ""} disabled />
+                      <Input
+                        id={`connection-${index}-protocol`}
+                        value={connection?.protocol ?? ""}
+                        disabled
+                      />
                     </>
                   ) : (
-                    <Select {...form.register(`connections.${index}.protocol`)}>
-                      <option value="openai-chat">OpenAI Chat Completions</option>
-                      <option value="openai-responses">OpenAI Responses</option>
-                      <option value="anthropic-messages">Anthropic Messages</option>
-                    </Select>
+                    <Controller
+                      control={form.control}
+                      name={`connections.${index}.protocol`}
+                      render={({ field: controlled }) => (
+                        <AppSelect
+                          id={`connection-${index}-protocol`}
+                          aria-label={t("config.protocol")}
+                          ref={controlled.ref}
+                          value={controlled.value}
+                          name={controlled.name}
+                          onBlur={controlled.onBlur}
+                          onValueChange={controlled.onChange}
+                          groups={[
+                            {
+                              options: [
+                                { value: "openai-chat", label: "OpenAI Chat Completions" },
+                                { value: "openai-responses", label: "OpenAI Responses" },
+                                { value: "anthropic-messages", label: "Anthropic Messages" },
+                              ],
+                            },
+                          ]}
+                        />
+                      )}
+                    />
                   )}
                 </Field>
-                <Field label={t("providers.authType")}>
-                  <Select {...form.register(`connections.${index}.authType`)}>
-                    {(endpointTemplate?.authOptions ?? []).map((option) => (
-                      <option key={option.id} value={option.authType}>
-                        {option.authType === "api-key" ? "X-Api-Key" : "Bearer"}
-                      </option>
-                    ))}
-                    {!endpointTemplate && connection?.protocol === "anthropic-messages" ? (
-                      <option value="api-key">X-Api-Key</option>
-                    ) : null}
-                    {!endpointTemplate ? <option value="bearer">Bearer</option> : null}
-                  </Select>
+                <Field label={t("providers.authType")} controlId={`connection-${index}-auth`}>
+                  <Controller
+                    control={form.control}
+                    name={`connections.${index}.authType`}
+                    render={({ field: controlled }) => {
+                      const authTypes = endpointTemplate
+                        ? [
+                            ...new Set(
+                              endpointTemplate.authOptions.map((option) => option.authType),
+                            ),
+                          ]
+                        : connection?.protocol === "anthropic-messages"
+                          ? (["api-key", "bearer"] as const)
+                          : (["bearer"] as const);
+                      return (
+                        <AppSelect
+                          id={`connection-${index}-auth`}
+                          aria-label={t("providers.authType")}
+                          ref={controlled.ref}
+                          value={controlled.value}
+                          name={controlled.name}
+                          onBlur={controlled.onBlur}
+                          onValueChange={controlled.onChange}
+                          groups={[
+                            {
+                              options: authTypes.map((authType) => ({
+                                value: authType,
+                                label: authType === "api-key" ? "X-Api-Key" : "Bearer",
+                              })),
+                            },
+                          ]}
+                        />
+                      );
+                    }}
+                  />
                 </Field>
                 <Field label={t("providers.endpoint")}>
                   <Input {...form.register(`connections.${index}.endpoint`)} />
@@ -690,6 +757,7 @@ export function ApiProviderEditor({
                 </Field>
                 {isFirstForSlot ? (
                   <Field
+                    controlId={`connection-${index}-credential`}
                     label={
                       selectedTemplate?.credentialSlots.find(
                         (slot) => slot.id === connection?.credentialSlotId,
@@ -703,11 +771,18 @@ export function ApiProviderEditor({
                         : t("providers.clipboardWarning")
                     }
                   >
-                    <div className="input-action">
+                    <InputGroup>
                       {(() => {
                         const registration = form.register(`connections.${index}.apiKey`);
                         return (
-                          <Input
+                          <InputGroupInput
+                            id={`connection-${index}-credential`}
+                            aria-describedby={`connection-${index}-credential-description`}
+                            aria-label={
+                              selectedTemplate?.credentialSlots.find(
+                                (slot) => slot.id === connection?.credentialSlotId,
+                              )?.name ?? t("providers.key")
+                            }
                             type="text"
                             autoComplete="off"
                             spellCheck={false}
@@ -730,24 +805,27 @@ export function ApiProviderEditor({
                           />
                         );
                       })()}
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        title={t("common.copy")}
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(
-                              form.getValues(`connections.${index}.apiKey`),
-                            );
-                            setNotice({ tone: "success", message: t("common.copied") });
-                          } catch (error) {
-                            onError(error, "copy");
-                          }
-                        }}
-                      >
-                        <Copy size={15} />
-                      </Button>
-                    </div>
+                      <InputGroupAddon align="inline-end">
+                        <InputGroupButton
+                          type="button"
+                          variant="ghost"
+                          title={t("common.copy")}
+                          aria-label={t("common.copy")}
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(
+                                form.getValues(`connections.${index}.apiKey`),
+                              );
+                              setNotice({ tone: "success", message: t("common.copied") });
+                            } catch (error) {
+                              onError(error, "copy");
+                            }
+                          }}
+                        >
+                          <Copy size={15} />
+                        </InputGroupButton>
+                      </InputGroupAddon>
+                    </InputGroup>
                   </Field>
                 ) : null}
               </div>

@@ -6,7 +6,12 @@ import { command } from "../../shared/ipc";
 import { cliDisplayName } from "../../shared/names";
 import type { AppSettings, AppSnapshot, CatalogStatus, CliId } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
-import { Alert, Button, Card, Field, Input, Select, type ErrorReporter } from "../ui";
+import { Alert, AppSelect, Button, Field, Input, type ErrorReporter } from "../ui";
+import { useAppTheme } from "../../app/ThemeProvider";
+import { Checkbox } from "../ui/primitives/checkbox";
+import { Separator } from "../ui/primitives/separator";
+import { FieldGroup } from "../ui/primitives/field";
+import { PageHeader } from "../layout/PageHeader";
 
 const UI_ZOOM_PERCENTAGES = [100, 125, 150, 175, 200, 225, 250, 275, 300] as const;
 
@@ -31,6 +36,7 @@ export function SettingsPage({
 }) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
+  const { applySavedTheme } = useAppTheme();
   const setDirty = useUiStore((state) => state.setDirty);
   const setSaveCurrent = useUiStore((state) => state.setSaveCurrent);
   const [settings, setSettings] = useState(snapshot.settings);
@@ -65,8 +71,7 @@ export function SettingsPage({
       savedZoomRef.current = value.uiZoomPercent;
       setSettings(value);
       setDirty(false);
-      document.documentElement.dataset.theme = value.theme;
-      if (value.theme === "system") delete document.documentElement.dataset.theme;
+      applySavedTheme(value.theme);
       await i18n.changeLanguage(value.language === "zh-cn" ? "zh-CN" : "en");
       await queryClient.invalidateQueries({ queryKey: ["app-snapshot"] });
     },
@@ -161,80 +166,97 @@ export function SettingsPage({
   };
   return (
     <div className="page settings-page">
-      <header className="page-header">
-        <div>
-          <h1>{t("settings.title")}</h1>
-          <p>CLISwitch {snapshot.appVersion}</p>
-        </div>
-        <Button disabled={save.isPending} onClick={() => save.mutate()}>
-          <Save size={16} /> {t("common.save")}
-        </Button>
-      </header>
-      <Card>
-        <div className="form-grid settings-preferences-grid">
+      <PageHeader
+        title={t("settings.title")}
+        description={`CLISwitch ${snapshot.appVersion}`}
+        actions={
+          <Button disabled={save.isPending} onClick={() => save.mutate()}>
+            <Save size={16} /> {t("common.save")}
+          </Button>
+        }
+      />
+      <section className="settings-section">
+        <h2>{t("settings.appearanceBehavior")}</h2>
+        <FieldGroup className="form-grid settings-preferences-grid">
           <Field label={t("settings.language")}>
-            <Select
+            <AppSelect
               value={settings.language}
-              onChange={(event) =>
+              onValueChange={(value) =>
                 setSettings({
                   ...settings,
-                  language: event.target.value as AppSettings["language"],
+                  language: value as AppSettings["language"],
                 })
               }
-            >
-              <option value="zh-cn">简体中文</option>
-              <option value="en">English</option>
-            </Select>
+              groups={[
+                {
+                  options: [
+                    { value: "zh-cn", label: "简体中文" },
+                    { value: "en", label: "English" },
+                  ],
+                },
+              ]}
+            />
           </Field>
           <Field label={t("settings.theme")}>
-            <Select
+            <AppSelect
               value={settings.theme}
-              onChange={(event) =>
-                setSettings({ ...settings, theme: event.target.value as AppSettings["theme"] })
+              onValueChange={(value) =>
+                setSettings({ ...settings, theme: value as AppSettings["theme"] })
               }
-            >
-              <option value="light">{t("settings.light")}</option>
-              <option value="dark">{t("settings.dark")}</option>
-              <option value="system">{t("settings.system")}</option>
-            </Select>
+              groups={[
+                {
+                  options: [
+                    { value: "light", label: t("settings.light") },
+                    { value: "dark", label: t("settings.dark") },
+                    { value: "system", label: t("settings.system") },
+                  ],
+                },
+              ]}
+            />
           </Field>
           <Field label={t("settings.uiZoom")}>
-            <Select
-              value={settings.uiZoomPercent}
-              onChange={(event) => previewZoom(Number(event.target.value))}
-            >
-              {UI_ZOOM_PERCENTAGES.map((value) => (
-                <option key={value} value={value}>
-                  {value}%
-                </option>
-              ))}
-            </Select>
+            <AppSelect
+              value={String(settings.uiZoomPercent)}
+              onValueChange={(value) => previewZoom(Number(value))}
+              groups={[
+                {
+                  options: UI_ZOOM_PERCENTAGES.map((value) => ({
+                    value: String(value),
+                    label: `${value}%`,
+                  })),
+                },
+              ]}
+            />
           </Field>
-        </div>
-        <label className="switch-row">
-          <input
-            type="checkbox"
+        </FieldGroup>
+        <label className="switch-row" htmlFor="settings-scan-startup">
+          <Checkbox
+            id="settings-scan-startup"
             checked={settings.scanOnStartup}
-            onChange={(event) => setSettings({ ...settings, scanOnStartup: event.target.checked })}
+            onCheckedChange={(checked) =>
+              setSettings({ ...settings, scanOnStartup: checked === true })
+            }
           />
           {t("settings.scanStartup")}
         </label>
-      </Card>
-      <Card className="risk-card">
+      </section>
+      <Separator />
+      <section className="settings-section risk-card">
         <h2>{t("settings.riskTitle")}</h2>
         <p>{t("settings.riskText")}</p>
-        <label className="switch-row">
-          <input
-            type="checkbox"
+        <label className="switch-row" htmlFor="settings-risk-accepted">
+          <Checkbox
+            id="settings-risk-accepted"
             checked={settings.plaintextRiskAccepted}
-            onChange={(event) =>
-              setSettings({ ...settings, plaintextRiskAccepted: event.target.checked })
+            onCheckedChange={(checked) =>
+              setSettings({ ...settings, plaintextRiskAccepted: checked === true })
             }
           />
           {t("settings.plaintextAck")}
         </label>
-      </Card>
-      <Card>
+      </section>
+      <Separator />
+      <section className="settings-section">
         <h2>{t("settings.locations")}</h2>
         <div className="locations-list">
           {settings.manualLocations.map((location) => (
@@ -244,9 +266,16 @@ export function SettingsPage({
                 <Input
                   readOnly
                   value={location.executablePath ?? ""}
-                  placeholder={t("settings.chooseExecutable")}
+                  aria-label={`${cliDisplayName(location.cliId)} · ${t("config.executable")}`}
+                  placeholder={t("settings.autoDetected")}
                 />
-                <Button variant="secondary" onClick={() => choose(location.cliId, "executable")}>
+                <Button
+                  variant="secondary"
+                  aria-label={t("settings.chooseExecutableFor", {
+                    cli: cliDisplayName(location.cliId),
+                  })}
+                  onClick={() => choose(location.cliId, "executable")}
+                >
                   {t("settings.chooseExecutable")}
                 </Button>
                 <Button
@@ -261,9 +290,16 @@ export function SettingsPage({
                 <Input
                   readOnly
                   value={location.configDirectory ?? ""}
-                  placeholder={t("settings.chooseDirectory")}
+                  aria-label={`${cliDisplayName(location.cliId)} · ${t("config.directory")}`}
+                  placeholder={t("settings.autoDetected")}
                 />
-                <Button variant="secondary" onClick={() => choose(location.cliId, "directory")}>
+                <Button
+                  variant="secondary"
+                  aria-label={t("settings.chooseDirectoryFor", {
+                    cli: cliDisplayName(location.cliId),
+                  })}
+                  onClick={() => choose(location.cliId, "directory")}
+                >
                   {t("settings.chooseDirectory")}
                 </Button>
                 <Button
@@ -277,11 +313,17 @@ export function SettingsPage({
             </div>
           ))}
         </div>
-      </Card>
-      <Card>
-        <h2>{t("settings.dataDirectory")}</h2>
+      </section>
+      <Separator />
+      <section className="settings-section">
+        <h2>{t("settings.dataBackups")}</h2>
+        <p className="muted">{t("settings.dataDirectory")}</p>
         <div className="input-action">
-          <Input readOnly value={snapshot.appDataDirectory} />
+          <Input
+            aria-label={t("settings.dataDirectory")}
+            readOnly
+            value={snapshot.appDataDirectory}
+          />
           <Button
             variant="secondary"
             onClick={() =>
@@ -294,14 +336,13 @@ export function SettingsPage({
         <p>
           {t("settings.backupUsage")}: {formatBytes(snapshot.backupBytes)}
         </p>
-      </Card>
-      <Card>
+      </section>
+      <Separator />
+      <section className="settings-section">
         <div className="card-title-row">
-          <div>
-            <h2>
-              <Database size={18} /> {t("settings.catalogTitle")}
-            </h2>
-          </div>
+          <h2>
+            <Database size={18} /> {t("settings.catalogTitle")}
+          </h2>
           <Button
             variant="secondary"
             disabled={updateCatalog.isPending}
@@ -336,8 +377,10 @@ export function SettingsPage({
           <Alert tone="warning" title={catalogStatus.data.lastError} />
         ) : null}
         {catalogMessage ? <Alert tone="info" title={catalogMessage} announce /> : null}
-      </Card>
-      <Card>
+      </section>
+      <Separator />
+      <section className="settings-section">
+        <h2>{t("settings.about")}</h2>
         <div className="card-title-row">
           <div>
             <h2>
@@ -353,7 +396,7 @@ export function SettingsPage({
           </Button>
         </div>
         {releaseMessage ? <Alert tone="info" title={releaseMessage} announce /> : null}
-      </Card>
+      </section>
     </div>
   );
 }

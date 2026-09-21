@@ -8,6 +8,7 @@ import type {
   SavedConfiguration,
   ScanSnapshot,
 } from "../src/shared/types";
+import { refreshApp } from "./helpers/refresh";
 
 type CommandRequest = {
   command: string;
@@ -55,7 +56,9 @@ describe("CLISwitch desktop shell", () => {
     await browser.waitUntil(
       async () => {
         const selected = await $('[role=tab][aria-selected="true"]');
-        return (await selected.isExisting()) && (await selected.getText()) === name;
+        if (!(await selected.isExisting())) return false;
+        const text = await selected.getProperty("textContent");
+        return typeof text === "string" && text.trim() === name;
       },
       { timeoutMsg: `Expected configuration tab "${name}" to become selected` },
     );
@@ -65,18 +68,16 @@ describe("CLISwitch desktop shell", () => {
     await expect($("h1")).toHaveText(expect.stringMatching(/Configurations|配置/));
     const navigation = await $$("nav button");
     await expect(navigation).toBeElementsArrayOfSize(3);
-    await expect($("[role=tab]")).toHaveText(
-      expect.stringMatching(/Current configuration|当前配置/),
-    );
+    const currentTab = await $("[role=tab]");
+    await expect(currentTab).toBeDisplayed();
+    expect(await currentTab.getProperty("textContent")).toMatch(/Current configuration|当前配置/);
 
-    const cliCards = await $$(".cli-card-grid .card");
+    const cliCards = await $$(".current-cli-row[data-cli-id]");
     await expect(cliCards).toBeElementsArrayOfSize(4);
-    for (const version of await $$(".cli-card-grid small")) {
+    for (const version of await $$(".current-cli-identity small")) {
       await expect(version).toHaveText("fixture-cli 0.1.0");
     }
-    await expect(
-      $("//*[contains(@class, 'cli-card-grid')]//*[contains(., 'Qwen Code')]"),
-    ).toBeDisplayed();
+    await expect($('.current-cli-row[data-cli-id="qwen"]')).toBeDisplayed();
   });
 
   it("creates a named configuration and keeps the three-section navigation usable", async () => {
@@ -84,7 +85,9 @@ describe("CLISwitch desktop shell", () => {
     await add.click();
     await expect($("[role=dialog]")).toBeDisplayed();
     await $("[role=dialog] input").setValue("E2E configuration");
-    const create = await $("[role=dialog] .modal-footer button:last-child");
+    const create = await $(
+      "//*[@role='dialog']//button[normalize-space()='Create' or normalize-space()='创建']",
+    );
     await create.click();
     await waitForSelectedConfiguration("E2E configuration");
 
@@ -109,8 +112,8 @@ describe("CLISwitch desktop shell", () => {
     const navigation = await $$("nav button");
     await navigation[2].click();
     await expect($("h1")).toHaveText(expect.stringMatching(/Settings|设置/));
-    const riskCheckbox = await $(".risk-card input[type=checkbox]");
-    if (!(await riskCheckbox.isSelected())) await riskCheckbox.click();
+    const riskCheckbox = await $(".risk-card [role=checkbox]");
+    if ((await riskCheckbox.getAttribute("aria-checked")) !== "true") await riskCheckbox.click();
     await $(".page-header button").click();
     await browser.waitUntil(async () => {
       const settings = await invoke<AppSettings>("get_settings");
@@ -142,8 +145,7 @@ describe("CLISwitch desktop shell", () => {
       },
       { timeout: 30_000, timeoutMsg: "Expected the UI scan to finish" },
     );
-    const qwenCardSelector =
-      "//*[contains(concat(' ', normalize-space(@class), ' '), ' cli-card-grid ')]//*[contains(concat(' ', normalize-space(@class), ' '), ' card ')][.//h3[normalize-space()='Qwen Code']]";
+    const qwenCardSelector = "//*[@data-cli-id='qwen' and contains(@class, 'current-cli-row')]";
     const manageCandidate = await $(
       `${qwenCardSelector}//button[contains(normalize-space(.), 'as provider') or contains(normalize-space(.), '保存为供应商')]`,
     );
@@ -152,17 +154,24 @@ describe("CLISwitch desktop shell", () => {
     const candidateDialog = await $("[role=dialog]");
     await candidateDialog.$("input:not(#candidate-model)").setValue("Qwen account A");
     await candidateDialog.$("#candidate-model").setValue("fixture-qwen-model");
-    await candidateDialog.$(".modal-footer button:last-child").click();
+    await candidateDialog
+      .$(".//button[normalize-space()='Save' or normalize-space()='保存']")
+      .click();
 
     const qwenCard = await $(qwenCardSelector);
-    await browser.waitUntil(async () => (await qwenCard.getText()).includes("Qwen account A"));
+    await browser.waitUntil(async () => {
+      const text = await qwenCard.getProperty("textContent");
+      return typeof text === "string" && text.includes("Qwen account A");
+    });
 
     await $(
       "//button[contains(normalize-space(.), 'Save as new configuration') or contains(normalize-space(.), '保存为新配置')]",
     ).click();
     const saveCurrentDialog = await $("[role=dialog]");
     await saveCurrentDialog.$("input").setValue("Qwen account A configuration");
-    await saveCurrentDialog.$(".modal-footer button:last-child").click();
+    await saveCurrentDialog
+      .$(".//button[normalize-space()='Save' or normalize-space()='保存']")
+      .click();
     await $(
       "//button[@role='tab' and normalize-space()='Qwen account A configuration']",
     ).waitForExist();
@@ -199,7 +208,7 @@ describe("CLISwitch desktop shell", () => {
         ],
       },
     });
-    await browser.refresh();
+    await refreshApp();
     await expect($("h1")).toHaveText(expect.stringMatching(/Configurations|配置/));
     const configurationA = (await invoke<SavedConfiguration[]>("list_configurations")).find(
       (configuration) => configuration.name === "Qwen account A configuration",
@@ -216,7 +225,9 @@ describe("CLISwitch desktop shell", () => {
       await $(`//button[@role='tab' and normalize-space()=${JSON.stringify(name)}]`).click();
       await waitForSelectedConfiguration(name);
       const previousRunId = (await invoke<AppSnapshot>("get_app_snapshot")).latestApply?.id;
-      await $(".configuration-header .section-actions button:last-child").click();
+      await $(
+        "//header[contains(@class, 'page-header')]//button[normalize-space()='Apply' or normalize-space()='应用']",
+      ).click();
       let completedRun: ApplyRunSnapshot | undefined;
       await browser.waitUntil(
         async () => {
@@ -246,10 +257,10 @@ describe("CLISwitch desktop shell", () => {
     };
 
     await $("//button[@role='tab' and normalize-space()='Qwen account A configuration']").click();
-    const qwenTarget = await $(
-      "//*[contains(concat(' ', normalize-space(@class), ' '), ' target-list ')]//*[contains(concat(' ', normalize-space(@class), ' '), ' card ')][contains(., 'Qwen Code')]",
-    );
-    await qwenTarget.$("button").click();
+    const qwenTarget = await $(".target-section[data-cli-id='qwen']");
+    await qwenTarget
+      .$(".//button[normalize-space()='Preview' or normalize-space()='预览']")
+      .click();
     const previewDialog = await $("[role=dialog]");
     await expect(previewDialog).toHaveText(expect.stringMatching(/Qwen Code/));
     await expect(previewDialog).toHaveText(expect.stringMatching(/settings\.json/));
@@ -288,17 +299,19 @@ describe("CLISwitch desktop shell", () => {
     );
     await qwenBackupButton.click();
     await browser.waitUntil(
-      async () => (await $$("[role=dialog] .backup-row")).length === backupsAfterApply.length,
+      async () => (await $$("[role=dialog] .backup-row").length) === backupsAfterApply.length,
       {
         timeout: 30_000,
         timeoutMsg: "Expected Qwen backups to load",
       },
     );
-    const backupRows = await $$("[role=dialog] .backup-row");
+    const backupRows = await $$("[role=dialog] .backup-row").getElements();
     expect(backupRows.length).toBe(backupsAfterApply.length);
     await backupRows[backupRows.length - 1].$("button").click();
-    const restoreDialog = await $$("[role=dialog]");
-    await restoreDialog[restoreDialog.length - 1].$(".modal-footer button:last-child").click();
+    const restoreDialog = await $("[role=alertdialog]");
+    await restoreDialog
+      .$(".//button[contains(normalize-space(), 'Restore') or contains(normalize-space(), '恢复')]")
+      .click();
 
     const backupsBeforeRestore = new Set(backupsAfterApply.map((backup) => backup.id));
     await browser.waitUntil(

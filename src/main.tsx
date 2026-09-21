@@ -5,6 +5,7 @@ import "./i18n";
 import "./styles.css";
 import { App } from "./app/App";
 import { queryClient } from "./app/queryClient";
+import { ThemeProvider } from "./app/ThemeProvider";
 import { AppErrorBoundary, NotificationViewport } from "./components/ui";
 
 async function bootstrap() {
@@ -15,12 +16,14 @@ async function bootstrap() {
   }
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <AppErrorBoundary>
-        <QueryClientProvider client={queryClient}>
-          <App />
-          <NotificationViewport />
-        </QueryClientProvider>
-      </AppErrorBoundary>
+      <ThemeProvider>
+        <AppErrorBoundary>
+          <QueryClientProvider client={queryClient}>
+            <App />
+            <NotificationViewport />
+          </QueryClientProvider>
+        </AppErrorBoundary>
+      </ThemeProvider>
     </StrictMode>,
   );
 }

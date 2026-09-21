@@ -1,5 +1,8 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
+import { useAppTheme } from "../../app/ThemeProvider";
 import {
   errorGuidance,
   errorLevel,
@@ -12,6 +15,9 @@ import {
   type UserNotification,
 } from "../../stores/notifications";
 import { Alert, ErrorDetails } from "./Alert";
+import { Button } from "./primitives/button";
+import { Toaster } from "./primitives/sonner";
+import { attachNotificationHost } from "./notificationHost";
 
 export type ErrorOperation =
   | "generic"
@@ -65,23 +71,6 @@ function timeoutFor(tone: NotificationTone): number {
 
 function NotificationToast({ notification }: { notification: UserNotification }) {
   const dismiss = useNotificationStore((state) => state.dismiss);
-  useEffect(() => {
-    const timer = window.setTimeout(() => dismiss(notification.id), timeoutFor(notification.tone));
-    return () => window.clearTimeout(timer);
-  }, [dismiss, notification.createdAt, notification.id, notification.tone]);
-
-  const action = notification.action ? (
-    <button
-      type="button"
-      className="button button-secondary"
-      onClick={() => {
-        dismiss(notification.id);
-        notification.action?.run();
-      }}
-    >
-      {notification.action.label}
-    </button>
-  ) : undefined;
   const error =
     notification.detail && notification.code
       ? { code: notification.code, message: notification.detail }
@@ -89,7 +78,6 @@ function NotificationToast({ notification }: { notification: UserNotification })
   return (
     <Alert
       tone={notification.tone}
-      announce
       title={
         <>
           {notification.title}
@@ -98,7 +86,25 @@ function NotificationToast({ notification }: { notification: UserNotification })
           ) : null}
         </>
       }
-      action={action}
+      action={
+        notification.action ? (
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (
+                !useNotificationStore
+                  .getState()
+                  .notifications.some((item) => item.id === notification.id)
+              )
+                return;
+              dismiss(notification.id);
+              notification.action?.run();
+            }}
+          >
+            {notification.action.label}
+          </Button>
+        ) : undefined
+      }
       onDismiss={() => dismiss(notification.id)}
     >
       {notification.description ? <p>{notification.description}</p> : null}
@@ -109,13 +115,57 @@ function NotificationToast({ notification }: { notification: UserNotification })
 
 export function NotificationViewport() {
   const { t } = useTranslation();
+  const { resolvedTheme } = useAppTheme();
   const notifications = useNotificationStore((state) => state.notifications);
-  if (!notifications.length) return null;
-  return (
-    <section className="notification-viewport" aria-label={t("errors.notifications")}>
-      {notifications.map((notification) => (
-        <NotificationToast key={notification.id} notification={notification} />
-      ))}
-    </section>
+  const renderedIds = useRef(new Set<number>());
+  const [host] = useState(() => {
+    const element = document.createElement("div");
+    element.dataset.notificationHost = "";
+    return element;
+  });
+
+  useLayoutEffect(() => attachNotificationHost(host), [host]);
+
+  useEffect(() => {
+    const timers = notifications.map((notification) =>
+      window.setTimeout(
+        () => useNotificationStore.getState().dismiss(notification.id),
+        Math.max(0, notification.createdAt + timeoutFor(notification.tone) - Date.now()),
+      ),
+    );
+    return () => timers.forEach(window.clearTimeout);
+  }, [notifications]);
+
+  useEffect(() => {
+    const currentIds = new Set(notifications.map((notification) => notification.id));
+    for (const id of renderedIds.current) {
+      if (!currentIds.has(id)) toast.dismiss(String(id));
+    }
+    for (const notification of notifications) {
+      toast.custom(() => <NotificationToast notification={notification} />, {
+        id: String(notification.id),
+        duration: Infinity,
+        onDismiss: () => useNotificationStore.getState().dismiss(notification.id),
+      });
+    }
+    renderedIds.current = currentIds;
+  }, [notifications]);
+
+  useEffect(
+    () => () => {
+      for (const id of renderedIds.current) toast.dismiss(String(id));
+    },
+    [],
+  );
+
+  return createPortal(
+    <Toaster
+      theme={resolvedTheme}
+      duration={Infinity}
+      visibleToasts={3}
+      containerAriaLabel={t("errors.notifications")}
+      closeButton={false}
+    />,
+    host,
   );
 }
