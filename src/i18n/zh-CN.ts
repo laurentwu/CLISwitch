@@ -252,9 +252,6 @@ export const zhCN = {
       openDirectory: "打开数据目录",
       checkUpdate: "检查 GitHub Releases",
       version: "当前版本",
-      riskTitle: "明文凭据风险",
-      riskText:
-        "文件权限不是加密。同一用户进程、管理员、恶意软件、系统备份、SQLite WAL 与快照都可能读取凭据；普通删除也不是安全擦除。",
       upToDate: "当前已是最新版本",
       catalogTitle: "Provider 数据库",
       catalogUpdate: "更新数据库",

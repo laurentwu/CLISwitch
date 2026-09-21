@@ -20,7 +20,6 @@ import {
   ConfirmModal,
   EmptyState,
   ErrorAlert,
-  Alert,
   Spinner,
   type ErrorReporter,
 } from "../ui";
@@ -168,9 +167,6 @@ export function ProviderPage({
           </Button>
         }
       />
-      <Alert tone="warning" compact title={t("settings.riskTitle")}>
-        <p>{t("settings.riskText")}</p>
-      </Alert>
       {providers.isError ? (
         <ErrorAlert
           error={providers.error}

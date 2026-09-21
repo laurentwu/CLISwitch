@@ -120,6 +120,8 @@ describe("ProviderPage", () => {
     ]);
     expect(list).not.toHaveTextContent("端点 + Key");
     expect(list).not.toHaveTextContent("OAuth");
+    expect(screen.queryByText("明文凭据风险")).not.toBeInTheDocument();
+    expect(screen.queryByText(/文件权限不是加密/)).not.toBeInTheDocument();
   });
 
   it("opens an inline add editor with OAuth and API template groups", async () => {

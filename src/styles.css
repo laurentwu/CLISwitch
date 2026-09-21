@@ -976,13 +976,6 @@ small {
   margin: 0;
 }
 
-.risk-card {
-  padding: 14px 16px;
-  border-radius: var(--radius);
-  color: var(--warning-foreground);
-  background: var(--warning-background);
-}
-
 .location-row {
   display: grid;
   grid-template-columns: 115px minmax(0, 1fr);

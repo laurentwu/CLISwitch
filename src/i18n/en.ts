@@ -271,9 +271,6 @@ export const en = {
       openDirectory: "Open data directory",
       checkUpdate: "Check GitHub Releases",
       version: "Current version",
-      riskTitle: "Plaintext credential risk",
-      riskText:
-        "File permissions are not encryption. Same-user processes, administrators, malware, system backups, SQLite WAL files, and snapshots may read credentials; ordinary deletion is not secure erasure.",
       upToDate: "Already up to date",
       catalogTitle: "Provider database",
       catalogUpdate: "Update database",
