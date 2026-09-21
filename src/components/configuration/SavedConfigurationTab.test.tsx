@@ -1,6 +1,8 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
+import { CLI_IDS } from "../../shared/types";
 import type { ProviderCatalog, PublicProvider, SavedConfiguration } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
 import { useNotificationStore } from "../../stores/notifications";
@@ -147,6 +149,37 @@ describe("SavedConfigurationTab", () => {
     const dirtyMarker = screen.getByLabelText("有未保存的修改");
     expect(dirtyMarker).toHaveClass("dirty-marker", "absolute");
     expect(screen.getByRole("button", { name: /保存/ })).toHaveClass("configuration-action");
+  });
+
+  it("shows every CLI icon without changing the checkbox label association", async () => {
+    const view = renderWithQueryClient(
+      <SavedConfigurationTab
+        configuration={targetConfiguration}
+        providers={[provider]}
+        catalog={targetCatalog}
+        configurations={[targetConfiguration]}
+        onDeleted={vi.fn()}
+        onError={vi.fn()}
+      />,
+    );
+
+    for (const cliId of CLI_IDS) {
+      const section = view.container.querySelector<HTMLElement>(
+        `.target-section[data-cli-id="${cliId}"]`,
+      );
+      expect(section).not.toBeNull();
+      expect(section!.querySelector(".cli-mark > img.cli-icon")).toBeInTheDocument();
+    }
+
+    const codexSection = view.container.querySelector<HTMLElement>(
+      '.target-section[data-cli-id="codex"]',
+    )!;
+    const codexCheckbox = within(codexSection).getByRole("checkbox");
+    expect(codexCheckbox).toHaveAccessibleName("纳入配置: Codex CLI");
+    expect(codexCheckbox).toBeChecked();
+
+    await userEvent.click(codexCheckbox);
+    expect(codexCheckbox).not.toBeChecked();
   });
 
   it("reports guarded-save validation and keeps the pending transition blocked", async () => {

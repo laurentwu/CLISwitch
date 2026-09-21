@@ -4,7 +4,7 @@ import { Copy, Eye, Play, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { command } from "../../shared/ipc";
 import { providerInstanceDisplayName, providerSupportsCli } from "../../shared/catalog";
-import { CLI_MARKS, cliDisplayName, uniqueCopyName, validateEntityName } from "../../shared/names";
+import { cliDisplayName, uniqueCopyName, validateEntityName } from "../../shared/names";
 import type {
   ApplyRunSnapshot,
   CliId,
@@ -16,6 +16,7 @@ import type {
 } from "../../shared/types";
 import { CLI_IDS } from "../../shared/types";
 import { useUiStore } from "../../stores/ui";
+import { CliIcon } from "../CliIcon";
 import {
   AppSelect,
   Badge,
@@ -304,9 +305,7 @@ export function SavedConfigurationTab({
                     checked={Boolean(target)}
                     onCheckedChange={(checked) => toggle(cliId, checked === true)}
                   />
-                  <span className="cli-mark" aria-hidden="true">
-                    {CLI_MARKS[cliId]}
-                  </span>
+                  <CliIcon cliId={cliId} />
                   <span>
                     {t("config.included")}: {cliDisplayName(cliId)}
                   </span>

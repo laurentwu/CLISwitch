@@ -87,6 +87,30 @@ Build and test-only tools—including Vite, TypeScript, ESLint, Prettier, Vitest
 
 ## Assets and product names
 
-The CLISwitch application icon and neutral CLI marks in this repository are original project assets released under the repository's Apache-2.0 license. No official Anthropic, OpenAI, Claude, Codex, or OpenCode logo artwork is bundled. Those names are used only to describe compatibility and remain trademarks of their respective owners; no endorsement is implied.
+The CLISwitch application icon is an original project asset released under the repository's
+Apache-2.0 license. The CLI identity icons under `src/assets/cli` are official upstream assets
+bundled only to identify compatible products:
+
+- The Claude Code icon is from the official Claude Code documentation asset at
+  <https://code.claude.com/docs/en/overview> (the exact bundled file has SHA-256
+  `d4e5e8e9990ac52f147a74ae80b9e69cdc612264b84a76cdb5c43b53b73a1707`). Claude and
+  Claude Code are trademarks of Anthropic; the icon remains subject to Anthropic's applicable
+  terms.
+- The Codex icon is the OpenAI mark shipped by the official Codex VS Code extension, version
+  `26.5908.31748`, from
+  <https://marketplace.visualstudio.com/items?itemName=openai.chatgpt>. The mark remains the
+  property of OpenAI and is used according to the [OpenAI design guidelines](https://openai.com/brand/).
+- The light and dark OpenCode icons are official brand assets from the OpenCode repository at
+  commit `cf494c2029d4334dfe6defc31209341ca97c2e94`; see
+  <https://opencode.ai/brand>. The upstream repository is MIT licensed, while OpenCode names and
+  marks remain the property of their respective owner.
+- The Qwen Code icon is from the Apache-2.0-licensed Qwen Code repository at commit
+  `74c0916a3ce21057abddeb435851edf0f9f2235d`; Qwen names and marks remain the property of
+  their respective owner. See <https://github.com/QwenLM/qwen-code>.
+
+These third-party icons are not original CLISwitch assets and are not relicensed under the
+CLISwitch Apache-2.0 license. All product names and marks remain the property of their respective
+owners. Their use describes compatibility and does not imply affiliation, sponsorship, or
+endorsement.
 
 For full license texts, consult each package source distributed in the package manager cache or its upstream repository. Apache-2.0 text for CLISwitch is in [LICENSE](LICENSE).

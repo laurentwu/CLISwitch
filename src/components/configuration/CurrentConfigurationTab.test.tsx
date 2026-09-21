@@ -105,7 +105,11 @@ describe("CurrentConfigurationTab", () => {
       screen.getByText("存在多个协议、模型和 base URL 相同的 Qwen 路由。"),
     ).toBeInTheDocument();
     expect(view.container.querySelectorAll(".cli-mark")).toHaveLength(4);
-    expect(screen.getByText("QW", { selector: ".cli-mark" })).toBeInTheDocument();
+    expect(view.container.querySelectorAll(".cli-mark > img.cli-icon")).toHaveLength(4);
+    expect(
+      view.container.querySelector('[data-cli-id="qwen"] .cli-mark > img.cli-icon'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("QW", { selector: ".cli-mark" })).not.toBeInTheDocument();
   });
 
   it("labels successful scan diagnostics without calling the scan a failure", () => {
