@@ -86,6 +86,12 @@ const appEnvironment: Record<string, string> = {
   QWEN_HOME: qwenHome,
 };
 
+if (process.platform === "linux") {
+  // Xvfb may not provide the DMA-BUF/DRI3 support WebKit expects. Keep this
+  // fallback confined to the E2E app, with an override for GPU-backed runs.
+  appEnvironment.WEBKIT_DISABLE_DMABUF_RENDERER = process.env.WEBKIT_DISABLE_DMABUF_RENDERER ?? "1";
+}
+
 export const config: WebdriverIO.Config = {
   runner: "local",
   specs: ["./e2e/**/*.e2e.ts"],

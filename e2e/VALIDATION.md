@@ -83,3 +83,27 @@ product assets and may be cleared with the temporary directory.
   `navigation.e2e.ts`; an in-memory comparison against the pre-fix commit confirmed the same
   diagnostics before and after this patch. The new helper passed its strict typecheck.
 - Native macOS and Windows verification of this follow-up remains for CI.
+
+## Linux E2E and typecheck resolution — 2026-09-20
+
+The two limitations above were addressed in a subsequent, separately approved fix:
+
+- A controlled Linux/Xvfb comparison reproduced `Unsupported result type` with the default
+  WebKit DMA-BUF path. Changing only `WEBKIT_DISABLE_DMABUF_RENDERER=1` made the theme test
+  pass in 2.6 seconds; removing it reproduced the failure. The Linux E2E child process now
+  defaults to this fallback, honors an explicit override, and leaves production rendering
+  and other platforms unchanged.
+- The complete `xvfb-run -a pnpm test:e2e` build/run passed: all six desktop tests completed
+  in a 38-second test phase with the existing embedded driver and normal WebDriver input.
+  No external driver, input replacement, dependency update, or timeout increase was needed.
+- The four E2E type errors were fixed with string type guards, an awaited collection length,
+  and a resolved element array. `tsconfig.e2e.json` is now included by the standard
+  `pnpm typecheck` and build commands, so E2E sources are no longer omitted from typechecking.
+- Formatting, lint, typechecking, 100 frontend tests, Rust formatting, Clippy, and 227 Rust
+  tests passed (one existing Qwen binary smoke test ignored). The production frontend build
+  and production-boundary check also passed.
+- Configuration checks confirmed the Linux-only default, preservation of explicit overrides,
+  and unchanged test timeout/driver. The service still emits diagnostics about absent external
+  drivers, which the configured embedded provider does not require; these did not fail the run.
+- macOS and Windows verification remains for CI; GPU-backed Linux rendering was not validated
+  by this headless run.

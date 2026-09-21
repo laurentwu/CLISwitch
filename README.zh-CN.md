@@ -64,6 +64,8 @@ pnpm tauri build
 
 `pnpm test:e2e` 会生成独立的自动化测试 Debug 构建。WDIO 插件、全局 Tauri API 和测试权限不会进入正常生产构建。测试会创建临时 HOME/XDG/APPDATA，并只在其中放入假 CLI，绝不读取或修改真实用户配置。Linux 无界面 CI 应通过 `xvfb-run -a pnpm test:e2e` 运行。
 
+Linux E2E 应用默认设置 `WEBKIT_DISABLE_DMABUF_RENDERER=1`，以兼容 Xvfb；需要验证 GPU 渲染时可显式设置为 `0`。这不会改变生产应用的渲染方式。`pnpm typecheck` 也会检查 E2E 的 TypeScript 文件。
+
 外观 E2E 覆盖主题保存、CLI 行展开、弹窗键盘焦点，以及全部支持缩放下的布局溢出。发布前仍需在各支持平台冒烟验证 WebView 和原生文件选择器。
 本次 UI 迁移已执行的检查与环境限制记录在 [e2e/VALIDATION.md](e2e/VALIDATION.md)。
 

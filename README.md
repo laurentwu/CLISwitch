@@ -68,7 +68,7 @@ pnpm tauri build
 Appearance E2E covers saved themes, expandable CLI rows, dialog keyboard focus, and layout overflow at supported zoom levels. Release smoke checks still need each supported OS's WebView and native file picker.
 The UI migration's executed checks and environment limitations are recorded in [e2e/VALIDATION.md](e2e/VALIDATION.md).
 
-Linux development additionally needs WebKitGTK 4.1 and the other Tauri system packages. In headless CI, run E2E through `xvfb-run -a pnpm test:e2e`.
+Linux development additionally needs WebKitGTK 4.1 and the other Tauri system packages. In headless CI, run E2E through `xvfb-run -a pnpm test:e2e`. The Linux E2E app defaults to `WEBKIT_DISABLE_DMABUF_RENDERER=1` for compatibility with Xvfb; set it to `0` explicitly for GPU-backed validation. This does not change production rendering. `pnpm typecheck` also checks the E2E TypeScript sources.
 
 ## Builds and releases
 

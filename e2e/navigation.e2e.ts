@@ -56,10 +56,9 @@ describe("CLISwitch desktop shell", () => {
     await browser.waitUntil(
       async () => {
         const selected = await $('[role=tab][aria-selected="true"]');
-        return (
-          (await selected.isExisting()) &&
-          (await selected.getProperty("textContent"))?.trim() === name
-        );
+        if (!(await selected.isExisting())) return false;
+        const text = await selected.getProperty("textContent");
+        return typeof text === "string" && text.trim() === name;
       },
       { timeoutMsg: `Expected configuration tab "${name}" to become selected` },
     );
@@ -160,9 +159,10 @@ describe("CLISwitch desktop shell", () => {
       .click();
 
     const qwenCard = await $(qwenCardSelector);
-    await browser.waitUntil(async () =>
-      (await qwenCard.getProperty("textContent"))?.includes("Qwen account A"),
-    );
+    await browser.waitUntil(async () => {
+      const text = await qwenCard.getProperty("textContent");
+      return typeof text === "string" && text.includes("Qwen account A");
+    });
 
     await $(
       "//button[contains(normalize-space(.), 'Save as new configuration') or contains(normalize-space(.), '保存为新配置')]",
@@ -299,13 +299,13 @@ describe("CLISwitch desktop shell", () => {
     );
     await qwenBackupButton.click();
     await browser.waitUntil(
-      async () => (await $$("[role=dialog] .backup-row")).length === backupsAfterApply.length,
+      async () => (await $$("[role=dialog] .backup-row").length) === backupsAfterApply.length,
       {
         timeout: 30_000,
         timeoutMsg: "Expected Qwen backups to load",
       },
     );
-    const backupRows = await $$("[role=dialog] .backup-row");
+    const backupRows = await $$("[role=dialog] .backup-row").getElements();
     expect(backupRows.length).toBe(backupsAfterApply.length);
     await backupRows[backupRows.length - 1].$("button").click();
     const restoreDialog = await $("[role=alertdialog]");
