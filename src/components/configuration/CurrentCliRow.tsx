@@ -1,8 +1,9 @@
 import { ArchiveRestore, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { diagnosticText } from "../../shared/diagnostics";
-import { CLI_MARKS, cliDisplayName } from "../../shared/names";
+import { cliDisplayName } from "../../shared/names";
 import type { CliId, DetectedCli, DetectedProviderCandidate } from "../../shared/types";
+import { CliIcon } from "../CliIcon";
 import { Alert, Badge, Button } from "../ui";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/primitives/collapsible";
 
@@ -42,9 +43,7 @@ export function CurrentCliRow({
     >
       <div className="current-cli-summary">
         <div className="current-cli-identity">
-          <span className="cli-mark" aria-hidden="true">
-            {CLI_MARKS[cliId]}
-          </span>
+          <CliIcon cliId={cliId} />
           <div className="current-cli-field">
             <h3>{label}</h3>
             <small>{detected?.version ?? "—"}</small>

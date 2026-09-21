@@ -616,6 +616,18 @@ small {
   font-weight: 750;
 }
 
+.cli-icon {
+  display: block;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.cli-icon-codex {
+  border-radius: 4px;
+  background: #000;
+}
+
 .provider-icon {
   width: 32px;
   height: 32px;
