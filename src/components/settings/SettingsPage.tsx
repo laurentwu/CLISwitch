@@ -239,11 +239,6 @@ export function SettingsPage({
           />
           {t("settings.scanStartup")}
         </label>
-      </section>
-      <Separator />
-      <section className="settings-section risk-card">
-        <h2>{t("settings.riskTitle")}</h2>
-        <p>{t("settings.riskText")}</p>
         <label className="switch-row" htmlFor="settings-risk-accepted">
           <Checkbox
             id="settings-risk-accepted"

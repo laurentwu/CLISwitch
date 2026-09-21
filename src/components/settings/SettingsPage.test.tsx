@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
@@ -36,7 +36,7 @@ describe("SettingsPage provider database", () => {
     await i18n.changeLanguage("zh-CN");
   });
 
-  it("renders the six open settings sections in their fixed order", () => {
+  it("renders the five settings sections in their fixed order", () => {
     commandMock.mockResolvedValue(bundledStatus);
     const view = renderWithQueryClient(
       <SettingsPage
@@ -53,20 +53,77 @@ describe("SettingsPage provider database", () => {
       />,
     );
 
-    expect(
-      Array.from(view.container.querySelectorAll(".settings-section"), (section) =>
-        section.querySelector("h2")?.textContent?.trim(),
-      ),
-    ).toEqual([
+    const sections = Array.from(view.container.querySelectorAll<HTMLElement>(".settings-section"));
+    expect(sections.map((section) => section.querySelector("h2")?.textContent?.trim())).toEqual([
       "外观与行为",
-      "明文凭据风险",
       "CLI 路径覆盖",
       "数据与备份",
       "Provider 数据库",
       "关于",
     ]);
-    expect(view.container.querySelectorAll(".settings-section")).toHaveLength(6);
+    expect(sections).toHaveLength(5);
+    expect(
+      within(sections[0])
+        .getAllByRole("checkbox")
+        .map((checkbox) => checkbox.id),
+    ).toEqual(["settings-scan-startup", "settings-risk-accepted"]);
+    expect(
+      within(sections[0]).getByRole("checkbox", {
+        name: "我了解凭据会以明文保存在数据库、auth 文件及备份中",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("明文凭据风险")).not.toBeInTheDocument();
+    expect(screen.queryByText(/文件权限不是加密/)).not.toBeInTheDocument();
     expect(screen.getAllByPlaceholderText("自动发现")).toHaveLength(8);
+  });
+
+  it.each([false, true])("renders a saved plaintext acknowledgement state of %s", (accepted) => {
+    commandMock.mockResolvedValue(bundledStatus);
+    renderWithQueryClient(
+      <SettingsPage
+        snapshot={makeAppSnapshot({ settings: { plaintextRiskAccepted: accepted } })}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("checkbox", {
+        name: "我了解凭据会以明文保存在数据库、auth 文件及备份中",
+      }),
+    ).toHaveAttribute("aria-checked", String(accepted));
+  });
+
+  it("keeps plaintext acknowledgement as a draft until an explicit save", async () => {
+    commandMock.mockImplementation((name: string, args?: Record<string, unknown>) => {
+      if (name === "get_catalog_status") return Promise.resolve(bundledStatus);
+      if (name === "update_settings") {
+        return Promise.resolve({
+          ...(args?.settings as AppSnapshot["settings"]),
+          revision: 2,
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${name}`));
+    });
+    renderWithQueryClient(<SettingsPage snapshot={snapshot} onError={vi.fn()} />, {
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: "我了解凭据会以明文保存在数据库、auth 文件及备份中",
+      }),
+    );
+
+    expect(useUiStore.getState().dirty).toBe(true);
+    expect(commandMock.mock.calls.some(([name]) => name === "update_settings")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(commandMock).toHaveBeenCalledWith("update_settings", {
+        settings: expect.objectContaining({ plaintextRiskAccepted: true }),
+        expectedRevision: 1,
+      }),
+    );
   });
 
   it("shows catalog status and replaces it after a successful manual update", async () => {

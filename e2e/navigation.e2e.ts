@@ -112,7 +112,7 @@ describe("CLISwitch desktop shell", () => {
     const navigation = await $$("nav button");
     await navigation[2].click();
     await expect($("h1")).toHaveText(expect.stringMatching(/Settings|设置/));
-    const riskCheckbox = await $(".risk-card [role=checkbox]");
+    const riskCheckbox = await $("#settings-risk-accepted");
     if ((await riskCheckbox.getAttribute("aria-checked")) !== "true") await riskCheckbox.click();
     await $(".page-header button").click();
     await browser.waitUntil(async () => {
