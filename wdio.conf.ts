@@ -103,6 +103,11 @@ export const config: WebdriverIO.Config = {
     ],
   ],
   capabilities: [createTauriCapabilities(appBinaryPath)],
+  before: async (_capabilities, _specs, browser) => {
+    // This app has one window. Explicit selection also tells the Tauri service
+    // to skip automatic window-state queries while a refresh replaces the page.
+    await browser.switchToWindow("main");
+  },
   framework: "mocha",
   reporters: ["spec"],
   waitforTimeout: 15_000,

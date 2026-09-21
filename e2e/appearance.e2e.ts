@@ -1,4 +1,5 @@
 import type { AppSettings } from "../src/shared/types";
+import { refreshApp } from "./helpers/refresh";
 
 async function settingsCommand<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   return (await browser.tauri.execute(
@@ -45,7 +46,7 @@ describe("Desktop appearance and keyboard interaction", () => {
       await browser.waitUntil(
         async () => (await $("html").getAttribute("data-theme")) === preference,
       );
-      await browser.refresh();
+      await refreshApp();
       await expect($("html")).toHaveAttribute("data-theme", preference);
       await $("nav button:nth-child(3)").click();
     }
@@ -85,8 +86,7 @@ describe("Desktop appearance and keyboard interaction", () => {
           settings: { ...settings, uiZoomPercent: zoom },
           expectedRevision: settings.revision,
         });
-        await browser.refresh();
-        await $("h1").waitForExist();
+        await refreshApp();
         for (const pageIndex of [1, 2, 3]) {
           await $(`nav button:nth-child(${pageIndex})`).click();
           await assertNoPageOverflow();
@@ -103,6 +103,6 @@ describe("Desktop appearance and keyboard interaction", () => {
       expectedRevision: saved.revision,
     });
     await browser.setWindowSize(1180, 780);
-    await browser.refresh();
+    await refreshApp();
   });
 });

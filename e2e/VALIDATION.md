@@ -61,3 +61,25 @@ alerts and diff views.
 Temporary evidence for this session is under `/tmp/cliswitch-visual-qKHOQY/`: implementation PNGs,
 `report.json`, `e2e-verified.log`, frontend/Rust test logs and packaging logs. These files are not
 product assets and may be cleared with the temporary directory.
+
+## PR review follow-up — 2026-09-20
+
+- The macOS CI delay was in the Tauri service's automatic window-state query after refresh,
+  not in saving the theme. The suite now explicitly selects the application's only window,
+  `main`, which suppresses that automatic query. Existing timeouts are unchanged.
+- Refresh checks now mark the outgoing document, wait for its replacement, and then wait for
+  the application's main heading. The old page cannot satisfy the saved-theme assertion.
+- Formatting, lint, the project's TypeScript check, 100 frontend tests, Rust formatting,
+  Clippy, and 227 Rust tests passed; the existing Qwen binary smoke test remained ignored.
+  The production frontend build and production-boundary check also passed.
+- In-memory checks of the actual refresh helper covered delayed document replacement,
+  transient element lookup errors, and a reload that never replaces the document. A separate
+  check of the installed Tauri service confirmed explicit window selection bypasses a stalled
+  automatic window-state query. These checks do not substitute for native WebView validation.
+- The Linux E2E debug build passed. The default embedded-driver run still failed all six
+  tests with the previously recorded `Unsupported result type`, before reaching the refresh
+  checks. No alternate driver or typing workaround was used for this follow-up.
+- An additional strict typecheck of the E2E sources reported four existing diagnostics in
+  `navigation.e2e.ts`; an in-memory comparison against the pre-fix commit confirmed the same
+  diagnostics before and after this patch. The new helper passed its strict typecheck.
+- Native macOS and Windows verification of this follow-up remains for CI.

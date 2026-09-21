@@ -8,6 +8,7 @@ import type {
   SavedConfiguration,
   ScanSnapshot,
 } from "../src/shared/types";
+import { refreshApp } from "./helpers/refresh";
 
 type CommandRequest = {
   command: string;
@@ -207,7 +208,7 @@ describe("CLISwitch desktop shell", () => {
         ],
       },
     });
-    await browser.refresh();
+    await refreshApp();
     await expect($("h1")).toHaveText(expect.stringMatching(/Configurations|配置/));
     const configurationA = (await invoke<SavedConfiguration[]>("list_configurations")).find(
       (configuration) => configuration.name === "Qwen account A configuration",
