@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::Value;
 use url::Url;
 use uuid::Uuid;
 
@@ -11,13 +11,11 @@ use crate::{
         CliAdapter, FileWritePlan, FixedOAuthCommand, HostEnvironment, namespaced_provider_id,
         read_file_snapshot, read_optional,
     },
-    catalog::{
-        ProviderCatalog, ProviderModelTemplate, fixed_adapter_protocol, legacy_catalog,
-        runtime_catalog,
-    },
+    catalog::{ProviderCatalog, fixed_adapter_protocol, legacy_catalog, runtime_catalog},
     config_templates::{
-        RenderedManagedConfig, TemplateBindings, TemplateSelection, render_managed_config,
-        resolve_templates,
+        OpenCodeConfigKind, OpenCodeNativeContract, OpenCodeWriteMode, RenderedManagedConfig,
+        TemplateBindings, TemplateSelection, npm_package_for_protocol, opencode_native_contract,
+        opencode_write_mode, render_managed_config, resolve_templates,
     },
     domain::{
         CliId, CliProtocol, ConfigurationTarget, ConnectionAuthType, CurrentCliConfiguration,
@@ -223,10 +221,6 @@ fn resolve_provider_metadata(
     let catalog = catalog_for_provider(&runtime, legacy, provider_id);
     let dynamic_info = runtime.dynamic_provider_info(provider_id);
     let native_relation = catalog.native_api_relation(CliId::Opencode, provider_id);
-    let template_id = dynamic_info
-        .map(|_| provider_id)
-        .or_else(|| native_relation.map(|relation| relation.provider_template_id.as_str()));
-    let template = template_id.and_then(|id| catalog.api_template(id));
     let explicit_npm = provider
         .and_then(|provider| provider.get("npm"))
         .and_then(Value::as_str)
@@ -238,6 +232,28 @@ fn resolve_provider_metadata(
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|value| !value.trim().is_empty());
+    let explicit_package_protocol = explicit_npm.as_deref().and_then(|package| {
+        catalog
+            .package_protocol(CliId::Opencode, package)
+            .or_else(|| fixed_adapter_protocol(package).filter(|_| dynamic_info.is_some()))
+    });
+    let native_contract = opencode_native_contract(Some(provider_id))?
+        .filter(|contract| contract.native_provider_id == provider_id);
+    // Fixed native defaults fill in only the fields the file leaves unset; an explicit package
+    // that selects another transport suspends them for the remaining fields.
+    let native_transport_default = native_contract.as_ref().filter(|contract| {
+        explicit_package_protocol.is_none_or(|protocol| protocol == contract.protocol)
+    });
+    // Without any transport override, a bundled native provider keeps its own template identity
+    // even when the runtime catalog no longer lists it.
+    let native_identity = native_contract
+        .as_ref()
+        .filter(|_| explicit_npm.is_none() && explicit_base_url.is_none());
+    let template_id = native_identity
+        .map(|_| provider_id)
+        .or_else(|| dynamic_info.map(|_| provider_id))
+        .or_else(|| native_relation.map(|relation| relation.provider_template_id.as_str()));
+    let template = template_id.and_then(|id| catalog.api_template(id));
 
     let model_route = template
         .filter(|template| template.model_routing)
@@ -273,6 +289,10 @@ fn resolve_provider_metadata(
     let is_model_routed_template = template.is_some_and(|template| template.model_routing);
     let relation = if explicit_npm.is_some() {
         package_relation
+    } else if native_identity.is_some() {
+        // The fixed native contract governs interpretation of a provider-native entry; model
+        // routing of a legacy catalog template never reroutes a native slot.
+        native_relation
     } else if is_model_routed_template {
         // A Base URL override changes only the destination. Zen and Go still
         // derive their protocol/package from the selected model.
@@ -287,18 +307,32 @@ fn resolve_provider_metadata(
             .iter()
             .find(|endpoint| endpoint.id == relation.endpoint_id)
     });
-    let protocol = explicit_npm
-        .as_deref()
-        .and_then(|package| catalog.package_protocol(CliId::Opencode, package))
-        .or_else(|| {
-            explicit_npm
-                .as_deref()
-                .and_then(fixed_adapter_protocol)
-                .filter(|_| dynamic_info.is_some())
+    let relation_auth_type = relation
+        .zip(relation_endpoint)
+        .and_then(|(relation, endpoint)| {
+            endpoint
+                .auth_options
+                .iter()
+                .find(|option| option.id == relation.auth_option_id)
+                .map(|option| option.auth_type)
+        });
+    let relation_matches_contract = relation.is_some_and(|relation| {
+        relation_endpoint.is_some_and(|endpoint| {
+            native_identity.as_ref().is_some_and(|contract| {
+                // Only an endpoint of the provider's own template identity can represent the
+                // native slot; a legacy fallback template must not fabricate an endpoint ID.
+                relation.provider_template_id == provider_id
+                    && endpoint.protocol == contract.protocol
+                    && relation_auth_type == Some(contract.auth_type)
+            })
         })
+    });
+    let protocol = explicit_package_protocol
+        .or_else(|| native_transport_default.map(|contract| contract.protocol))
         .or_else(|| relation_endpoint.map(|endpoint| endpoint.protocol));
     let endpoint = explicit_base_url
         .clone()
+        .or_else(|| native_transport_default.map(|contract| contract.endpoint.to_string()))
         .or_else(|| relation_endpoint.map(|endpoint| endpoint.base_url.to_string()));
     let display_name = provider
         .and_then(|provider| provider.get("name"))
@@ -311,18 +345,24 @@ fn resolve_provider_metadata(
                 .map(|template| template.name.clone())
         })
         .unwrap_or_else(|| provider_id.to_string());
-    let auth_type = protocol.map(|protocol| {
-        relation
-            .zip(relation_endpoint)
-            .and_then(|(relation, endpoint)| {
-                endpoint
-                    .auth_options
-                    .iter()
-                    .find(|option| option.id == relation.auth_option_id)
-                    .map(|option| option.auth_type)
-            })
-            .unwrap_or_else(|| default_auth_type(protocol))
-    });
+    let auth_type = if let Some(contract) =
+        native_transport_default.filter(|contract| protocol == Some(contract.protocol))
+    {
+        Some(contract.auth_type)
+    } else {
+        protocol.map(|protocol| {
+            relation
+                .zip(relation_endpoint)
+                .and_then(|(relation, endpoint)| {
+                    endpoint
+                        .auth_options
+                        .iter()
+                        .find(|option| option.id == relation.auth_option_id)
+                        .map(|option| option.auth_type)
+                })
+                .unwrap_or_else(|| default_auth_type(protocol))
+        })
+    };
     let dynamic_package_matches =
         dynamic_info.is_none() || explicit_npm.is_none() || package_relation.is_some();
     let resolved_template_id = if !dynamic_package_matches {
@@ -351,13 +391,19 @@ fn resolve_provider_metadata(
         .and_then(|id| catalog.api_template(id));
     let model_routed = template.is_some_and(|template| template.model_routing)
         && explicit_npm.is_none()
-        && explicit_base_url.is_none();
+        && explicit_base_url.is_none()
+        && native_identity.is_none();
     Ok(ResolvedProviderMetadata {
         display_name,
         template_id: resolved_template_id.clone(),
         template_endpoint_id: resolved_template_id
             .as_ref()
-            .and_then(|_| relation.map(|relation| relation.endpoint_id.clone())),
+            .and_then(|_| {
+                // A native entry only maps to a current-catalog endpoint of its own template
+                // identity with a matching protocol and auth mode; it never invents one.
+                relation.filter(|_| native_identity.is_none() || relation_matches_contract)
+            })
+            .map(|relation| relation.endpoint_id.clone()),
         credential_slot_id: resolved_template_id
             .as_ref()
             .and_then(|_| relation_endpoint.map(|endpoint| endpoint.credential_slot_id.clone()))
@@ -393,55 +439,89 @@ const fn default_auth_type(protocol: CliProtocol) -> ConnectionAuthType {
     }
 }
 
-fn opencode_models(
-    provider: &ProviderProfile,
-    connection: &ProviderConnection,
-    selected_model: &str,
-) -> Value {
-    let runtime = runtime_catalog().ok();
-    let legacy = legacy_catalog().ok();
-    let suggestions = provider
-        .template_id
-        .as_deref()
-        .zip(connection.template_endpoint_id.as_deref())
-        .and_then(|(template_id, endpoint_id)| {
-            let runtime = runtime.as_ref()?;
-            let catalog = legacy
-                .as_ref()
-                .map(|legacy| catalog_for_provider(runtime, legacy, template_id))
-                .unwrap_or(runtime);
-            catalog
-                .api_template(template_id)?
-                .endpoints
-                .iter()
-                .find(|endpoint| endpoint.id == endpoint_id)
-                .map(|endpoint| endpoint.models.clone())
-        })
-        .unwrap_or_default();
-    let mut models = serde_json::Map::new();
-    for model in &suggestions {
-        models.insert(model.id.clone(), opencode_model_value(model));
+/// Blocks a Native apply when the existing file already overrides the native transport for this
+/// provider or reroutes the selected model. Only the native target and the selected model are
+/// inspected; every message is limited to the provider ID and field path.
+fn precheck_native_conflicts(
+    root: &serde_json::Map<String, Value>,
+    contract: &OpenCodeNativeContract,
+    model: &str,
+) -> AppResult<()> {
+    let native_id = contract.native_provider_id.as_str();
+    let conflict = |field: &str| native_conflict_error(native_id, field);
+    let Some(providers) = root.get("provider") else {
+        return Ok(());
+    };
+    let Some(entry) = providers
+        .as_object()
+        .ok_or_else(|| conflict("provider"))?
+        .get(native_id)
+    else {
+        return Ok(());
+    };
+    let entry = entry.as_object().ok_or_else(|| conflict(native_id))?;
+    if entry.get("api").is_some() {
+        return Err(conflict("api"));
     }
-    models
-        .entry(selected_model.to_string())
-        .or_insert_with(|| json!({ "name": selected_model }));
-    Value::Object(models)
+    if let Some(npm) = entry.get("npm") {
+        let npm = npm.as_str().ok_or_else(|| conflict("npm"))?;
+        if npm != npm_package_for_protocol(contract.protocol)? {
+            return Err(conflict("npm"));
+        }
+    }
+    if let Some(options) = entry.get("options") {
+        let options = options.as_object().ok_or_else(|| conflict("options"))?;
+        if let Some(base) = options.get("baseURL") {
+            let base = base.as_str().ok_or_else(|| conflict("options.baseURL"))?;
+            let parsed = Url::parse(base).map_err(|_| conflict("options.baseURL"))?;
+            if parsed != contract.endpoint {
+                return Err(conflict("options.baseURL"));
+            }
+        }
+    }
+    if let Some(models) = entry.get("models") {
+        let models = models.as_object().ok_or_else(|| conflict("models"))?;
+        if let Some(model_entry) = models.get(model) {
+            let model_entry = model_entry
+                .as_object()
+                .ok_or_else(|| conflict(&format!("models.{model}")))?;
+            for field in ["provider", "api", "npm"] {
+                if model_entry.get(field).is_some() {
+                    return Err(conflict(&format!("models.{model}.{field}")));
+                }
+            }
+            if let Some(id) = model_entry.get("id") {
+                if id.as_str() != Some(model) {
+                    return Err(conflict(&format!("models.{model}.id")));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
-fn opencode_model_value(model: &ProviderModelTemplate) -> Value {
-    let mut value =
-        serde_json::Map::from_iter([("name".to_string(), Value::String(model.name.clone()))]);
-    if model.context.is_some() || model.output.is_some() {
-        let mut limit = serde_json::Map::new();
-        if let Some(context) = model.context {
-            limit.insert("context".into(), Value::from(context));
-        }
-        if let Some(output) = model.output {
-            limit.insert("output".into(), Value::from(output));
-        }
-        value.insert("limit".into(), Value::Object(limit));
-    }
-    Value::Object(value)
+/// A config file still contains credentials when any provider keeps a non-empty inline
+/// `options.apiKey` in its source or target form, even when this apply removes that key.
+fn config_contains_inline_credentials(root: &serde_json::Map<String, Value>) -> bool {
+    root.get("provider")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|providers| providers.values())
+        .filter_map(|provider| provider.as_object())
+        .filter_map(|provider| provider.get("options"))
+        .filter_map(Value::as_object)
+        .filter_map(|options| options.get("apiKey"))
+        .any(|key| match key {
+            Value::String(key) => !key.trim().is_empty(),
+            Value::Null => false,
+            _ => true,
+        })
+}
+
+fn native_conflict_error(native_id: &str, field: &str) -> AppError {
+    AppError::Unsupported(format!(
+        "OpenCode provider {native_id} field {field} conflicts with its native template"
+    ))
 }
 
 fn snapshot_text<'a>(source: &'a Option<Vec<u8>>, default: &'a str) -> AppResult<&'a str> {
@@ -930,46 +1010,70 @@ impl CliAdapter for OpenCodeAdapter {
             .iter()
             .find(|connection| connection.id == connection_id)
             .ok_or_else(|| AppError::Validation("connection does not exist".into()))?;
-        let runtime = runtime_catalog()?;
-        let legacy = legacy_catalog()?;
-        let catalog = catalog_for_provider(
-            &runtime,
-            legacy,
-            provider.template_id.as_deref().unwrap_or_default(),
-        );
-        if let (Some(template_id), Some(endpoint_id)) = (
+        connection.validate_without_default_model()?;
+        // Mode selection precedes every other template decision: an exact native contract match
+        // keeps the provider-native slot, any other legal connection uses the generic template.
+        let mode = opencode_write_mode(
             provider.template_id.as_deref(),
-            connection.template_endpoint_id.as_deref(),
-        ) && catalog
-            .api_template(template_id)
-            .is_some_and(|template| template.model_routing)
-        {
-            let model = target.model().trim();
-            let routed_endpoint = catalog
-                .model_routed_endpoint(template_id, model)
-                .ok_or_else(|| {
-                    AppError::Validation(format!(
-                        "model {model} has no route in provider template {template_id}"
-                    ))
-                })?;
-            if routed_endpoint.id != endpoint_id {
-                return Err(AppError::Validation(format!(
-                    "model {model} routes to endpoint {}, not {endpoint_id}",
-                    routed_endpoint.id
-                )));
+            connection.protocol,
+            &connection.endpoint,
+            connection.auth_type,
+        )?;
+        let native_contract = match mode {
+            OpenCodeWriteMode::Native => Some(
+                opencode_native_contract(provider.template_id.as_deref())?.ok_or_else(|| {
+                    AppError::Serialization("OpenCode native contract is unavailable".into())
+                })?,
+            ),
+            OpenCodeWriteMode::Generic => None,
+        };
+        if native_contract.is_none() {
+            // Generic keeps the historical legacy-catalog model routing constraints; Native
+            // leaves model transport to OpenCode itself.
+            let runtime = runtime_catalog()?;
+            let legacy = legacy_catalog()?;
+            let catalog = catalog_for_provider(
+                &runtime,
+                legacy,
+                provider.template_id.as_deref().unwrap_or_default(),
+            );
+            if let (Some(template_id), Some(endpoint_id)) = (
+                provider.template_id.as_deref(),
+                connection.template_endpoint_id.as_deref(),
+            ) && catalog
+                .api_template(template_id)
+                .is_some_and(|template| template.model_routing)
+            {
+                let model = target.model().trim();
+                let routed_endpoint = catalog
+                    .model_routed_endpoint(template_id, model)
+                    .ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "model {model} has no route in provider template {template_id}"
+                        ))
+                    })?;
+                if routed_endpoint.id != endpoint_id {
+                    return Err(AppError::Validation(format!(
+                        "model {model} routes to endpoint {}, not {endpoint_id}",
+                        routed_endpoint.id
+                    )));
+                }
             }
         }
-        let provider_id = namespaced_provider_id(provider.id);
+        let namespaced_id = namespaced_provider_id(provider.id);
         let templates = resolve_templates(&TemplateSelection {
             cli_id: CliId::Opencode,
-            template_id: provider.template_id.as_deref(),
+            template_id: match mode {
+                OpenCodeWriteMode::Native => provider.template_id.as_deref(),
+                OpenCodeWriteMode::Generic => None,
+            },
             protocol: connection.protocol,
             model: target.model(),
         })?;
         let rendered = render_managed_config(
             &templates,
             &TemplateBindings {
-                provider_id: &provider_id,
+                provider_id: &namespaced_id,
                 provider_name: &provider.name,
                 endpoint: connection.endpoint.as_str(),
                 auth_type: connection.auth_type,
@@ -988,128 +1092,112 @@ impl CliAdapter for OpenCodeAdapter {
             read_file_snapshot(&paths.config_file, &paths.config_directory).await?;
         let config_text = snapshot_text(&config_source, "{}\n")?;
         let parsed = parse_jsonc_value(config_text)?;
-        if parsed.get("providers").is_some() {
+        let root = parsed
+            .as_object()
+            .ok_or_else(|| AppError::Unsupported("OpenCode config root is not an object".into()))?;
+        if root.contains_key("providers") {
             return Err(AppError::Unsupported(
                 "refusing to write the OpenCode v2 beta schema".into(),
             ));
         }
-        let template_models = opencode_models(provider, connection, target.model());
-        let template_models = template_models
-            .as_object()
-            .expect("opencode_models always returns an object");
-        let selected_model = &template_models[target.model()];
-        let model_name = selected_model
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(&rendered.model_name)
-            .to_string();
+        let final_provider_id = rendered.provider_id.clone();
         let mut config_patches = vec![
             JsonPatch::SetString {
                 path: vec!["$schema".into()],
-                value: rendered.schema,
+                value: rendered.schema.clone(),
             },
             JsonPatch::SetString {
                 path: vec!["model".into()],
-                value: rendered.model_reference,
+                value: rendered.model_reference.clone(),
             },
-            JsonPatch::SetString {
-                path: vec!["provider".into(), provider_id.clone(), "npm".into()],
-                value: rendered.npm_package,
-            },
-            JsonPatch::SetString {
-                path: vec!["provider".into(), provider_id.clone(), "name".into()],
-                value: rendered.provider_name,
-            },
-            JsonPatch::SetString {
+        ];
+        match (&rendered.kind, &native_contract) {
+            (OpenCodeConfigKind::Native, Some(contract)) => {
+                precheck_native_conflicts(root, contract, target.model())?;
+            }
+            (OpenCodeConfigKind::Generic { .. }, None) => {
+                let OpenCodeConfigKind::Generic {
+                    provider_name,
+                    endpoint,
+                    npm_package,
+                    model_name,
+                    reasoning,
+                } = &rendered.kind
+                else {
+                    unreachable!("matched Generic above");
+                };
+                config_patches.extend([
+                    JsonPatch::SetString {
+                        path: vec!["provider".into(), final_provider_id.clone(), "npm".into()],
+                        value: npm_package.clone(),
+                    },
+                    JsonPatch::SetString {
+                        path: vec!["provider".into(), final_provider_id.clone(), "name".into()],
+                        value: provider_name.clone(),
+                    },
+                    JsonPatch::SetString {
+                        path: vec![
+                            "provider".into(),
+                            final_provider_id.clone(),
+                            "options".into(),
+                            "baseURL".into(),
+                        ],
+                        value: endpoint.clone(),
+                    },
+                    JsonPatch::SetString {
+                        path: vec![
+                            "provider".into(),
+                            final_provider_id.clone(),
+                            "models".into(),
+                            target.model().into(),
+                            "name".into(),
+                        ],
+                        value: model_name.clone(),
+                    },
+                    JsonPatch::SetValue {
+                        path: vec![
+                            "provider".into(),
+                            final_provider_id.clone(),
+                            "models".into(),
+                            target.model().into(),
+                            "reasoning".into(),
+                        ],
+                        value: Value::Bool(*reasoning),
+                    },
+                ]);
+            }
+            _ => {
+                return Err(AppError::Serialization(
+                    "OpenCode render mode is inconsistent".into(),
+                ));
+            }
+        }
+        // Remove the managed inline credential only when that leaf exists, so a Native apply
+        // never materializes an empty provider/options block.
+        if root
+            .get("provider")
+            .and_then(Value::as_object)
+            .and_then(|providers| providers.get(&final_provider_id))
+            .and_then(Value::as_object)
+            .and_then(|provider| provider.get("options"))
+            .and_then(Value::as_object)
+            .is_some_and(|options| options.contains_key("apiKey"))
+        {
+            config_patches.push(JsonPatch::RemoveString {
                 path: vec![
                     "provider".into(),
-                    provider_id.clone(),
-                    "options".into(),
-                    "baseURL".into(),
-                ],
-                value: rendered.endpoint,
-            },
-            JsonPatch::RemoveString {
-                path: vec![
-                    "provider".into(),
-                    provider_id.clone(),
+                    final_provider_id.clone(),
                     "options".into(),
                     "apiKey".into(),
                 ],
-            },
-            JsonPatch::SetString {
-                path: vec![
-                    "provider".into(),
-                    provider_id.clone(),
-                    "models".into(),
-                    target.model().into(),
-                    "name".into(),
-                ],
-                value: model_name,
-            },
-            JsonPatch::SetValue {
-                path: vec![
-                    "provider".into(),
-                    provider_id.clone(),
-                    "models".into(),
-                    target.model().into(),
-                    "reasoning".into(),
-                ],
-                value: Value::Bool(rendered.reasoning),
-            },
-        ];
-        if let Some(limit) = selected_model.get("limit").and_then(Value::as_object) {
-            for field in ["context", "output"] {
-                if let Some(value) = limit.get(field) {
-                    config_patches.push(JsonPatch::SetValue {
-                        path: vec![
-                            "provider".into(),
-                            provider_id.clone(),
-                            "models".into(),
-                            target.model().into(),
-                            "limit".into(),
-                            field.into(),
-                        ],
-                        value: value.clone(),
-                    });
-                }
-            }
-        }
-        for (model_id, metadata) in template_models {
-            if model_id == target.model() {
-                continue;
-            }
-            if let Some(name) = metadata.get("name").and_then(Value::as_str) {
-                config_patches.push(JsonPatch::SetString {
-                    path: vec![
-                        "provider".into(),
-                        provider_id.clone(),
-                        "models".into(),
-                        model_id.clone(),
-                        "name".into(),
-                    ],
-                    value: name.into(),
-                });
-            }
-            if let Some(limit) = metadata.get("limit").and_then(Value::as_object) {
-                for field in ["context", "output"] {
-                    if let Some(value) = limit.get(field) {
-                        config_patches.push(JsonPatch::SetValue {
-                            path: vec![
-                                "provider".into(),
-                                provider_id.clone(),
-                                "models".into(),
-                                model_id.clone(),
-                                "limit".into(),
-                                field.into(),
-                            ],
-                            value: value.clone(),
-                        });
-                    }
-                }
-            }
+            });
         }
         let target_config = patch_jsonc(config_text, &config_patches)?;
+        let target_root = parse_jsonc_value(&target_config)?;
+        let config_contains_credentials = target_root
+            .as_object()
+            .is_some_and(config_contains_inline_credentials)
+            || config_contains_inline_credentials(root);
         let auth_file = paths
             .auth_file
             .clone()
@@ -1124,27 +1212,27 @@ impl CliAdapter for OpenCodeAdapter {
             auth_text,
             &[
                 JsonPatch::SetString {
-                    path: vec![provider_id.clone(), "type".into()],
+                    path: vec![final_provider_id.clone(), "type".into()],
                     value: "api".into(),
                 },
                 JsonPatch::SetString {
-                    path: vec![provider_id.clone(), "key".into()],
+                    path: vec![final_provider_id.clone(), "key".into()],
                     value: rendered.api_key,
                 },
                 JsonPatch::RemoveString {
-                    path: vec![provider_id.clone(), "refresh".into()],
+                    path: vec![final_provider_id.clone(), "refresh".into()],
                 },
                 JsonPatch::RemoveString {
-                    path: vec![provider_id.clone(), "access".into()],
+                    path: vec![final_provider_id.clone(), "access".into()],
                 },
                 JsonPatch::Remove {
-                    path: vec![provider_id.clone(), "expires".into()],
+                    path: vec![final_provider_id.clone(), "expires".into()],
                 },
                 JsonPatch::RemoveString {
-                    path: vec![provider_id.clone(), "accountId".into()],
+                    path: vec![final_provider_id.clone(), "accountId".into()],
                 },
                 JsonPatch::RemoveString {
-                    path: vec![provider_id, "enterpriseUrl".into()],
+                    path: vec![final_provider_id, "enterpriseUrl".into()],
                 },
             ],
         )?;
@@ -1157,7 +1245,7 @@ impl CliAdapter for OpenCodeAdapter {
                     source_content: config_source,
                     source_digest: config_digest,
                     target_content: target_config.into_bytes(),
-                    contains_credentials: false,
+                    contains_credentials: config_contains_credentials,
                     opaque_content: false,
                 },
                 FileWritePlan {

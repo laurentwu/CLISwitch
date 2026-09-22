@@ -7,16 +7,18 @@ use once_cell::sync::OnceCell;
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use url::Url;
 
 use crate::{
     domain::{CliId, CliProtocol, ConnectionAuthType},
     error::{AppError, AppResult},
-    services::config_writer::parse_toml,
+    services::config_writer::{parse_jsonc_value, parse_toml},
 };
 
 pub const UPSTREAM_REPOSITORY: &str = "https://github.com/laurentwu/CLIAdapter";
 pub const UPSTREAM_COMMIT: &str = "7ea4dcc5e874d76a14e54a8e15f4fec7b8c5522d";
-pub const TEMPLATE_SCHEMA_VERSION: u32 = 1;
+pub const OPENCODE_UPSTREAM_COMMIT: &str = "25ce581516599103b2455cab6770f021aa5f2f91";
+pub const TEMPLATE_SCHEMA_VERSION: u32 = 2;
 pub const PROVIDER_TEMPLATE_IDS: [&str; 7] = [
     "deepseek",
     "zhipuai",
@@ -110,27 +112,28 @@ const RESOURCES: &[Resource] = &[
     resource!("codex/zhipuai/models.json"),
     resource!("codex/zhipuai/provider.json"),
     resource!("LICENSE"),
+    resource!("opencode/auth.json"),
     resource!("opencode/deepseek/auth.json"),
-    resource!("opencode/deepseek/opencode.json"),
+    resource!("opencode/deepseek/opencode.jsonc"),
     resource!("opencode/deepseek/provider.json"),
-    resource!("opencode/opencode/auth.json"),
     resource!("opencode/opencode-go/auth.json"),
-    resource!("opencode/opencode-go/opencode.json"),
+    resource!("opencode/opencode-go/opencode.jsonc"),
     resource!("opencode/opencode-go/provider.json"),
-    resource!("opencode/opencode.json"),
-    resource!("opencode/opencode/opencode.json"),
+    resource!("opencode/opencode.jsonc"),
+    resource!("opencode/opencode/auth.json"),
+    resource!("opencode/opencode/opencode.jsonc"),
     resource!("opencode/opencode/provider.json"),
-    resource!("opencode/zai/auth.json"),
     resource!("opencode/zai-coding-plan/auth.json"),
-    resource!("opencode/zai-coding-plan/opencode.json"),
+    resource!("opencode/zai-coding-plan/opencode.jsonc"),
     resource!("opencode/zai-coding-plan/provider.json"),
-    resource!("opencode/zai/opencode.json"),
+    resource!("opencode/zai/auth.json"),
+    resource!("opencode/zai/opencode.jsonc"),
     resource!("opencode/zai/provider.json"),
-    resource!("opencode/zhipuai/auth.json"),
     resource!("opencode/zhipuai-coding-plan/auth.json"),
-    resource!("opencode/zhipuai-coding-plan/opencode.json"),
+    resource!("opencode/zhipuai-coding-plan/opencode.jsonc"),
     resource!("opencode/zhipuai-coding-plan/provider.json"),
-    resource!("opencode/zhipuai/opencode.json"),
+    resource!("opencode/zhipuai/auth.json"),
+    resource!("opencode/zhipuai/opencode.jsonc"),
     resource!("opencode/zhipuai/provider.json"),
     resource!("qwen/deepseek/provider.json"),
     resource!("qwen/deepseek/settings.json"),
@@ -168,6 +171,10 @@ struct ManifestResource {
     provider_id: Option<String>,
     model_id: Option<String>,
     protocol: Option<String>,
+    #[serde(default)]
+    upstream_commit: Option<String>,
+    #[serde(default)]
+    upstream_path: Option<String>,
 }
 
 static VALIDATED: OnceCell<Result<(), String>> = OnceCell::new();
@@ -213,6 +220,7 @@ fn validate_bundled_templates_inner() -> Result<(), String> {
             ));
         }
         validate_manifest_metadata(entry)?;
+        validate_manifest_source(entry)?;
         validate_resource(entry, bytes)?;
         if entry.role == "provider-identity" {
             provider_ids.insert((
@@ -229,7 +237,8 @@ fn validate_bundled_templates_inner() -> Result<(), String> {
         "claude/settings.json",
         "codex/config.toml",
         "codex/models.json",
-        "opencode/opencode.json",
+        "opencode/auth.json",
+        "opencode/opencode.jsonc",
         "qwen/settings.json",
     ]);
     for provider in PROVIDER_TEMPLATE_IDS {
@@ -291,6 +300,39 @@ type ExpectedResourceMetadata = (
     Option<&'static str>,
     Option<&'static str>,
 );
+
+/// Binds every resource to exactly one of the two compiled upstream sources. OpenCode resources
+/// must name the newer commit and its `cli/` source path; everything else must use the default
+/// source and may not override it. Arbitrary sources are never accepted.
+fn validate_manifest_source(entry: &ManifestResource) -> Result<(), String> {
+    let is_opencode = entry.path.starts_with("opencode/");
+    match (&entry.upstream_commit, &entry.upstream_path) {
+        (Some(commit), Some(path)) => {
+            if !is_opencode {
+                return Err(format!(
+                    "config-template source override is not allowed for {}",
+                    entry.path
+                ));
+            }
+            if commit != OPENCODE_UPSTREAM_COMMIT || path != &format!("cli/{}", entry.path) {
+                return Err(format!(
+                    "config-template source for {} is not the compiled OpenCode source",
+                    entry.path
+                ));
+            }
+            Ok(())
+        }
+        (Some(_), None) | (None, Some(_)) => Err(format!(
+            "config-template source for {} is incomplete",
+            entry.path
+        )),
+        (None, None) if is_opencode => Err(format!(
+            "OpenCode config-template {} does not declare its fixed source",
+            entry.path
+        )),
+        (None, None) => Ok(()),
+    }
+}
 
 fn expected_resource_metadata(path: &str) -> Option<ExpectedResourceMetadata> {
     if path == "LICENSE" {
@@ -364,8 +406,15 @@ fn expected_resource_metadata(path: &str) -> Option<ExpectedResourceMetadata> {
                 Some("openai-responses"),
             ))
         }
-        ["opencode", "opencode.json"] => Some((
+        ["opencode", "opencode.jsonc"] => Some((
             "opencode-config",
+            Some("opencode"),
+            None,
+            None,
+            Some("openai-compatible"),
+        )),
+        ["opencode", "auth.json"] => Some((
+            "opencode-auth",
             Some("opencode"),
             None,
             None,
@@ -374,12 +423,12 @@ fn expected_resource_metadata(path: &str) -> Option<ExpectedResourceMetadata> {
         [
             "opencode",
             provider,
-            file @ ("provider.json" | "opencode.json" | "auth.json"),
+            file @ ("provider.json" | "opencode.jsonc" | "auth.json"),
         ] => {
             let provider = known_template_id(Some(provider))?;
             let role = match *file {
                 "provider.json" => "provider-identity",
-                "opencode.json" => "opencode-config",
+                "opencode.jsonc" => "opencode-config",
                 "auth.json" => "opencode-auth",
                 _ => unreachable!(),
             };
@@ -424,7 +473,13 @@ fn validate_resource(entry: &ManifestResource, bytes: &[u8]) -> Result<(), Strin
         "provider-identity" => {
             let value: Value = serde_json::from_str(text)
                 .map_err(|error| format!("invalid provider identity {}: {error}", entry.path))?;
-            validate_provider_identity(&value, entry).map_err(|error| error.to_string())?;
+            validate_provider_identity(
+                &value,
+                &entry.path,
+                entry.provider_id.as_deref(),
+                entry.cli.as_deref(),
+            )
+            .map_err(|error| error.to_string())?;
             validate_template_placeholders(&value, &entry.path)
         }
         "claude-settings" => {
@@ -442,15 +497,19 @@ fn validate_resource(entry: &ManifestResource, bytes: &[u8]) -> Result<(), Strin
             validate_template_placeholders(&value, &entry.path)
         }
         "opencode-config" => {
-            let value: Value = serde_json::from_str(text)
-                .map_err(|error| format!("invalid JSON template {}: {error}", entry.path))?;
-            validate_opencode_config_shape(&value, entry).map_err(|error| error.to_string())?;
+            // The upstream OpenCode templates are JSONC and may carry guidance comments. Digests
+            // still cover the untouched original bytes.
+            let value = parse_jsonc_value(text)
+                .map_err(|error| format!("invalid JSONC template {}: {error}", entry.path))?;
+            validate_opencode_config_shape(&value, &entry.path, entry.provider_id.as_deref())
+                .map_err(|error| error.to_string())?;
             validate_template_placeholders(&value, &entry.path)
         }
         "opencode-auth" => {
-            let value: Value = serde_json::from_str(text)
-                .map_err(|error| format!("invalid JSON template {}: {error}", entry.path))?;
-            validate_opencode_auth_shape(&value, entry).map_err(|error| error.to_string())?;
+            let value = parse_jsonc_value(text)
+                .map_err(|error| format!("invalid JSONC template {}: {error}", entry.path))?;
+            validate_opencode_auth_shape(&value, &entry.path, entry.provider_id.as_deref())
+                .map_err(|error| error.to_string())?;
             validate_template_placeholders(&value, &entry.path)
         }
         "qwen-config" => {
@@ -475,53 +534,54 @@ fn validate_resource(entry: &ManifestResource, bytes: &[u8]) -> Result<(), Strin
     }
 }
 
-fn validate_provider_identity(value: &Value, entry: &ManifestResource) -> AppResult<()> {
+fn validate_provider_identity(
+    value: &Value,
+    path: &str,
+    expected_provider_id: Option<&str>,
+    cli: Option<&str>,
+) -> AppResult<()> {
     let root = value
         .as_object()
-        .ok_or_else(|| AppError::Serialization(format!("{} root is not an object", entry.path)))?;
+        .ok_or_else(|| AppError::Serialization(format!("{path} root is not an object")))?;
     reject_unknown_keys(
         root.keys().map(String::as_str),
         &["id", "name", "env", "protocol", "base_url", "docs"],
-        &entry.path,
+        path,
     )?;
     for key in ["id", "name", "protocol", "base_url", "docs"] {
         required_string(
             root.get(key)
-                .ok_or_else(|| AppError::Serialization(format!("{} has no {key}", entry.path)))?,
+                .ok_or_else(|| AppError::Serialization(format!("{path} has no {key}")))?,
         )?;
     }
     let env = root
         .get("env")
         .and_then(Value::as_array)
-        .ok_or_else(|| AppError::Serialization(format!("{} env is not an array", entry.path)))?;
+        .ok_or_else(|| AppError::Serialization(format!("{path} env is not an array")))?;
     if env.is_empty() || env.iter().any(|value| value.as_str().is_none()) {
         return Err(AppError::Serialization(format!(
-            "{} env must contain strings",
-            entry.path
+            "{path} env must contain strings"
         )));
     }
-    if root.get("id").and_then(Value::as_str) != entry.provider_id.as_deref() {
+    if root.get("id").and_then(Value::as_str) != expected_provider_id {
         return Err(AppError::Serialization(format!(
-            "provider identity mismatch in {}",
-            entry.path
+            "provider identity mismatch in {path}"
         )));
     }
-    let expected_protocol = match entry.cli.as_deref() {
+    let expected_protocol = match cli {
         Some("claude-code") => "anthropic-messages",
         Some("codex") => "responses",
         Some("opencode") => "openai-compatible",
         Some("qwen") => "openai-compatible",
         _ => {
             return Err(AppError::Serialization(format!(
-                "provider identity has an invalid CLI in {}",
-                entry.path
+                "provider identity has an invalid CLI in {path}"
             )));
         }
     };
     if root.get("protocol").and_then(Value::as_str) != Some(expected_protocol) {
         return Err(AppError::Serialization(format!(
-            "provider identity protocol mismatch in {}",
-            entry.path
+            "provider identity protocol mismatch in {path}"
         )));
     }
     Ok(())
@@ -865,28 +925,26 @@ fn validate_truncation_policy(value: &Value, path: &str) -> AppResult<bool> {
         && policy.get("limit").and_then(Value::as_u64).is_some())
 }
 
-fn validate_opencode_config_shape(value: &Value, entry: &ManifestResource) -> AppResult<()> {
+fn validate_opencode_config_shape(
+    value: &Value,
+    path: &str,
+    provider_id: Option<&str>,
+) -> AppResult<()> {
     let root = value
         .as_object()
-        .ok_or_else(|| AppError::Serialization(format!("{} root is not an object", entry.path)))?;
+        .ok_or_else(|| AppError::Serialization(format!("{path} root is not an object")))?;
     let expected_schema = Some("https://opencode.ai/config.json");
     if root.get("$schema").and_then(Value::as_str) != expected_schema {
         return Err(AppError::Serialization(format!(
-            "{} has an invalid schema",
-            entry.path
+            "{path} has an invalid schema",
         )));
     }
-    if let Some(provider_id) = entry.provider_id.as_deref() {
-        reject_unknown_keys(
-            root.keys().map(String::as_str),
-            &["$schema", "model"],
-            &entry.path,
-        )?;
+    if let Some(provider_id) = provider_id {
+        reject_unknown_keys(root.keys().map(String::as_str), &["$schema", "model"], path)?;
         let expected_model = format!("{provider_id}/<model-id>");
         if root.get("model").and_then(Value::as_str) != Some(expected_model.as_str()) {
             return Err(AppError::Serialization(format!(
-                "{} has an invalid native model reference",
-                entry.path
+                "{path} has an invalid native model reference",
             )));
         }
         return Ok(());
@@ -894,7 +952,7 @@ fn validate_opencode_config_shape(value: &Value, entry: &ManifestResource) -> Ap
     reject_unknown_keys(
         root.keys().map(String::as_str),
         &["$schema", "model", "provider"],
-        &entry.path,
+        path,
     )?;
     if root.get("model").and_then(Value::as_str) != Some("<provider-id>/<model-id>") {
         return Err(AppError::Serialization(
@@ -916,7 +974,7 @@ fn validate_opencode_config_shape(value: &Value, entry: &ManifestResource) -> Ap
     reject_unknown_keys(
         provider.keys().map(String::as_str),
         &["npm", "name", "options", "models"],
-        &entry.path,
+        path,
     )?;
     if provider.get("npm").and_then(Value::as_str) != Some("<npm-package>")
         || provider.get("name").and_then(Value::as_str) != Some("<provider-name>")
@@ -929,14 +987,9 @@ fn validate_opencode_config_shape(value: &Value, entry: &ManifestResource) -> Ap
         .get("options")
         .and_then(Value::as_object)
         .ok_or_else(|| AppError::Serialization("generic OpenCode options are invalid".into()))?;
-    reject_unknown_keys(
-        options.keys().map(String::as_str),
-        &["baseURL", "apiKey"],
-        &entry.path,
-    )?;
-    if options.get("baseURL").and_then(Value::as_str) != Some("<base-url>")
-        || options.get("apiKey").and_then(Value::as_str) != Some("<your-api-key>")
-    {
+    // Credentials live in auth.json only; the reviewed generic template must not inline a key.
+    reject_unknown_keys(options.keys().map(String::as_str), &["baseURL"], path)?;
+    if options.get("baseURL").and_then(Value::as_str) != Some("<base-url>") {
         return Err(AppError::Serialization(
             "generic OpenCode option bindings are invalid".into(),
         ));
@@ -956,7 +1009,7 @@ fn validate_opencode_config_shape(value: &Value, entry: &ManifestResource) -> Ap
     reject_unknown_keys(
         model.keys().map(String::as_str),
         &["name", "reasoning"],
-        &entry.path,
+        path,
     )?;
     if model.get("name").and_then(Value::as_str) != Some("<model-name>")
         || model.get("reasoning").and_then(Value::as_bool) != Some(true)
@@ -968,33 +1021,29 @@ fn validate_opencode_config_shape(value: &Value, entry: &ManifestResource) -> Ap
     Ok(())
 }
 
-fn validate_opencode_auth_shape(value: &Value, entry: &ManifestResource) -> AppResult<()> {
-    let provider_id = entry.provider_id.as_deref().ok_or_else(|| {
-        AppError::Serialization(format!("{} has no provider identity", entry.path))
-    })?;
+fn validate_opencode_auth_shape(
+    value: &Value,
+    path: &str,
+    provider_id: Option<&str>,
+) -> AppResult<()> {
     let root = value
         .as_object()
-        .ok_or_else(|| AppError::Serialization(format!("{} root is not an object", entry.path)))?;
-    if root.len() != 1 || !root.contains_key(provider_id) {
+        .ok_or_else(|| AppError::Serialization(format!("{path} root is not an object")))?;
+    let expected_key = provider_id.unwrap_or("<provider-id>");
+    if root.len() != 1 || !root.contains_key(expected_key) {
         return Err(AppError::Serialization(format!(
-            "{} must contain its provider auth entry",
-            entry.path
+            "{path} must contain its provider auth entry",
         )));
     }
-    let auth = root[provider_id].as_object().ok_or_else(|| {
-        AppError::Serialization(format!("{} auth entry is not an object", entry.path))
-    })?;
-    reject_unknown_keys(
-        auth.keys().map(String::as_str),
-        &["type", "key"],
-        &entry.path,
-    )?;
+    let auth = root[expected_key]
+        .as_object()
+        .ok_or_else(|| AppError::Serialization(format!("{path} auth entry is not an object")))?;
+    reject_unknown_keys(auth.keys().map(String::as_str), &["type", "key"], path)?;
     if auth.get("type").and_then(Value::as_str) != Some("api")
         || auth.get("key").and_then(Value::as_str) != Some("<your-api-key>")
     {
         return Err(AppError::Serialization(format!(
-            "{} has invalid auth bindings",
-            entry.path
+            "{path} has invalid auth bindings",
         )));
     }
     Ok(())
@@ -1140,12 +1189,113 @@ pub struct OpenCodeManagedConfig {
     pub schema: String,
     pub model_reference: String,
     pub provider_id: String,
-    pub provider_name: String,
-    pub endpoint: String,
     pub api_key: String,
-    pub npm_package: String,
-    pub model_name: String,
-    pub reasoning: bool,
+    pub kind: OpenCodeConfigKind,
+}
+
+/// Only the Generic mode defines a provider block: npm, display name, endpoint, and the selected
+/// model entry. Native output delegates transport and model catalog to OpenCode itself.
+pub enum OpenCodeConfigKind {
+    Native,
+    Generic {
+        provider_name: String,
+        endpoint: String,
+        npm_package: String,
+        model_name: String,
+        reasoning: bool,
+    },
+}
+
+/// Fixed connection contract extracted from a validated provider-native template. It never
+/// depends on the runtime provider catalog.
+#[derive(Debug, Clone)]
+pub struct OpenCodeNativeContract {
+    pub template_id: &'static str,
+    pub native_provider_id: String,
+    pub protocol: CliProtocol,
+    pub endpoint: Url,
+    pub auth_type: ConnectionAuthType,
+}
+
+pub enum OpenCodeWriteMode {
+    Native,
+    Generic,
+}
+
+/// Returns the fixed native contract when `template_id` is exactly one of the seven bundled
+/// provider templates; unknown or missing IDs return `None`. Broken templates stay an error.
+pub fn opencode_native_contract(
+    template_id: Option<&str>,
+) -> AppResult<Option<OpenCodeNativeContract>> {
+    validate_bundled_templates()?;
+    let Some(template_id) = known_template_id(template_id) else {
+        return Ok(None);
+    };
+    let path = opencode_provider_path(template_id);
+    let value: Value = serde_json::from_str(resource_text(path)?).map_err(|error| {
+        AppError::Serialization(format!("invalid provider identity {path}: {error}"))
+    })?;
+    validate_provider_identity(&value, path, Some(template_id), Some("opencode"))?;
+    let native_provider_id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Serialization(format!("{path} has no provider id")))?;
+    let protocol = match value.get("protocol").and_then(Value::as_str) {
+        Some("openai-compatible") => CliProtocol::OpenaiChat,
+        Some(other) => {
+            return Err(AppError::Serialization(format!(
+                "{path} declares unsupported native protocol {other}"
+            )));
+        }
+        None => {
+            return Err(AppError::Serialization(format!("{path} has no protocol")));
+        }
+    };
+    let endpoint = Url::parse(
+        value
+            .get("base_url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::Serialization(format!("{path} has no base_url")))?,
+    )
+    .map_err(|error| AppError::Serialization(format!("{path} has an invalid base_url: {error}")))?;
+    if endpoint.scheme() != "https" {
+        return Err(AppError::Serialization(format!(
+            "{path} base_url must use HTTPS"
+        )));
+    }
+    Ok(Some(OpenCodeNativeContract {
+        template_id,
+        native_provider_id: native_provider_id.to_string(),
+        protocol,
+        endpoint,
+        // This version only bundles `openai-compatible` native templates.
+        auth_type: ConnectionAuthType::Bearer,
+    }))
+}
+
+/// Chooses Native versus Generic output for OpenCode from the saved template identity and the
+/// saved connection. A known provider keeps its native slot only when the connection matches the
+/// fixed contract exactly; any other legal connection uses the generic namespaced template.
+pub fn opencode_write_mode(
+    template_id: Option<&str>,
+    protocol: CliProtocol,
+    endpoint: &Url,
+    auth_type: ConnectionAuthType,
+) -> AppResult<OpenCodeWriteMode> {
+    // Every render path needs a fixed package mapping; unsupported protocols must not fall
+    // through to a guessed template.
+    npm_package_for_protocol(protocol)?;
+    let contract = opencode_native_contract(template_id)?;
+    Ok(match contract {
+        Some(contract)
+            if contract.protocol == protocol
+                && contract.endpoint == *endpoint
+                && contract.auth_type == auth_type =>
+        {
+            OpenCodeWriteMode::Native
+        }
+        Some(_) | None => OpenCodeWriteMode::Generic,
+    })
 }
 
 pub struct QwenManagedConfig {
@@ -1221,16 +1371,19 @@ pub fn resolve_templates(selection: &TemplateSelection<'_>) -> AppResult<Resolve
         }
         CliId::Opencode => {
             let template_id = known_template_id(selection.template_id);
-            let config_path = template_id
-                .map(opencode_config_path)
-                .unwrap_or("opencode/opencode.json");
-            let auth_path = template_id.map(opencode_auth_path);
+            let (config_path, auth_path) = match template_id {
+                Some(template_id) => (
+                    opencode_config_path(template_id),
+                    opencode_auth_path(template_id),
+                ),
+                None => (OPENCODE_GENERIC_CONFIG_PATH, OPENCODE_GENERIC_AUTH_PATH),
+            };
             Ok(ResolvedTemplates {
                 cli_id: selection.cli_id,
                 protocol: selection.protocol,
                 config_path,
                 model_catalog_path: None,
-                auth_path,
+                auth_path: Some(auth_path),
             })
         }
         CliId::Qwen => {
@@ -1506,65 +1659,77 @@ fn render_codex(
     })
 }
 
+const OPENCODE_GENERIC_CONFIG_PATH: &str = "opencode/opencode.jsonc";
+const OPENCODE_GENERIC_AUTH_PATH: &str = "opencode/auth.json";
+
 fn render_opencode(
     templates: &ResolvedTemplates,
     bindings: &TemplateBindings<'_>,
 ) -> AppResult<OpenCodeManagedConfig> {
-    // Validate and render the provider-native files selected from upstream. Their native provider
-    // identity is intentionally not written; CLISwitch adapts it to a namespaced instance below.
-    let selected = render_json_resource(templates.config_path, templates.protocol, bindings)?;
-    let selected_root = selected.as_object().ok_or_else(|| {
-        AppError::Serialization(format!("{} root is not an object", templates.config_path))
-    })?;
-    reject_unknown_keys(
-        selected_root.keys().map(String::as_str),
-        &["$schema", "model", "provider"],
-        templates.config_path,
-    )?;
-    for key in ["$schema", "model"] {
-        if selected_root.get(key).and_then(Value::as_str).is_none() {
-            return Err(AppError::Serialization(format!(
-                "{} field {key} must be a string",
-                templates.config_path
-            )));
-        }
-    }
-    if let Some(auth_path) = templates.auth_path {
-        let auth = render_json_resource(auth_path, templates.protocol, bindings)?;
-        let auth = auth
-            .as_object()
-            .ok_or_else(|| AppError::Serialization(format!("{auth_path} root is not an object")))?;
-        if auth.len() != 1 {
-            return Err(AppError::Serialization(format!(
-                "{auth_path} must contain one auth entry"
-            )));
-        }
-        let entry = auth
-            .values()
-            .next()
-            .and_then(Value::as_object)
-            .ok_or_else(|| {
-                AppError::Serialization(format!("{auth_path} auth entry is not an object"))
-            })?;
+    let native = templates.config_path != OPENCODE_GENERIC_CONFIG_PATH;
+    let auth_path = templates
+        .auth_path
+        .ok_or_else(|| AppError::Serialization("OpenCode auth template is unavailable".into()))?;
+    if native {
+        // Native output keeps the provider-native model reference and the same-named auth slot.
+        // The namespaced instance identity is intentionally not written in this mode.
+        let selected = render_jsonc_resource(templates.config_path, templates.protocol, bindings)?;
+        let root = selected.as_object().ok_or_else(|| {
+            AppError::Serialization(format!("{} root is not an object", templates.config_path))
+        })?;
         reject_unknown_keys(
-            entry.keys().map(String::as_str),
-            &["type", "key"],
-            auth_path,
+            root.keys().map(String::as_str),
+            &["$schema", "model"],
+            templates.config_path,
         )?;
-        if entry.get("type").and_then(Value::as_str) != Some("api") {
+        let schema = root
+            .get("$schema")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                AppError::Serialization(format!("{} has no schema", templates.config_path))
+            })?
+            .to_string();
+        let model_reference = root
+            .get("model")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                AppError::Serialization(format!("{} has no model", templates.config_path))
+            })?
+            .to_string();
+        let provider_id = model_reference
+            .split_once('/')
+            .map(|(provider_id, _)| provider_id.to_string())
+            .filter(|provider_id| !provider_id.is_empty())
+            .ok_or_else(|| {
+                AppError::Serialization(format!(
+                    "{} has an invalid native model reference",
+                    templates.config_path
+                ))
+            })?;
+        let (auth_provider_id, api_key) =
+            render_opencode_auth_template(auth_path, templates.protocol, bindings)?;
+        if auth_provider_id != provider_id {
             return Err(AppError::Serialization(format!(
-                "{auth_path} has an invalid auth type"
+                "{auth_path} does not authenticate native provider {provider_id}"
             )));
         }
+        return Ok(OpenCodeManagedConfig {
+            schema,
+            model_reference,
+            provider_id: provider_id.to_string(),
+            api_key,
+            kind: OpenCodeConfigKind::Native,
+        });
     }
-    let generic = render_json_resource("opencode/opencode.json", templates.protocol, bindings)?;
+    let generic =
+        render_jsonc_resource(OPENCODE_GENERIC_CONFIG_PATH, templates.protocol, bindings)?;
     let root = generic.as_object().ok_or_else(|| {
         AppError::Serialization("generic OpenCode template root is not an object".into())
     })?;
     reject_unknown_keys(
         root.keys().map(String::as_str),
         &["$schema", "model", "provider"],
-        "opencode/opencode.json",
+        OPENCODE_GENERIC_CONFIG_PATH,
     )?;
     let schema = root
         .get("$schema")
@@ -1581,7 +1746,7 @@ fn render_opencode(
     reject_unknown_keys(
         provider.keys().map(String::as_str),
         &["npm", "name", "options", "models"],
-        "opencode/opencode.json",
+        OPENCODE_GENERIC_CONFIG_PATH,
     )?;
     let options = provider
         .get("options")
@@ -1589,8 +1754,8 @@ fn render_opencode(
         .ok_or_else(|| AppError::Serialization("generic OpenCode options are invalid".into()))?;
     reject_unknown_keys(
         options.keys().map(String::as_str),
-        &["baseURL", "apiKey"],
-        "opencode/opencode.json",
+        &["baseURL"],
+        OPENCODE_GENERIC_CONFIG_PATH,
     )?;
     let model = provider
         .get("models")
@@ -1601,34 +1766,82 @@ fn render_opencode(
     reject_unknown_keys(
         model.keys().map(String::as_str),
         &["name", "reasoning"],
-        "opencode/opencode.json",
+        OPENCODE_GENERIC_CONFIG_PATH,
     )?;
     let npm_package = provider
         .get("npm")
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Serialization("generic OpenCode package is invalid".into()))?;
+    let (auth_provider_id, api_key) =
+        render_opencode_auth_template(auth_path, templates.protocol, bindings)?;
+    if auth_provider_id != bindings.provider_id {
+        return Err(AppError::Serialization(
+            "generic OpenCode auth template does not match the rendered provider".into(),
+        ));
+    }
     Ok(OpenCodeManagedConfig {
         schema: schema.into(),
         model_reference: format!("{}/{}", bindings.provider_id, bindings.model),
         provider_id: bindings.provider_id.into(),
-        provider_name: bindings.provider_name.into(),
-        endpoint: bindings.endpoint.into(),
-        api_key: bindings.api_key.into(),
-        npm_package: npm_package.into(),
-        model_name: model
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                AppError::Serialization("generic OpenCode model name is invalid".into())
-            })?
-            .into(),
-        reasoning: model
-            .get("reasoning")
-            .and_then(Value::as_bool)
-            .ok_or_else(|| {
-                AppError::Serialization("generic OpenCode reasoning flag is invalid".into())
-            })?,
+        api_key,
+        kind: OpenCodeConfigKind::Generic {
+            provider_name: bindings.provider_name.into(),
+            endpoint: bindings.endpoint.into(),
+            npm_package: npm_package.into(),
+            model_name: model
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    AppError::Serialization("generic OpenCode model name is invalid".into())
+                })?
+                .into(),
+            reasoning: model
+                .get("reasoning")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    AppError::Serialization("generic OpenCode reasoning flag is invalid".into())
+                })?,
+        },
     })
+}
+
+/// Renders the selected `auth.json` template and returns its single rendered root key together
+/// with the rendered API key. Both modes must actually read their selected template.
+fn render_opencode_auth_template(
+    path: &str,
+    protocol: CliProtocol,
+    bindings: &TemplateBindings<'_>,
+) -> AppResult<(String, String)> {
+    let auth = render_jsonc_resource(path, protocol, bindings)?;
+    let auth = auth
+        .as_object()
+        .ok_or_else(|| AppError::Serialization(format!("{path} root is not an object")))?;
+    if auth.len() != 1 {
+        return Err(AppError::Serialization(format!(
+            "{path} must contain one auth entry"
+        )));
+    }
+    let (provider_id, entry) = auth.iter().next().expect("checked length");
+    let entry = entry
+        .as_object()
+        .ok_or_else(|| AppError::Serialization(format!("{path} auth entry is not an object")))?;
+    reject_unknown_keys(entry.keys().map(String::as_str), &["type", "key"], path)?;
+    if entry.get("type").and_then(Value::as_str) != Some("api") {
+        return Err(AppError::Serialization(format!(
+            "{path} has an invalid auth type"
+        )));
+    }
+    let api_key = entry
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Serialization(format!("{path} has no API key")))?
+        .to_string();
+    if api_key != bindings.api_key {
+        return Err(AppError::Serialization(format!(
+            "{path} has an inconsistent API key binding"
+        )));
+    }
+    Ok((provider_id.clone(), api_key))
 }
 
 pub fn npm_package_for_protocol(protocol: CliProtocol) -> AppResult<String> {
@@ -1661,6 +1874,18 @@ fn render_json_resource(
 ) -> AppResult<Value> {
     let mut value: Value = serde_json::from_str(resource_text(path)?).map_err(|error| {
         AppError::Serialization(format!("invalid JSON template {path}: {error}"))
+    })?;
+    render_json_value(&mut value, protocol, bindings, path)?;
+    Ok(value)
+}
+
+fn render_jsonc_resource(
+    path: &str,
+    protocol: CliProtocol,
+    bindings: &TemplateBindings<'_>,
+) -> AppResult<Value> {
+    let mut value: Value = parse_jsonc_value(resource_text(path)?).map_err(|error| {
+        AppError::Serialization(format!("invalid JSONC template {path}: {error}"))
     })?;
     render_json_value(&mut value, protocol, bindings, path)?;
     Ok(value)
@@ -1839,13 +2064,13 @@ fn deepseek_exact_model_path(model: &str) -> &'static str {
 
 fn opencode_config_path(template_id: &str) -> &'static str {
     match template_id {
-        "deepseek" => "opencode/deepseek/opencode.json",
-        "zhipuai" => "opencode/zhipuai/opencode.json",
-        "zhipuai-coding-plan" => "opencode/zhipuai-coding-plan/opencode.json",
-        "zai" => "opencode/zai/opencode.json",
-        "zai-coding-plan" => "opencode/zai-coding-plan/opencode.json",
-        "opencode" => "opencode/opencode/opencode.json",
-        "opencode-go" => "opencode/opencode-go/opencode.json",
+        "deepseek" => "opencode/deepseek/opencode.jsonc",
+        "zhipuai" => "opencode/zhipuai/opencode.jsonc",
+        "zhipuai-coding-plan" => "opencode/zhipuai-coding-plan/opencode.jsonc",
+        "zai" => "opencode/zai/opencode.jsonc",
+        "zai-coding-plan" => "opencode/zai-coding-plan/opencode.jsonc",
+        "opencode" => "opencode/opencode/opencode.jsonc",
+        "opencode-go" => "opencode/opencode-go/opencode.jsonc",
         _ => unreachable!("known provider template"),
     }
 }
@@ -1975,7 +2200,7 @@ mod tests {
     #[test]
     fn bundled_resources_are_complete_and_match_the_manifest() {
         validate_bundled_templates().unwrap();
-        assert_eq!(RESOURCES.len(), 79);
+        assert_eq!(RESOURCES.len(), 80);
         for (path, expected) in [
             (
                 "claude/settings.json",
@@ -1990,8 +2215,12 @@ mod tests {
                 "0ab179be55dc6611f7010f1ff84739545c2e73e61ed48b5ec3c270066fc37c3f",
             ),
             (
-                "opencode/opencode.json",
-                "95d89faa35e342a41ae64dc8ef292975ee3a2ecd63e9e9954d50a260dfe3e524",
+                "opencode/opencode.jsonc",
+                "ba2ef9231226420839bb4e58b2139c2a1047e28bb17b6b6f1321f5867a28e9d5",
+            ),
+            (
+                "opencode/auth.json",
+                "4e3774157e7aa55addbb78c1909c7be9090c55d0a563549cbe3090a04741a6fb",
             ),
             (
                 "qwen/settings.json",
@@ -2009,6 +2238,76 @@ mod tests {
     }
 
     #[test]
+    fn opencode_sources_are_bound_to_the_fixed_newer_commit_and_everything_else_to_the_default() {
+        validate_bundled_templates().unwrap();
+        let manifest: Manifest = serde_json::from_str(MANIFEST).unwrap();
+        let mut opencode = 0;
+        for entry in &manifest.resources {
+            if entry.path.starts_with("opencode/") {
+                opencode += 1;
+                assert_eq!(
+                    entry.upstream_commit.as_deref(),
+                    Some(OPENCODE_UPSTREAM_COMMIT)
+                );
+                assert_eq!(
+                    entry.upstream_path.as_deref(),
+                    Some(format!("cli/{}", entry.path).as_str())
+                );
+            } else {
+                assert_eq!(entry.upstream_commit, None);
+                assert_eq!(entry.upstream_path, None);
+            }
+        }
+        assert_eq!(opencode, 23);
+    }
+
+    #[test]
+    fn manifest_source_overrides_outside_the_compiled_boundary_are_rejected() {
+        let mut opencode = manifest_entry("opencode/auth.json");
+        assert!(validate_manifest_source(&opencode).is_ok());
+        opencode.upstream_commit = Some(OPENCODE_UPSTREAM_COMMIT.into());
+        opencode.upstream_path = Some("cli/other/auth.json".into());
+        assert!(validate_manifest_source(&opencode).is_err());
+        opencode.upstream_path = None;
+        assert!(validate_manifest_source(&opencode).is_err());
+
+        let mut other = manifest_entry("codex/config.toml");
+        assert!(validate_manifest_source(&other).is_ok());
+        other.upstream_commit = Some(OPENCODE_UPSTREAM_COMMIT.into());
+        other.upstream_path = Some("cli/opencode/auth.json".into());
+        assert!(validate_manifest_source(&other).is_err());
+    }
+
+    #[test]
+    fn commented_generic_opencode_template_parses_and_rejects_unknown_fields() {
+        let text = resource_text(OPENCODE_GENERIC_CONFIG_PATH).unwrap();
+        assert!(text.contains("//"));
+        let value = parse_jsonc_value(text).unwrap();
+        validate_opencode_config_shape(&value, OPENCODE_GENERIC_CONFIG_PATH, None).unwrap();
+        let mut invalid = value.clone();
+        invalid["provider"]["<provider-id>"]["options"]["apiKey"] =
+            Value::String("<your-api-key>".into());
+        assert!(
+            validate_opencode_config_shape(&invalid, OPENCODE_GENERIC_CONFIG_PATH, None).is_err()
+        );
+    }
+
+    #[test]
+    fn generic_opencode_auth_template_only_accepts_the_placeholder_slot() {
+        let value = parse_jsonc_value(resource_text(OPENCODE_GENERIC_AUTH_PATH).unwrap()).unwrap();
+        validate_opencode_auth_shape(&value, OPENCODE_GENERIC_AUTH_PATH, None).unwrap();
+        let mut wrong_key = value.clone();
+        let placeholder_entry = wrong_key["<provider-id>"].clone();
+        wrong_key
+            .as_object_mut()
+            .unwrap()
+            .insert("deepseek".into(), placeholder_entry);
+        assert!(
+            validate_opencode_auth_shape(&wrong_key, OPENCODE_GENERIC_AUTH_PATH, None).is_err()
+        );
+    }
+
+    #[test]
     fn unknown_or_unterminated_placeholders_are_rejected() {
         assert!(validate_placeholder_string("<future-field>", "fixture").is_err());
         assert!(validate_placeholder_string("<model-id", "fixture").is_err());
@@ -2023,8 +2322,13 @@ mod tests {
             .unwrap()
             .insert("future".into(), Value::Bool(true));
         assert!(
-            validate_provider_identity(&provider, &manifest_entry("claude/deepseek/provider.json"))
-                .is_err()
+            validate_provider_identity(
+                &provider,
+                "claude/deepseek/provider.json",
+                Some("deepseek"),
+                Some("claude-code")
+            )
+            .is_err()
         );
 
         let mut claude: Value =
@@ -2051,14 +2355,30 @@ mod tests {
         assert!(validate_codex_model_catalog_shape(&models, "fixture").is_err());
 
         let mut opencode: Value =
-            serde_json::from_str(resource_text("opencode/opencode.json").unwrap()).unwrap();
+            parse_jsonc_value(resource_text(OPENCODE_GENERIC_CONFIG_PATH).unwrap()).unwrap();
         opencode["provider"]["<provider-id>"]["models"]["<model-id>"]
             .as_object_mut()
             .unwrap()
             .insert("future".into(), Value::Bool(true));
         assert!(
-            validate_opencode_config_shape(&opencode, &manifest_entry("opencode/opencode.json"))
-                .is_err()
+            validate_opencode_config_shape(&opencode, OPENCODE_GENERIC_CONFIG_PATH, None).is_err()
+        );
+
+        let mut native_config: Value = parse_jsonc_value(
+            resource_text("opencode/zhipuai-coding-plan/opencode.jsonc").unwrap(),
+        )
+        .unwrap();
+        native_config
+            .as_object_mut()
+            .unwrap()
+            .insert("future".into(), Value::Bool(true));
+        assert!(
+            validate_opencode_config_shape(
+                &native_config,
+                "opencode/zhipuai-coding-plan/opencode.jsonc",
+                Some("zhipuai-coding-plan")
+            )
+            .is_err()
         );
 
         let mut auth: Value =
@@ -2068,7 +2388,7 @@ mod tests {
             .unwrap()
             .insert("future".into(), Value::Bool(true));
         assert!(
-            validate_opencode_auth_shape(&auth, &manifest_entry("opencode/deepseek/auth.json"))
+            validate_opencode_auth_shape(&auth, "opencode/deepseek/auth.json", Some("deepseek"))
                 .is_err()
         );
 
@@ -2155,7 +2475,146 @@ mod tests {
         else {
             unreachable!()
         };
-        assert_eq!(rendered.model_name, "model/<provider-id> \"雪\"");
+        let OpenCodeConfigKind::Generic { model_name, .. } = rendered.kind else {
+            unreachable!();
+        };
+        assert_eq!(model_name, "model/<provider-id> \"雪\"");
+    }
+
+    #[test]
+    fn every_native_template_renders_its_native_identity() {
+        let catalog = Path::new("/tmp/models.json");
+        for template_id in PROVIDER_TEMPLATE_IDS {
+            let templates = resolve_templates(&TemplateSelection {
+                cli_id: CliId::Opencode,
+                template_id: Some(template_id),
+                protocol: CliProtocol::OpenaiChat,
+                model: "fixture-model",
+            })
+            .unwrap();
+            assert_ne!(templates.config_path, OPENCODE_GENERIC_CONFIG_PATH);
+            assert_eq!(templates.auth_path, Some(opencode_auth_path(template_id)));
+            let RenderedManagedConfig::OpenCode(rendered) =
+                render_managed_config(&templates, &bindings("fixture-model", catalog)).unwrap()
+            else {
+                unreachable!();
+            };
+            assert!(matches!(rendered.kind, OpenCodeConfigKind::Native));
+            assert_eq!(rendered.provider_id, template_id);
+            assert_eq!(
+                rendered.model_reference,
+                format!("{template_id}/fixture-model")
+            );
+            assert_eq!(rendered.api_key, "fixture-<model-id>-key");
+        }
+    }
+
+    #[test]
+    fn native_contracts_pin_the_fixed_connection_and_unknown_ids_have_none() {
+        for template_id in PROVIDER_TEMPLATE_IDS {
+            let contract = opencode_native_contract(Some(template_id))
+                .unwrap()
+                .unwrap();
+            assert_eq!(contract.template_id, template_id);
+            assert_eq!(contract.native_provider_id, template_id);
+            assert_eq!(contract.protocol, CliProtocol::OpenaiChat);
+            assert_eq!(contract.auth_type, ConnectionAuthType::Bearer);
+        }
+        assert!(opencode_native_contract(None).unwrap().is_none());
+        assert!(
+            opencode_native_contract(Some("glm-coding-plan"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            opencode_native_contract(Some("future-provider"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn write_mode_follows_the_saved_connection_exactly() {
+        let contract = opencode_native_contract(Some("zhipuai-coding-plan"))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            opencode_write_mode(
+                Some("zhipuai-coding-plan"),
+                contract.protocol,
+                &contract.endpoint,
+                contract.auth_type,
+            )
+            .unwrap(),
+            OpenCodeWriteMode::Native
+        ));
+        // Root-path spellings that Url itself normalizes stay native.
+        let deepseek = opencode_native_contract(Some("deepseek")).unwrap().unwrap();
+        let root_without_slash = Url::parse("https://api.deepseek.com").unwrap();
+        assert_eq!(root_without_slash, deepseek.endpoint);
+        assert!(matches!(
+            opencode_write_mode(
+                Some("deepseek"),
+                deepseek.protocol,
+                &root_without_slash,
+                deepseek.auth_type,
+            )
+            .unwrap(),
+            OpenCodeWriteMode::Native
+        ));
+        // A non-root path differing only by its trailing slash is a different destination.
+        let trailing_slash = Url::parse(&format!("{}/", contract.endpoint)).unwrap();
+        assert_ne!(trailing_slash, contract.endpoint);
+        assert!(matches!(
+            opencode_write_mode(
+                Some("zhipuai-coding-plan"),
+                contract.protocol,
+                &trailing_slash,
+                contract.auth_type
+            )
+            .unwrap(),
+            OpenCodeWriteMode::Generic
+        ));
+        assert!(matches!(
+            opencode_write_mode(
+                Some("zhipuai-coding-plan"),
+                CliProtocol::OpenaiResponses,
+                &contract.endpoint,
+                contract.auth_type
+            )
+            .unwrap(),
+            OpenCodeWriteMode::Generic
+        ));
+        assert!(matches!(
+            opencode_write_mode(
+                Some("zhipuai-coding-plan"),
+                contract.protocol,
+                &contract.endpoint,
+                ConnectionAuthType::ApiKey
+            )
+            .unwrap(),
+            OpenCodeWriteMode::Generic
+        ));
+        assert!(matches!(
+            opencode_write_mode(
+                None,
+                contract.protocol,
+                &contract.endpoint,
+                contract.auth_type
+            )
+            .unwrap(),
+            OpenCodeWriteMode::Generic
+        ));
+        assert!(matches!(
+            opencode_write_mode(
+                Some("glm-coding-plan"),
+                contract.protocol,
+                &contract.endpoint,
+                contract.auth_type
+            )
+            .unwrap(),
+            OpenCodeWriteMode::Generic
+        ));
     }
 
     #[test]
