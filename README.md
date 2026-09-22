@@ -14,7 +14,7 @@ CLISwitch is a local Tauri 2 desktop application for inspecting, saving, and saf
 - Local discovery with explicit executable and config-directory overrides.
 - Endpoint + key providers with OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages connections.
 - Provider endpoint data sourced from a bundled [CLIAdapter](https://github.com/laurentwu/CLIAdapter) snapshot, with a private local cache and a manual update action in Settings.
-- Audited CLI configuration templates pinned to a fixed CLIAdapter commit and shipped with each app version; provider-specific templates fall back to generic Claude Code, Codex CLI, OpenCode, or Qwen Code templates.
+- Audited CLI configuration templates pinned to two fixed CLIAdapter commits and shipped with each app version; standard OpenCode providers reuse OpenCode's native provider slots, while custom providers and custom connections use the generic Claude Code, Codex CLI, OpenCode, or Qwen Code templates.
 - Every upstream provider is visible by name and ID. A provider contributes only the one to three protocol endpoints it declares, and only endpoints which pass the fixed protocol and security policy are selectable.
 - Models are not merged from an external catalog: each API provider requires a selected or manually entered model ID before saving. Saved connections and short-lived API candidates discovered from CLI files can request their live `/models` list. Custom providers remain available for endpoints outside the catalog.
 - Anthropic OAuth for Claude Code and Codex OAuth for Codex CLI, using installed official CLIs or offline auth-file import.

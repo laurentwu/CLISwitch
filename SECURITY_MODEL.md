@@ -10,11 +10,13 @@ successful private atomic cache write. Protocol names are matched against fixed 
 no package, script, request header, or model configuration from the document is executed. Remote
 provider endpoints require HTTPS.
 
-The separate CLI configuration-template bundle is trusted build input pinned to one reviewed
-CLIAdapter commit. Every resource is compiled through an explicit path table and verified against
-the bundled manifest before rendering; no runtime template directory, download, target path, npm
-package, or executable is accepted. Unknown placeholders and reviewed managed-field violations
-fail closed. Provider-database refreshes cannot change the compiled template bundle.
+The separate CLI configuration-template bundle is trusted build input pinned to exactly two
+reviewed CLIAdapter commits: the original default source and a newer OpenCode-only source. Every
+resource is compiled through an explicit path table and verified against the bundled manifest,
+including its allowed source commit and upstream path, before rendering; no runtime template
+directory, download, target path, npm package, or executable is accepted, and no resource may name
+a source outside the two compiled commits. Unknown placeholders and reviewed managed-field
+violations fail closed. Provider-database refreshes cannot change the compiled template bundle.
 
 CLISwitch is not a secret vault, sandbox, malware defense, or enterprise policy bypass. A process running as the same OS user, an administrator, malware, backup software, or a debugging/instrumentation tool can read its secrets.
 
@@ -55,6 +57,16 @@ The raw OAuth editor deliberately accepts any UTF-8 text, including empty or mal
 - Qwen group and environment names are derived only from a saved connection UUID. Qwen credentials
   remain in `settings.json`; switching accounts intentionally leaves dormant old environment
   entries and provider variables untouched, and backups retain the complete original file.
+- OpenCode native slots are shared by all saved accounts of one provider. Applying an account
+  writes its key into that single native `auth.json` entry; switching to another account replaces
+  the key, and old key values are treated as normal account switches rather than conflicts. An
+  existing explicit transport override on the native provider (different `npm`, `options.baseURL`,
+  a legacy provider-level `api`, or model-level route overrides) blocks the apply instead of being
+  overwritten or worked around with another provider ID. Historical `cliswitch_<UUID>` entries,
+  other providers, and their credentials are never deleted, migrated, or copied into the native
+  slot, so previously applied secrets can remain in the file and in its backups. `auth.json` and
+  any config file that still contains a non-empty inline `provider.*.options.apiKey` are handled
+  as credential-bearing, including private backups.
 - Canonical target containment and symlink resolution are checked before writes.
 - Planning performs a non-mutating containment/file-type check and reads each source once. A
   preview is rendered from those frozen bytes and records their digest; changes to config, auth, or

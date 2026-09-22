@@ -10,6 +10,7 @@ use crate::{
         opencode::model_routed_model_is_supported,
     },
     catalog::{ApiProviderTemplate, legacy_catalog, runtime_catalog},
+    config_templates::PROVIDER_TEMPLATE_IDS,
     domain::{
         ApiProviderData, AppSettings, CliId, CurrentCliConfiguration, DetectedCli,
         DetectedProviderCandidate, OAuthKind, ProviderData, ProviderProfile, ScanSnapshot,
@@ -219,9 +220,23 @@ impl CliManager {
                     let mut oauth_unmanaged = false;
                     let mut unmatched_api_candidates = Vec::new();
                     for candidate in std::mem::take(&mut read.unmanaged_api_candidates) {
+                        // A provider-native OpenCode entry reconciles only against saved
+                        // providers of the same template identity, and never falls through to
+                        // the generic first-match heuristic.
+                        let native_opencode_candidate = cli_id == CliId::Opencode
+                            && PROVIDER_TEMPLATE_IDS
+                                .contains(&candidate.source_provider_id.as_str())
+                            && candidate.template_id.as_deref()
+                                == Some(candidate.source_provider_id.as_str());
                         let matched_connection = if cli_id == CliId::Qwen {
                             self.match_saved_connection_unique(&candidate.connection)
                                 .await
+                        } else if native_opencode_candidate {
+                            self.match_saved_opencode_native_credential(
+                                candidate.source_provider_id.as_str(),
+                                &candidate.connection,
+                            )
+                            .await
                         } else if candidate.model_routed && candidate.default_model.is_none() {
                             // A model-routed provider without a selected model uses a
                             // placeholder transport. Reconcile it by stable template and
@@ -736,6 +751,39 @@ impl CliManager {
             }
         }
         None
+    }
+
+    /// Reconciles a provider-native OpenCode auth entry against saved providers that share its
+    /// exact template identity. Returns a connection UUID only when the file can be attributed
+    /// to exactly one saved connection; no match and ambiguous matches both return `None`
+    /// without guessing by list order.
+    async fn match_saved_opencode_native_credential(
+        &self,
+        native_id: &str,
+        candidate: &crate::domain::ProviderConnection,
+    ) -> Option<(Uuid, Option<Uuid>)> {
+        let mut matched: Option<(Uuid, Uuid)> = None;
+        for public in self.repository.list_providers().await.ok()? {
+            let provider = self.repository.get_provider(public.id).await.ok()?;
+            if provider.template_id.as_deref() != Some(native_id) {
+                continue;
+            }
+            let ProviderData::Api(api) = provider.data else {
+                continue;
+            };
+            for connection in api.connections.iter().filter(|connection| {
+                connection.protocol == candidate.protocol
+                    && connection.endpoint == candidate.endpoint
+                    && connection.auth_type == candidate.auth_type
+                    && connection.api_key == candidate.api_key
+            }) {
+                if matched.is_some() {
+                    return None;
+                }
+                matched = Some((provider.id, connection.id));
+            }
+        }
+        matched.map(|(provider_id, connection_id)| (provider_id, Some(connection_id)))
     }
 }
 
@@ -1706,6 +1754,451 @@ mod tests {
                 .iter()
                 .all(|connection| { connection.default_model == "manually-selected-model" })
         );
+    }
+
+    async fn native_opencode_provider(
+        repository: &Repository,
+        name: &str,
+        api_key: &str,
+    ) -> (ProviderProfile, Uuid) {
+        // Saved template providers keep every declared endpoint, mirroring how the save flow
+        // materializes a CLIAdapter provider. Only the chat connection matches the native
+        // contract and carries the fixture key used by the scanned files.
+        let template = runtime_catalog()
+            .unwrap()
+            .api_template("zhipuai-coding-plan")
+            .unwrap()
+            .clone();
+        let chat_endpoint = template
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.protocol == CliProtocol::OpenaiChat)
+            .unwrap();
+        let connection_id = Uuid::new_v4();
+        let connections = template
+            .endpoints
+            .iter()
+            .map(|endpoint| ProviderConnection {
+                id: if endpoint.protocol == CliProtocol::OpenaiChat {
+                    connection_id
+                } else {
+                    Uuid::new_v4()
+                },
+                template_endpoint_id: Some(endpoint.id.clone()),
+                credential_slot_id: endpoint.credential_slot_id.clone(),
+                protocol: endpoint.protocol,
+                endpoint: if endpoint.protocol == CliProtocol::OpenaiChat {
+                    chat_endpoint.base_url.clone()
+                } else {
+                    endpoint.base_url.clone()
+                },
+                auth_type: endpoint.default_auth_type().unwrap(),
+                api_key: api_key.into(),
+                default_model: "fixture-model".into(),
+                verification: VerificationInfo::default(),
+            })
+            .collect::<Vec<_>>();
+        let provider = ProviderProfile {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            template_id: Some("zhipuai-coding-plan".into()),
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            data: ProviderData::Api(ApiProviderData { connections }),
+        };
+        repository.insert_provider(&provider, None).await.unwrap();
+        (provider, connection_id)
+    }
+
+    async fn write_native_opencode_files(fixture: &OpenCodeScanFixture, key: &str) {
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({ "model": "zhipuai-coding-plan/fixture-model" }),
+        )
+        .await;
+        write_json_fixture(
+            &fixture.auth_file,
+            &serde_json::json!({
+                "zhipuai-coding-plan": { "type": "api", "key": key }
+            }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn opencode_native_scan_attributes_the_unique_saved_connection() {
+        let fixture = opencode_scan_fixture().await;
+        // Remove the default managed provider so only the native provider remains.
+        fixture
+            .repository
+            .delete_provider(fixture.managed_provider_id, 1)
+            .await
+            .unwrap();
+        let (saved, saved_connection) = native_opencode_provider(
+            &fixture.repository,
+            "Native Zhipu account",
+            "fixture-native-key",
+        )
+        .await;
+        write_native_opencode_files(&fixture, "fixture-native-key").await;
+
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&scan);
+        assert_eq!(item.status, ScanStatus::Detected);
+        assert!(item.provider_candidates.is_empty());
+        let current = item.current.as_ref().unwrap();
+        assert_eq!(current.managed_provider_id, Some(saved.id));
+        assert_eq!(current.managed_connection_id, Some(saved_connection));
+        assert_eq!(
+            current.provider_name.as_deref(),
+            Some("Native Zhipu account")
+        );
+        assert_eq!(current.model.as_deref(), Some("fixture-model"));
+        assert_eq!(current.protocol, Some(CliProtocol::OpenaiChat));
+    }
+
+    #[tokio::test]
+    async fn opencode_native_scan_follows_account_switches_without_reimport() {
+        let fixture = opencode_scan_fixture().await;
+        fixture
+            .repository
+            .delete_provider(fixture.managed_provider_id, 1)
+            .await
+            .unwrap();
+        let (account_a, connection_a) = native_opencode_provider(
+            &fixture.repository,
+            "Native account A",
+            "fixture-native-key-a",
+        )
+        .await;
+        let (account_b, connection_b) = native_opencode_provider(
+            &fixture.repository,
+            "Native account B",
+            "fixture-native-key-b",
+        )
+        .await;
+
+        write_native_opencode_files(&fixture, "fixture-native-key-a").await;
+        let scan_a = fixture.manager.scan(&fixture.settings).await;
+        let current_a = opencode_item(&scan_a).current.as_ref().unwrap().clone();
+        assert_eq!(current_a.managed_provider_id, Some(account_a.id));
+        assert_eq!(current_a.managed_connection_id, Some(connection_a));
+
+        write_native_opencode_files(&fixture, "fixture-native-key-b").await;
+        let scan_b = fixture.manager.scan(&fixture.settings).await;
+        let item_b = opencode_item(&scan_b);
+        assert!(item_b.provider_candidates.is_empty());
+        let current_b = item_b.current.as_ref().unwrap();
+        assert_eq!(current_b.managed_provider_id, Some(account_b.id));
+        assert_eq!(current_b.managed_connection_id, Some(connection_b));
+        assert_eq!(current_b.provider_name.as_deref(), Some("Native account B"));
+
+        // An auth-only native entry (no model) still reconciles to its unique account and is
+        // not offered for import again.
+        write_json_fixture(&fixture.config_file, &serde_json::json!({})).await;
+        let scan_auth_only = fixture.manager.scan(&fixture.settings).await;
+        let auth_only = opencode_item(&scan_auth_only);
+        assert!(auth_only.provider_candidates.is_empty());
+        assert!(
+            auth_only
+                .current
+                .as_ref()
+                .unwrap()
+                .managed_provider_id
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_native_scan_does_not_fall_back_to_first_match_on_ambiguity_or_absence() {
+        let fixture = opencode_scan_fixture().await;
+        fixture
+            .repository
+            .delete_provider(fixture.managed_provider_id, 1)
+            .await
+            .unwrap();
+        write_native_opencode_files(&fixture, "fixture-native-key").await;
+
+        // No saved native account: the candidate stays unmanaged instead of grabbing the first
+        // saved provider that merely shares the protocol.
+        let unmatched = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&unmatched);
+        assert_eq!(item.status, ScanStatus::Unmanaged);
+        let current = item.current.as_ref().unwrap();
+        assert_eq!(current.managed_provider_id, None);
+        assert_eq!(current.managed_connection_id, None);
+        assert_eq!(item.provider_candidates.len(), 1);
+        assert_eq!(
+            item.provider_candidates[0].source_provider_id,
+            "zhipuai-coding-plan"
+        );
+
+        // Two identical saved connections: no unique attribution by list order.
+        let (first, _) = native_opencode_provider(
+            &fixture.repository,
+            "Native duplicate first",
+            "fixture-native-key",
+        )
+        .await;
+        let (second, _) = native_opencode_provider(
+            &fixture.repository,
+            "Native duplicate second",
+            "fixture-native-key",
+        )
+        .await;
+        assert_ne!(first.id, second.id);
+        let ambiguous = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&ambiguous);
+        assert_eq!(item.status, ScanStatus::Unmanaged);
+        let current = item.current.as_ref().unwrap();
+        assert_eq!(current.managed_provider_id, None);
+        assert_eq!(current.managed_connection_id, None);
+        assert_eq!(item.provider_candidates.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn opencode_native_scan_does_not_cross_match_other_template_identities() {
+        let fixture = opencode_scan_fixture().await;
+        fixture
+            .repository
+            .delete_provider(fixture.managed_provider_id, 1)
+            .await
+            .unwrap();
+        // A different template identity that happens to share address and key must not own the
+        // native zhipuai-coding-plan slot.
+        let template = runtime_catalog()
+            .unwrap()
+            .api_template("zai-coding-plan")
+            .unwrap()
+            .clone();
+        let connection_id = Uuid::new_v4();
+        let shared_url = url::Url::parse("https://open.bigmodel.cn/api/coding/paas/v4").unwrap();
+        let connections = template
+            .endpoints
+            .iter()
+            .map(|endpoint| ProviderConnection {
+                id: if endpoint.protocol == CliProtocol::OpenaiChat {
+                    connection_id
+                } else {
+                    Uuid::new_v4()
+                },
+                template_endpoint_id: Some(endpoint.id.clone()),
+                credential_slot_id: endpoint.credential_slot_id.clone(),
+                protocol: endpoint.protocol,
+                endpoint: if endpoint.protocol == CliProtocol::OpenaiChat {
+                    shared_url.clone()
+                } else {
+                    endpoint.base_url.clone()
+                },
+                auth_type: endpoint.default_auth_type().unwrap(),
+                api_key: "fixture-native-key".into(),
+                default_model: "fixture-model".into(),
+                verification: VerificationInfo::default(),
+            })
+            .collect::<Vec<_>>();
+        let other = ProviderProfile {
+            id: Uuid::new_v4(),
+            name: "Zai account sharing values".into(),
+            template_id: Some("zai-coding-plan".into()),
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            data: ProviderData::Api(ApiProviderData { connections }),
+        };
+        fixture
+            .repository
+            .insert_provider(&other, None)
+            .await
+            .unwrap();
+        write_native_opencode_files(&fixture, "fixture-native-key").await;
+
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&scan);
+        assert_eq!(item.status, ScanStatus::Unmanaged);
+        let current = item.current.as_ref().unwrap();
+        assert_eq!(current.managed_provider_id, None);
+        assert_eq!(current.managed_connection_id, None);
+    }
+
+    #[tokio::test]
+    async fn opencode_native_defaults_ignore_runtime_catalog_endpoint_refreshes() {
+        // Uses zai-coding-plan so the temporarily installed catalog never overlaps with the
+        // provider identities the other scan tests read in parallel.
+        let fixture = opencode_scan_fixture().await;
+        fixture
+            .repository
+            .delete_provider(fixture.managed_provider_id, 1)
+            .await
+            .unwrap();
+        let template = runtime_catalog()
+            .unwrap()
+            .api_template("zai-coding-plan")
+            .unwrap()
+            .clone();
+        let connection_id = Uuid::new_v4();
+        let connections = template
+            .endpoints
+            .iter()
+            .map(|endpoint| ProviderConnection {
+                id: if endpoint.protocol == CliProtocol::OpenaiChat {
+                    connection_id
+                } else {
+                    Uuid::new_v4()
+                },
+                template_endpoint_id: Some(endpoint.id.clone()),
+                credential_slot_id: endpoint.credential_slot_id.clone(),
+                protocol: endpoint.protocol,
+                endpoint: endpoint.base_url.clone(),
+                auth_type: endpoint.default_auth_type().unwrap(),
+                api_key: "fixture-zai-key".into(),
+                default_model: "fixture-model".into(),
+                verification: VerificationInfo::default(),
+            })
+            .collect::<Vec<_>>();
+        let saved = ProviderProfile {
+            id: Uuid::new_v4(),
+            name: "Native Zai account".into(),
+            template_id: Some("zai-coding-plan".into()),
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            data: ProviderData::Api(ApiProviderData { connections }),
+        };
+        fixture
+            .repository
+            .insert_provider(&saved, None)
+            .await
+            .unwrap();
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({ "model": "zai-coding-plan/fixture-model" }),
+        )
+        .await;
+        write_json_fixture(
+            &fixture.auth_file,
+            &serde_json::json!({
+                "zai-coding-plan": { "type": "api", "key": "fixture-zai-key" }
+            }),
+        )
+        .await;
+
+        let original = crate::catalog::runtime_catalog().unwrap();
+        struct Restore(crate::catalog::ProviderCatalog);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::catalog::install_runtime_catalog(self.0.clone());
+            }
+        }
+        let _restore = Restore(original.clone());
+        let mut refreshed = original.clone();
+        if let Some(template) = refreshed
+            .provider_templates
+            .iter_mut()
+            .find(|template| template.id() == "zai-coding-plan")
+            .and_then(|template| match template {
+                crate::catalog::ProviderTemplate::Api(api) => Some(api),
+                _ => None,
+            })
+        {
+            for endpoint in &mut template.endpoints {
+                if endpoint.protocol == CliProtocol::OpenaiChat {
+                    endpoint.base_url =
+                        url::Url::parse("https://refreshed.invalid/coding/paas/v4").unwrap();
+                }
+            }
+        }
+        if let Some(infos) = refreshed.provider_info.as_mut() {
+            for info in infos.iter_mut().filter(|info| info.id == "zai-coding-plan") {
+                for endpoint in &mut info.endpoints {
+                    if endpoint.id == "openai-compatible" {
+                        endpoint.endpoint = Some(
+                            url::Url::parse("https://refreshed.invalid/coding/paas/v4").unwrap(),
+                        );
+                    }
+                }
+            }
+        }
+        crate::catalog::install_runtime_catalog(refreshed);
+
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&scan);
+        // The fixed native contract, not the refreshed catalog, explains the default entry.
+        assert_eq!(item.status, ScanStatus::Detected);
+        assert!(item.provider_candidates.is_empty());
+        let current = item.current.as_ref().unwrap();
+        assert_eq!(current.managed_provider_id, Some(saved.id));
+        assert_eq!(current.managed_connection_id, Some(connection_id));
+        assert_eq!(current.protocol, Some(CliProtocol::OpenaiChat));
+
+        // An explicit but compatible npm transport with no baseURL keeps native attribution;
+        // the missing endpoint still defaults to the fixed contract, not the refreshed URL.
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({
+                "model": "zai-coding-plan/fixture-model",
+                "provider": {
+                    "zai-coding-plan": { "npm": "@ai-sdk/openai-compatible" }
+                }
+            }),
+        )
+        .await;
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&scan);
+        assert_eq!(item.status, ScanStatus::Detected);
+        assert!(item.provider_candidates.is_empty());
+        let current = item.current.as_ref().unwrap();
+        assert_eq!(current.managed_provider_id, Some(saved.id));
+        assert_eq!(current.managed_connection_id, Some(connection_id));
+
+        // An explicit baseURL equal to the contract keeps native attribution as well.
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({
+                "model": "zai-coding-plan/fixture-model",
+                "provider": {
+                    "zai-coding-plan": {
+                        "options": { "baseURL": "https://api.z.ai/api/coding/paas/v4" }
+                    }
+                }
+            }),
+        )
+        .await;
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&scan);
+        assert_eq!(item.status, ScanStatus::Detected);
+        assert!(item.provider_candidates.is_empty());
+        let current = item.current.as_ref().unwrap();
+        assert_eq!(current.managed_provider_id, Some(saved.id));
+        assert_eq!(current.managed_connection_id, Some(connection_id));
+
+        // A catalog refresh that removes the provider entirely must not lose the native
+        // identity or the unique connection attribution.
+        let mut dropped = original;
+        dropped
+            .provider_templates
+            .retain(|template| template.id() != "zai-coding-plan");
+        dropped.relations.retain(|relation| {
+            relation.provider_template_id() != "zai-coding-plan"
+                || relation.cli_id() != CliId::Opencode
+        });
+        if let Some(infos) = dropped.provider_info.as_mut() {
+            infos.retain(|info| info.id != "zai-coding-plan");
+        }
+        crate::catalog::install_runtime_catalog(dropped);
+        write_json_fixture(
+            &fixture.config_file,
+            &serde_json::json!({ "model": "zai-coding-plan/fixture-model" }),
+        )
+        .await;
+        let scan = fixture.manager.scan(&fixture.settings).await;
+        let item = opencode_item(&scan);
+        assert_eq!(item.status, ScanStatus::Detected);
+        assert!(item.provider_candidates.is_empty());
+        let current = item.current.as_ref().unwrap();
+        assert_eq!(current.managed_provider_id, Some(saved.id));
+        assert_eq!(current.managed_connection_id, Some(connection_id));
+        assert_eq!(current.protocol, Some(CliProtocol::OpenaiChat));
     }
 
     #[tokio::test]

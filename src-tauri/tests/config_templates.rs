@@ -2,8 +2,8 @@ use std::path::Path;
 
 use cliswitch_lib::{
     config_templates::{
-        QwenTemplateBindings, RenderedManagedConfig, TemplateBindings, TemplateSelection,
-        render_managed_config, resolve_templates,
+        OpenCodeConfigKind, QwenTemplateBindings, RenderedManagedConfig, TemplateBindings,
+        TemplateSelection, render_managed_config, resolve_templates,
     },
     domain::{CliId, CliProtocol, ConnectionAuthType},
 };
@@ -96,9 +96,11 @@ fn independent_fixtures_match_codex_exact_model_rendering() {
 }
 
 #[test]
-fn independent_fixtures_match_opencode_protocol_adaptation() {
+fn independent_fixtures_match_opencode_native_and_generic_rendering() {
     let input = input();
     let catalog = std::env::temp_dir().join("cliswitch-fixture-models.json");
+
+    // A provider template renders its native identity without any generic provider block.
     let templates = resolve_templates(&TemplateSelection {
         cli_id: CliId::Opencode,
         template_id: Some("deepseek"),
@@ -111,12 +113,49 @@ fn independent_fixtures_match_opencode_protocol_adaptation() {
     else {
         unreachable!()
     };
+    assert!(matches!(rendered.kind, OpenCodeConfigKind::Native));
     let actual = json!({
         "$schema": rendered.schema,
         "model": rendered.model_reference,
-        "npm": rendered.npm_package,
-        "name": rendered.model_name,
-        "reasoning": rendered.reasoning,
+        "providerId": rendered.provider_id,
+    });
+    assert_eq!(
+        actual,
+        json!({
+            "$schema": "https://opencode.ai/config.json",
+            "model": format!("deepseek/{}", input.model),
+            "providerId": "deepseek",
+        })
+    );
+
+    // A custom provider renders the CLIAdapter generic template with saved values.
+    let templates = resolve_templates(&TemplateSelection {
+        cli_id: CliId::Opencode,
+        template_id: None,
+        protocol: CliProtocol::OpenaiChat,
+        model: &input.model,
+    })
+    .unwrap();
+    let RenderedManagedConfig::OpenCode(rendered) =
+        render_managed_config(&templates, &bindings(&input, &catalog)).unwrap()
+    else {
+        unreachable!()
+    };
+    let OpenCodeConfigKind::Generic {
+        npm_package,
+        model_name,
+        reasoning,
+        ..
+    } = rendered.kind
+    else {
+        unreachable!()
+    };
+    let actual = json!({
+        "$schema": rendered.schema,
+        "model": rendered.model_reference,
+        "npm": npm_package,
+        "name": model_name,
+        "reasoning": reasoning,
     });
     assert_eq!(actual, expected()["opencodeChat"]);
 }

@@ -1,3 +1,6 @@
+// Configuration: ~/.config/opencode/opencode.jsonc
+// Credentials: ~/.local/share/opencode/auth.json; use the same provider ID in both files.
+// Merge entries into existing files to preserve other providers and their credentials.
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "<provider-id>/<model-id>",
@@ -6,8 +9,7 @@
       "npm": "<npm-package>",
       "name": "<provider-name>",
       "options": {
-        "baseURL": "<base-url>",
-        "apiKey": "<your-api-key>"
+        "baseURL": "<base-url>"
       },
       "models": {
         "<model-id>": {

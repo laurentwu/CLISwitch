@@ -1475,6 +1475,373 @@ mod tests {
         assert_eq!(tokio::fs::read(&config_file).await.unwrap(), original);
     }
 
+    #[cfg(unix)]
+    async fn opencode_paths(temp: &tempfile::TempDir) -> crate::adapters::AdapterPaths {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = temp.path().join("opencode-fixture");
+        tokio::fs::write(&executable, b"#!/bin/sh\necho opencode 1.0\n")
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config_directory = temp.path().join("opencode-config");
+        let data_directory = temp.path().join("opencode-data");
+        std::fs::create_dir_all(&config_directory).unwrap();
+        std::fs::create_dir_all(&data_directory).unwrap();
+        crate::adapters::AdapterPaths {
+            config_file: config_directory.join("opencode.json"),
+            config_directory,
+            auth_file: Some(data_directory.join("auth.json")),
+        }
+    }
+
+    #[cfg(unix)]
+    fn native_opencode_profile() -> ProviderProfile {
+        let template = crate::catalog::runtime_catalog()
+            .unwrap()
+            .api_template("zhipuai-coding-plan")
+            .unwrap()
+            .clone();
+        let connections = template
+            .endpoints
+            .iter()
+            .map(|endpoint| ProviderConnection {
+                id: Uuid::new_v4(),
+                template_endpoint_id: Some(endpoint.id.clone()),
+                credential_slot_id: endpoint.credential_slot_id.clone(),
+                protocol: endpoint.protocol,
+                endpoint: endpoint.base_url.clone(),
+                auth_type: endpoint.default_auth_type().unwrap(),
+                api_key: "fixture-native-apply-key".into(),
+                default_model: "fixture-model".into(),
+                verification: VerificationInfo::default(),
+            })
+            .collect::<Vec<_>>();
+        ProviderProfile {
+            id: Uuid::new_v4(),
+            name: "Native OpenCode fixture".into(),
+            template_id: Some("zhipuai-coding-plan".into()),
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            data: ProviderData::Api(ApiProviderData { connections }),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_native_apply_reaches_verify_and_scan_with_frozen_files() {
+        use crate::adapters::{
+            CliAdapter, HostEnvironment, OpenCodeAdapter, traits::read_optional,
+        };
+        use crate::services::config_writer::parse_jsonc_value;
+
+        let (temp, _paths, repository, coordinator) = fixture().await;
+        let provider = native_opencode_profile();
+        repository.insert_provider(&provider, None).await.unwrap();
+        let ProviderData::Api(api) = &provider.data else {
+            unreachable!();
+        };
+        let chat_connection = api
+            .connections
+            .iter()
+            .find(|connection| connection.protocol == CliProtocol::OpenaiChat)
+            .unwrap();
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::Opencode,
+            provider_id: provider.id,
+            connection_id: chat_connection.id,
+            model: "fixture-model".into(),
+        };
+        let configuration = configuration(vec![target.clone()]);
+        repository
+            .insert_configuration(&configuration)
+            .await
+            .unwrap();
+
+        let paths = opencode_paths(&temp).await;
+        let adapter = OpenCodeAdapter;
+        let environment = HostEnvironment {
+            home: temp.path().to_path_buf(),
+            variables: Default::default(),
+            present_variables: Default::default(),
+            os: std::env::consts::OS.into(),
+        };
+        let plan = adapter
+            .plan_write(&paths, &target, &provider, &environment)
+            .await
+            .unwrap();
+        let files = preview_files(&plan);
+        let item = prepared_item(
+            target.clone(),
+            provider.clone(),
+            AdapterWritePlan {
+                cli_id: CliId::Opencode,
+                ..plan
+            },
+        );
+
+        coordinator
+            .execute_item(configuration.id, configuration.revision, &item)
+            .await
+            .unwrap();
+
+        // The previewed target bytes are exactly the final file contents.
+        for (preview_file, plan_file) in files.iter().zip(&item.plan.files) {
+            let written = tokio::fs::read(&preview_file.path).await.unwrap();
+            assert_eq!(written, plan_file.target_content);
+            assert_eq!(preview_file.target_content.as_bytes(), written);
+        }
+        assert!(adapter.verify_applied(&item.plan).await.unwrap());
+
+        let read = adapter.read_current(&paths, &environment).await.unwrap();
+        assert_eq!(
+            read.current.provider_name.as_deref(),
+            Some("zhipuai-coding-plan")
+        );
+        assert_eq!(read.current.model.as_deref(), Some("fixture-model"));
+        assert_eq!(read.current.protocol, Some(CliProtocol::OpenaiChat));
+        let candidate = read
+            .unmanaged_api_candidates
+            .iter()
+            .find(|candidate| candidate.source_provider_id == "zhipuai-coding-plan")
+            .unwrap();
+        assert_eq!(candidate.connection.api_key, "fixture-native-apply-key");
+        assert!(candidate.is_current);
+
+        // Modifying the auth file after the apply breaks the frozen verification.
+        let auth_path = paths.auth_file.clone().unwrap();
+        let tampered = read_optional(&auth_path, "{}\n")
+            .await
+            .unwrap()
+            .replace("fixture-native-apply-key", "tampered-key");
+        tokio::fs::write(&auth_path, tampered).await.unwrap();
+        assert!(!adapter.verify_applied(&item.plan).await.unwrap());
+        let config =
+            parse_jsonc_value(&read_optional(&paths.config_file, "{}\n").await.unwrap()).unwrap();
+        assert_eq!(config["model"], "zhipuai-coding-plan/fixture-model");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_generic_apply_writes_the_namespaced_provider_end_to_end() {
+        use crate::adapters::{
+            CliAdapter, HostEnvironment, OpenCodeAdapter, namespaced_provider_id,
+        };
+        use crate::services::config_writer::parse_jsonc_value;
+
+        let (temp, _paths, repository, coordinator) = fixture().await;
+        let provider = api_provider();
+        repository.insert_provider(&provider, None).await.unwrap();
+        let target = api_target(CliId::Opencode, &provider);
+        let configuration = configuration(vec![target.clone()]);
+        repository
+            .insert_configuration(&configuration)
+            .await
+            .unwrap();
+
+        let paths = opencode_paths(&temp).await;
+        let adapter = OpenCodeAdapter;
+        let environment = HostEnvironment {
+            home: temp.path().to_path_buf(),
+            variables: Default::default(),
+            present_variables: Default::default(),
+            os: std::env::consts::OS.into(),
+        };
+        let plan = adapter
+            .plan_write(&paths, &target, &provider, &environment)
+            .await
+            .unwrap();
+        let files = preview_files(&plan);
+        let item = prepared_item(
+            target.clone(),
+            provider.clone(),
+            AdapterWritePlan {
+                cli_id: CliId::Opencode,
+                ..plan
+            },
+        );
+        coordinator
+            .execute_item(configuration.id, configuration.revision, &item)
+            .await
+            .unwrap();
+        for (preview_file, plan_file) in files.iter().zip(&item.plan.files) {
+            let written = tokio::fs::read(&preview_file.path).await.unwrap();
+            assert_eq!(written, plan_file.target_content);
+        }
+        assert!(adapter.verify_applied(&item.plan).await.unwrap());
+
+        let config = parse_jsonc_value(
+            &String::from_utf8(tokio::fs::read(&paths.config_file).await.unwrap()).unwrap(),
+        )
+        .unwrap();
+        let provider_id = namespaced_provider_id(provider.id);
+        assert_eq!(config["model"], format!("{provider_id}/model-a"));
+        assert_eq!(config["provider"][&provider_id]["npm"], "@ai-sdk/openai");
+        assert_eq!(
+            config["provider"][&provider_id]["options"]["baseURL"],
+            "https://example.test/v1"
+        );
+
+        // Re-applying the same target is byte-idempotent and reports Unchanged.
+        let second = adapter
+            .plan_write(&paths, &target, &provider, &environment)
+            .await
+            .unwrap();
+        for (first_file, second_file) in item.plan.files.iter().zip(&second.files) {
+            assert_eq!(second_file.target_content, first_file.target_content);
+            assert_eq!(
+                second_file.source_content,
+                Some(first_file.target_content.clone())
+            );
+        }
+        assert!(all_files_unchanged(&second).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_native_conflict_previews_as_incompatible_without_executable_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temp, _paths, repository, coordinator) = fixture().await;
+        let provider = native_opencode_profile();
+        repository.insert_provider(&provider, None).await.unwrap();
+        let ProviderData::Api(api) = &provider.data else {
+            unreachable!();
+        };
+        let chat_connection = api
+            .connections
+            .iter()
+            .find(|connection| connection.protocol == CliProtocol::OpenaiChat)
+            .unwrap();
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::Opencode,
+            provider_id: provider.id,
+            connection_id: chat_connection.id,
+            model: "fixture-model".into(),
+        };
+        let configuration = configuration(vec![target]);
+        repository
+            .insert_configuration(&configuration)
+            .await
+            .unwrap();
+
+        let executable = temp.path().join("opencode-fixture");
+        tokio::fs::write(&executable, b"#!/bin/sh\necho opencode 1.0\n")
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        let config_directory = temp.path().join("opencode-config");
+        tokio::fs::create_dir_all(&config_directory).await.unwrap();
+        let config_file = config_directory.join("opencode.json");
+        let conflicting = r#"{
+            "provider": { "zhipuai-coding-plan": { "npm": "@ai-sdk/anthropic" } }
+        }"#
+        .to_string();
+        tokio::fs::write(&config_file, &conflicting).await.unwrap();
+
+        let mut settings = repository.get_settings().await.unwrap();
+        for location in &mut settings.manual_locations {
+            if location.cli_id == CliId::Opencode {
+                location.executable_path = Some(executable.clone());
+                location.config_directory = Some(config_directory.clone());
+            }
+        }
+
+        let preview = coordinator
+            .preview(configuration.id, configuration.revision, &settings)
+            .await
+            .unwrap();
+        let item = &preview.items[0];
+        assert_eq!(item.cli_id, CliId::Opencode);
+        assert_eq!(item.state, ApplyItemState::Incompatible);
+        assert!(item.files.is_empty());
+        assert!(item.warning.as_deref().is_some_and(|message| {
+            message.contains("zhipuai-coding-plan") && !message.contains("fixture-native-apply-key")
+        }));
+        assert_eq!(
+            tokio::fs::read_to_string(&config_file).await.unwrap(),
+            conflicting
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_post_preview_auth_change_blocks_every_opencode_write() {
+        let (temp, _paths, repository, coordinator) = fixture().await;
+        let provider = native_opencode_profile();
+        repository.insert_provider(&provider, None).await.unwrap();
+        let ProviderData::Api(api) = &provider.data else {
+            unreachable!();
+        };
+        let chat_connection = api
+            .connections
+            .iter()
+            .find(|connection| connection.protocol == CliProtocol::OpenaiChat)
+            .unwrap();
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::Opencode,
+            provider_id: provider.id,
+            connection_id: chat_connection.id,
+            model: "fixture-model".into(),
+        };
+        let configuration = configuration(vec![target.clone()]);
+        repository
+            .insert_configuration(&configuration)
+            .await
+            .unwrap();
+
+        let paths = opencode_paths(&temp).await;
+        let adapter = crate::adapters::OpenCodeAdapter;
+        let environment = crate::adapters::HostEnvironment {
+            home: temp.path().to_path_buf(),
+            variables: Default::default(),
+            present_variables: Default::default(),
+            os: std::env::consts::OS.into(),
+        };
+        let plan = crate::adapters::CliAdapter::plan_write(
+            &adapter,
+            &paths,
+            &target,
+            &provider,
+            &environment,
+        )
+        .await
+        .unwrap();
+        let item = prepared_item(
+            target,
+            provider,
+            AdapterWritePlan {
+                cli_id: CliId::Opencode,
+                ..plan
+            },
+        );
+        // The auth file changes externally after the frozen snapshot.
+        let auth_path = paths.auth_file.clone().unwrap();
+        tokio::fs::create_dir_all(auth_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&auth_path, b"{\n  \"external\": true\n}\n")
+            .await
+            .unwrap();
+
+        let error = coordinator
+            .execute_item(configuration.id, configuration.revision, &item)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AppError::Conflict(_)));
+        match item.plan.files[0].source_content.as_deref() {
+            Some(original) => {
+                assert_eq!(tokio::fs::read(&paths.config_file).await.unwrap(), original);
+            }
+            None => {
+                assert!(tokio::fs::metadata(&paths.config_file).await.is_err());
+            }
+        }
+    }
+
     #[tokio::test]
     async fn background_run_retains_the_mutation_guard_until_finished() {
         let (_temp, _paths, repository, coordinator) = fixture().await;

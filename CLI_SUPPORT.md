@@ -51,11 +51,13 @@ saved providers or configurations. OAuth templates are fixed by the CLI contract
 independent of CLIAdapter. Custom providers remain available for endpoints outside the database.
 
 Configuration-file templates are a separate, immutable bundle under
-`src-tauri/catalog/config-templates`. They are pinned to CLIAdapter commit
-`7ea4dcc5e874d76a14e54a8e15f4fec7b8c5522d`, compiled through an explicit allowlist, and verified
-against a SHA-256 manifest. A provider-specific file is selected only by the saved `template_id`;
-otherwise the CLI-generic file is used. Settings refreshes only the provider/endpoint database and
-never change this template version. Selected models remain user values, not a template allowlist.
+`src-tauri/catalog/config-templates`. They are pinned to two reviewed CLIAdapter commits:
+`7ea4dcc5e874d76a14e54a8e15f4fec7b8c5522d` for Claude Code, Codex CLI, Qwen Code, and the shared
+license, and `25ce581516599103b2455cab6770f021aa5f2f91` for the OpenCode config/auth templates.
+They are compiled through an explicit allowlist, verified against a SHA-256 manifest that also
+binds every resource to its allowed source commit and path, and the OpenCode config templates are
+JSONC. Settings refreshes only the provider/endpoint database and never change this template
+version. Selected models remain user values, not a template allowlist.
 
 ## Managed field mappings
 
@@ -110,8 +112,28 @@ never change this template version. Selected models remain user values, not a te
 
 - Only the stable singular `provider` object is supported. The beta plural `providers` schema is
   explicitly refused.
-- Managed providers use namespaced IDs `cliswitch_<provider UUID>` and set the global `model` to
-  `<provider ID>/<model>`.
+- Applying uses one of two modes. When one of the seven bundled providers (`deepseek`, `zhipuai`,
+  `zhipuai-coding-plan`, `zai`, `zai-coding-plan`, `opencode`, `opencode-go`) is saved with a
+  connection that exactly matches its fixed provider-native contract (OpenAI Chat, the native
+  endpoint URL, bearer auth), CLISwitch writes the provider-native slot: only the root `$schema`
+  and `model = <provider>/<model>` in the config file plus the `type`/`key` fields of the
+  same-named `auth.json` entry. No npm, name, baseURL, models, or reasoning block is generated;
+  transport and model routing belong to OpenCode itself. The assumed OpenCode version supports
+  these native providers with the stable singular `provider` schema.
+- Custom providers, unknown or retired template IDs, and known providers whose saved connection
+  uses a custom address, another protocol, or another auth mode use the CLIAdapter generic
+  template instead: a namespaced `cliswitch_<provider UUID>` provider block with the saved npm
+  package (fixed by the saved protocol), display name, `options.baseURL`, and the selected model
+  entry (`name` equal to the selected model ID, `reasoning = true`), plus the same namespaced ID
+  in `auth.json`. Saved values are never replaced with native defaults. Extra catalog models,
+  limits, and inline keys are not added.
+- The mode is chosen only from the saved `template_id` and connection, never from names or URLs,
+  and it does not modify the saved provider or connection.
+- Native applies fail closed when the existing file already overrides the native transport for
+  that provider: a different `npm`, a different `options.baseURL`, a legacy provider-level `api`,
+  or `provider`/`api`/`npm`/mismatching `id` route overrides inside the selected model entry.
+  Compatible explicit npm/baseURL values and other providers, models, and their metadata are
+  preserved.
 - Current-model detection follows this precedence: explicit global `model`, the first `recent`
   entry in `$XDG_STATE_HOME/opencode/model.json` (defaulting to `~/.local/state/opencode/model.json`),
   then a single unambiguous provider/model pair from the config. Ambiguous configured models are
@@ -119,14 +141,22 @@ never change this template version. Selected models remain user values, not a te
 - Credentials are enumerated from `auth.json` and joined to the singular `provider` configuration
   by provider ID. Complete `type: "api"` entries are offered separately for saving; OAuth entries
   are recognized but are not savable in 0.1.
-- Provider endpoint is written to `options.baseURL`; the selected model is placed in the provider
-  `models` object with a name and `reasoning = true`. The provider package is fixed by the saved
-  connection protocol, even when a provider-specific upstream template uses another native
-  transport.
+- All saved accounts of one native provider share that single native auth slot; applying another
+  account replaces the key, and different old keys are normal account switches rather than
+  conflicts. Historical `cliswitch_<UUID>` entries and other credentials are never deleted,
+  merged, or copied.
+- Scanning attributes a native entry to a saved account only when exactly one saved connection of
+  the same template identity matches the protocol, endpoint, auth mode, and API key of the fixed
+  native contract; zero or multiple matches leave the entry unmanaged instead of guessing by list
+  order, and saved providers of another template identity that merely share an address and key
+  are never matched. Native defaults come from the fixed template contract, so runtime endpoint
+  refreshes do not change how native entries are interpreted.
 - Provider, options, model, and auth entries are patched at leaf paths. Other provider instances,
   models, comments, and extension fields are retained. The current instance's legacy inline
-  `options.apiKey` is removed; `auth.json` receives `type = "api"` and the key. Known OAuth fields
-  on that same auth entry are cleared while unknown fields and other auth entries remain.
+  `options.apiKey` is removed only when present, and a config file that still contains any
+  non-empty inline `provider.*.options.apiKey` in its source or target form is treated as
+  credential-bearing. `auth.json` receives `type = "api"` and the key; known OAuth fields on that
+  same auth entry are cleared while unknown fields and other auth entries remain.
 
 ### Qwen Code v0.23 schema
 

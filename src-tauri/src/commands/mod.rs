@@ -1569,6 +1569,59 @@ mod tests {
     }
 
     #[test]
+    fn opencode_native_current_uses_the_matched_connection_uuid() {
+        let catalog = crate::catalog::runtime_catalog().unwrap();
+        let make_connection =
+            |endpoint_id: &str, endpoint: &str| crate::domain::ProviderConnection {
+                id: Uuid::new_v4(),
+                template_endpoint_id: Some(endpoint_id.into()),
+                credential_slot_id: "api-key".into(),
+                protocol: CliProtocol::OpenaiChat,
+                endpoint: Url::parse(endpoint).unwrap(),
+                auth_type: ConnectionAuthType::Bearer,
+                api_key: "fixture-native-key".into(),
+                default_model: "fixture-model".into(),
+                verification: VerificationInfo::default(),
+            };
+        let connections = vec![
+            // Two chat connections of one saved native account: only the matched connection
+            // UUID distinguishes them.
+            make_connection(
+                "openai-compatible",
+                "https://open.bigmodel.cn/api/coding/paas/v4",
+            ),
+            make_connection(
+                "openai-compatible",
+                "https://proxy.bigmodel.invalid/coding/paas/v4",
+            ),
+        ];
+        let current = crate::domain::CurrentCliConfiguration {
+            provider_name: Some("zhipuai-coding-plan".into()),
+            protocol: Some(CliProtocol::OpenaiChat),
+            auth_kind: Some("api".into()),
+            model: Some("fixture-model".into()),
+            managed_provider_id: Some(Uuid::new_v4()),
+            managed_connection_id: Some(connections[1].id),
+            sources: Vec::new(),
+            externally_overridden: false,
+            diagnostics: Vec::new(),
+        };
+        let selected = current_api_connection(
+            &catalog,
+            CliId::Opencode,
+            Some("zhipuai-coding-plan"),
+            &connections,
+            &current,
+        )
+        .unwrap();
+        assert_eq!(selected.id, connections[1].id);
+        assert_eq!(
+            selected.endpoint.as_str(),
+            "https://proxy.bigmodel.invalid/coding/paas/v4"
+        );
+    }
+
+    #[test]
     fn transient_connection_rejects_missing_credentials() {
         let draft = TransientConnectionDraft {
             template_id: None,

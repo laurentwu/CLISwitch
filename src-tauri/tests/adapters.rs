@@ -1492,7 +1492,7 @@ async fn opencode_template_patch_preserves_extensions_and_cleans_current_auth_en
 }
 
 #[tokio::test]
-async fn opencode_all_provider_templates_keep_saved_transport_endpoint_and_instance_identity() {
+async fn opencode_custom_connections_for_known_templates_use_generic_instances() {
     for template_id in [
         "deepseek",
         "zhipuai",
@@ -1507,6 +1507,8 @@ async fn opencode_all_provider_templates_keep_saved_transport_endpoint_and_insta
         let paths = adapter.resolve_paths(&environment(temp.path()), None);
         write_fixture(&paths.config_file, "{}\n").await;
         write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+        // A saved address and protocol that differ from the fixed native contract must stay
+        // Generic and preserve every saved value instead of the native defaults.
         let (provider, connection_id) = cli_adapter_provider(
             template_id,
             CliProtocol::OpenaiResponses,
@@ -1534,11 +1536,416 @@ async fn opencode_all_provider_templates_keep_saved_transport_endpoint_and_insta
             "https://saved-endpoint.invalid/custom/v1"
         );
         assert_eq!(current["models"]["selected-model"]["reasoning"], true);
+        assert!(current["options"].get("apiKey").is_none());
         let auth =
             parse_jsonc_value(std::str::from_utf8(&plan.files[1].target_content).unwrap()).unwrap();
         assert_eq!(auth[&provider_id]["type"], "api");
         assert_eq!(auth[&provider_id]["key"], "fixture-template-key-not-real");
     }
+}
+
+fn native_cli_adapter_provider(template_id: &str, api_key: &str) -> (ProviderProfile, Uuid) {
+    let catalog = runtime_catalog().unwrap();
+    let template = catalog.api_template(template_id).unwrap();
+    let endpoint = template
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.protocol == CliProtocol::OpenaiChat)
+        .unwrap();
+    let connection_id = Uuid::new_v4();
+    (
+        ProviderProfile {
+            id: Uuid::new_v4(),
+            name: format!("{template_id} native fixture"),
+            template_id: Some(template_id.into()),
+            revision: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            data: ProviderData::Api(ApiProviderData {
+                connections: vec![ProviderConnection {
+                    id: connection_id,
+                    template_endpoint_id: Some(endpoint.id.clone()),
+                    credential_slot_id: endpoint.credential_slot_id.clone(),
+                    protocol: endpoint.protocol,
+                    endpoint: endpoint.base_url.clone(),
+                    auth_type: ConnectionAuthType::Bearer,
+                    api_key: api_key.into(),
+                    default_model: "fixture-model".into(),
+                    verification: VerificationInfo::default(),
+                }],
+            }),
+        },
+        connection_id,
+    )
+}
+
+#[tokio::test]
+async fn opencode_native_templates_write_schema_model_and_native_auth_only() {
+    for template_id in [
+        "deepseek",
+        "zhipuai",
+        "zhipuai-coding-plan",
+        "zai",
+        "zai-coding-plan",
+        "opencode",
+        "opencode-go",
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = OpenCodeAdapter;
+        let paths = adapter.resolve_paths(&environment(temp.path()), None);
+        write_fixture(&paths.config_file, "{}\n").await;
+        write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+        let (provider, connection_id) =
+            native_cli_adapter_provider(template_id, "fixture-key-not-real");
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::Opencode,
+            provider_id: provider.id,
+            connection_id,
+            model: "fixture-model".into(),
+        };
+        let plan = adapter
+            .plan_write(&paths, &target, &provider, &environment(temp.path()))
+            .await
+            .unwrap();
+        let config_text = std::str::from_utf8(&plan.files[0].target_content).unwrap();
+        let config = parse_jsonc_value(config_text).unwrap();
+        // Native output: no namespaced instance, no npm/baseURL/models block.
+        assert_eq!(
+            config,
+            serde_json::json!({
+                "$schema": "https://opencode.ai/config.json",
+                "model": format!("{template_id}/fixture-model"),
+            }),
+            "unexpected config for {template_id}: {config_text}"
+        );
+        let auth =
+            parse_jsonc_value(std::str::from_utf8(&plan.files[1].target_content).unwrap()).unwrap();
+        assert_eq!(
+            auth,
+            serde_json::json!({
+                template_id: { "type": "api", "key": "fixture-key-not-real" }
+            })
+        );
+        // No inline key anywhere, so the config file is not credential-bearing.
+        assert!(!plan.files[0].contains_credentials);
+        assert!(plan.files[1].contains_credentials);
+    }
+}
+
+#[tokio::test]
+async fn opencode_native_transport_conflicts_block_the_apply_without_touching_disk() {
+    let contract =
+        cliswitch_lib::config_templates::opencode_native_contract(Some("zhipuai-coding-plan"))
+            .unwrap()
+            .unwrap();
+    for existing in [
+        // A different explicit transport override.
+        r#"{ "provider": { "zhipuai-coding-plan": { "npm": "@ai-sdk/anthropic" } } }"#,
+        // A same-package transport pointed at another endpoint.
+        r#"{ "provider": { "zhipuai-coding-plan": { "npm": "@ai-sdk/openai-compatible", "options": { "baseURL": "https://elsewhere.invalid/v4" } } } }"#,
+        // Legacy provider-level API-key routing.
+        r#"{ "provider": { "zhipuai-coding-plan": { "api": "legacy-key" } } }"#,
+        // Model-level transport overrides on the selected model.
+        r#"{ "provider": { "zhipuai-coding-plan": { "models": { "fixture-model": { "provider": "other" } } } } }"#,
+        r#"{ "provider": { "zhipuai-coding-plan": { "models": { "fixture-model": { "npm": "@ai-sdk/anthropic" } } } } }"#,
+        r#"{ "provider": { "zhipuai-coding-plan": { "models": { "fixture-model": { "id": "remote-glm" } } } } }"#,
+        // Non-object containers cannot be silently replaced to force the write.
+        r#"{ "provider": { "zhipuai-coding-plan": "not-an-object" } }"#,
+    ] {
+        let temp = TempDir::new().unwrap();
+        let adapter = OpenCodeAdapter;
+        let paths = adapter.resolve_paths(&environment(temp.path()), None);
+        write_fixture(&paths.config_file, existing).await;
+        write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+        let (provider, connection_id) =
+            native_cli_adapter_provider("zhipuai-coding-plan", "fixture-key-not-real");
+        let target = ConfigurationTarget::Api {
+            cli_id: CliId::Opencode,
+            provider_id: provider.id,
+            connection_id,
+            model: "fixture-model".into(),
+        };
+        let before = tokio::fs::read_to_string(&paths.config_file).await.unwrap();
+        let error = adapter
+            .plan_write(&paths, &target, &provider, &environment(temp.path()))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            cliswitch_lib::error::AppError::Unsupported(_)
+        ));
+        let message = error.to_string();
+        assert!(message.contains("zhipuai-coding-plan"), "{message}");
+        assert!(!message.contains("fixture-key-not-real"), "{message}");
+        assert!(!message.contains("legacy-key"), "{message}");
+        assert_eq!(
+            tokio::fs::read_to_string(&paths.config_file).await.unwrap(),
+            before
+        );
+    }
+
+    // Compatible explicit transport values and existing model metadata are preserved as-is.
+    let compatible = format!(
+        r#"{{
+          // keep native comment
+          "unknownRoot": true,
+          "provider": {{
+            "zhipuai-coding-plan": {{
+              "npm": "@ai-sdk/openai-compatible",
+              "name": "Kept display name",
+              "options": {{ "baseURL": "{}" }},
+              "models": {{
+                "fixture-model": {{ "name": "Kept model name", "limit": {{ "context": 200000 }} }},
+                "other-model": {{ "name": "keep-other-model" }}
+              }}
+            }}
+          }}
+        }}"#,
+        contract.endpoint
+    );
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(&paths.config_file, &compatible).await;
+    write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+    let (provider, connection_id) =
+        native_cli_adapter_provider("zhipuai-coding-plan", "fixture-key-not-real");
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: provider.id,
+        connection_id,
+        model: "fixture-model".into(),
+    };
+    let plan = adapter
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
+        .await
+        .unwrap();
+    let config_text = std::str::from_utf8(&plan.files[0].target_content).unwrap();
+    assert!(config_text.contains("// keep native comment"));
+    let config = parse_jsonc_value(config_text).unwrap();
+    assert_eq!(config["unknownRoot"], true);
+    let native = &config["provider"]["zhipuai-coding-plan"];
+    assert_eq!(native["options"]["baseURL"], contract.endpoint.as_str());
+    assert_eq!(native["npm"], "@ai-sdk/openai-compatible");
+    assert_eq!(native["name"], "Kept display name");
+    assert_eq!(native["models"]["fixture-model"]["name"], "Kept model name");
+    assert_eq!(
+        native["models"]["fixture-model"]["limit"]["context"],
+        200000
+    );
+    assert_eq!(native["models"]["other-model"]["name"], "keep-other-model");
+    assert_eq!(config["model"], "zhipuai-coding-plan/fixture-model");
+}
+
+#[tokio::test]
+async fn opencode_native_removes_only_the_target_inline_key_and_keeps_a_clean_provider_block() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(
+        &paths.config_file,
+        r#"{
+          "provider": {
+            "other-provider": { "options": { "apiKey": "keep-other-inline" } },
+            "zhipuai-coding-plan": { "options": { "apiKey": "old-native-inline" } }
+          }
+        }"#,
+    )
+    .await;
+    write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+    let (provider, connection_id) =
+        native_cli_adapter_provider("zhipuai-coding-plan", "fixture-key-not-real");
+    let target = ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: provider.id,
+        connection_id,
+        model: "fixture-model".into(),
+    };
+    let plan = adapter
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
+        .await
+        .unwrap();
+    assert!(plan.files[0].contains_credentials);
+    let config =
+        parse_jsonc_value(std::str::from_utf8(&plan.files[0].target_content).unwrap()).unwrap();
+    assert!(
+        config["provider"]["zhipuai-coding-plan"]["options"]
+            .get("apiKey")
+            .is_none()
+    );
+    assert_eq!(
+        config["provider"]["other-provider"]["options"]["apiKey"],
+        "keep-other-inline"
+    );
+
+    // From a clean file the credential-removal patch must not create empty containers.
+    write_fixture(&paths.config_file, "{}\n").await;
+    let plan = adapter
+        .plan_write(&paths, &target, &provider, &environment(temp.path()))
+        .await
+        .unwrap();
+    let config =
+        parse_jsonc_value(std::str::from_utf8(&plan.files[0].target_content).unwrap()).unwrap();
+    assert!(config.get("provider").is_none());
+}
+
+#[tokio::test]
+async fn opencode_native_accounts_switch_in_one_slot_and_history_survives() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let paths = adapter.resolve_paths(&environment(temp.path()), None);
+    write_fixture(&paths.config_file, "{}\n").await;
+    write_fixture(paths.auth_file.as_ref().unwrap(), "{}\n").await;
+    let (account_a, connection_a) =
+        native_cli_adapter_provider("zhipuai-coding-plan", "fixture-native-key-a");
+    let (account_b, connection_b) =
+        native_cli_adapter_provider("zhipuai-coding-plan", "fixture-native-key-b");
+    let make_target = |provider: &ProviderProfile, connection: Uuid| ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: provider.id,
+        connection_id: connection,
+        model: "glm-native".into(),
+    };
+
+    let plan_a = adapter
+        .plan_write(
+            &paths,
+            &make_target(&account_a, connection_a),
+            &account_a,
+            &environment(temp.path()),
+        )
+        .await
+        .unwrap();
+    materialize_plan(&plan_a).await;
+    let plan_b = adapter
+        .plan_write(
+            &paths,
+            &make_target(&account_b, connection_b),
+            &account_b,
+            &environment(temp.path()),
+        )
+        .await
+        .unwrap();
+    materialize_plan(&plan_b).await;
+    let auth_b =
+        parse_jsonc_value(std::str::from_utf8(&plan_b.files[1].target_content).unwrap()).unwrap();
+    assert_eq!(auth_b["zhipuai-coding-plan"]["key"], "fixture-native-key-b");
+
+    let back_to_a = adapter
+        .plan_write(
+            &paths,
+            &make_target(&account_a, connection_a),
+            &account_a,
+            &environment(temp.path()),
+        )
+        .await
+        .unwrap();
+    materialize_plan(&back_to_a).await;
+    let config =
+        parse_jsonc_value(&tokio::fs::read_to_string(&paths.config_file).await.unwrap()).unwrap();
+    assert_eq!(config["model"], "zhipuai-coding-plan/glm-native");
+    let auth = parse_jsonc_value(
+        &tokio::fs::read_to_string(paths.auth_file.as_ref().unwrap())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(auth["zhipuai-coding-plan"]["key"], "fixture-native-key-a");
+
+    // Native -> Generic -> Native keeps old entries and only moves the global model.
+    let (generic_provider, generic_connection) = provider(CliProtocol::OpenaiChat);
+    let generic_target = ConfigurationTarget::Api {
+        cli_id: CliId::Opencode,
+        provider_id: generic_provider.id,
+        connection_id: generic_connection,
+        model: "generic-model".into(),
+    };
+    let generic_plan = adapter
+        .plan_write(
+            &paths,
+            &generic_target,
+            &generic_provider,
+            &environment(temp.path()),
+        )
+        .await
+        .unwrap();
+    materialize_plan(&generic_plan).await;
+    let config =
+        parse_jsonc_value(&tokio::fs::read_to_string(&paths.config_file).await.unwrap()).unwrap();
+    let generic_id = namespaced_provider_id(generic_provider.id);
+    assert_eq!(config["model"], format!("{generic_id}/generic-model"));
+    assert!(config["provider"].get("zhipuai-coding-plan").is_none());
+
+    let native_again = adapter
+        .plan_write(
+            &paths,
+            &make_target(&account_a, connection_a),
+            &account_a,
+            &environment(temp.path()),
+        )
+        .await
+        .unwrap();
+    materialize_plan(&native_again).await;
+    let config =
+        parse_jsonc_value(&tokio::fs::read_to_string(&paths.config_file).await.unwrap()).unwrap();
+    let auth = parse_jsonc_value(
+        &tokio::fs::read_to_string(paths.auth_file.as_ref().unwrap())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(config["model"], "zhipuai-coding-plan/glm-native");
+    // The previous Generic entry and its credential remain untouched.
+    assert!(config["provider"].get(&generic_id).is_some());
+    assert!(auth.get(&generic_id).is_some());
+    assert_eq!(auth["zhipuai-coding-plan"]["key"], "fixture-native-key-a");
+}
+
+#[test]
+fn opencode_config_file_prefers_jsonc_then_json_and_honors_explicit_overrides() {
+    let temp = TempDir::new().unwrap();
+    let adapter = OpenCodeAdapter;
+    let mut host = environment(temp.path());
+
+    // Missing files: a plain opencode.json target is planned for creation.
+    let paths = adapter.resolve_paths(&host, None);
+    assert_eq!(
+        paths.config_file,
+        temp.path()
+            .join(".config")
+            .join("opencode")
+            .join("opencode.json")
+    );
+
+    // An existing opencode.jsonc wins over opencode.json.
+    let config_dir = temp.path().join(".config").join("opencode");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("opencode.jsonc"), "{}\n").unwrap();
+    std::fs::write(config_dir.join("opencode.json"), "{}\n").unwrap();
+    let paths = adapter.resolve_paths(&host, None);
+    assert_eq!(paths.config_file, config_dir.join("opencode.jsonc"));
+    std::fs::remove_file(config_dir.join("opencode.jsonc")).unwrap();
+    let paths = adapter.resolve_paths(&host, None);
+    assert_eq!(paths.config_file, config_dir.join("opencode.json"));
+
+    // An explicit file path is honored verbatim, and XDG_CONFIG_HOME relocates the directory.
+    let explicit = temp.path().join("explicit").join("custom.jsonc");
+    host.variables.insert(
+        "OPENCODE_CONFIG".into(),
+        explicit.to_string_lossy().into_owned(),
+    );
+    let paths = adapter.resolve_paths(&host, None);
+    assert_eq!(paths.config_file, explicit);
+
+    let xdg = temp.path().join("xdg-config");
+    host.variables.remove("OPENCODE_CONFIG");
+    host.variables
+        .insert("XDG_CONFIG_HOME".into(), xdg.to_string_lossy().into_owned());
+    let paths = adapter.resolve_paths(&host, None);
+    assert_eq!(
+        paths.config_file,
+        xdg.join("opencode").join("opencode.json")
+    );
 }
 
 #[tokio::test]
@@ -1725,29 +2132,35 @@ async fn opencode_materializes_the_explicitly_selected_glm_endpoint() {
         .unwrap();
     let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
 
+    // glm-coding-plan is not one of the seven native templates: the generic CLIAdapter
+    // template applies with the selected Responses endpoint and only the selected model.
     assert!(config.contains("@ai-sdk/openai"));
     assert!(config.contains("https://open.bigmodel.cn/api/v1"));
     assert!(!config.contains("https://open.bigmodel.cn/api/coding/paas/v4"));
-    assert!(config.contains("manual-glm-model"));
-    assert!(config.contains("glm-4.7"));
+    let value = parse_jsonc_value(&config).unwrap();
+    let provider_id = namespaced_provider_id(provider.id);
+    assert_eq!(value["model"], format!("{provider_id}/manual-glm-model"));
+    assert_eq!(
+        value["provider"][&provider_id]["models"]["manual-glm-model"]["name"],
+        "manual-glm-model"
+    );
+    // The old catalog extra model is no longer materialized alongside the selected model.
+    assert!(
+        value["provider"][&provider_id]["models"]
+            .get("glm-4.7")
+            .is_none()
+    );
+    assert!(!config.contains("glm-4.7"));
 }
 
 #[tokio::test]
 async fn opencode_cli_adapter_providers_use_the_declared_chat_transport() {
-    for (
-        provider_id,
-        model_id,
-        expected_protocol,
-        expected_endpoint,
-        expected_package,
-        wrong_route_model,
-    ) in [
+    for (provider_id, model_id, expected_protocol, expected_endpoint, wrong_route_model) in [
         (
             "opencode",
             "gpt-5.6-sol",
             CliProtocol::OpenaiChat,
             "https://opencode.ai/zen/v1",
-            "@ai-sdk/openai-compatible",
             "glm-5",
         ),
         (
@@ -1755,7 +2168,6 @@ async fn opencode_cli_adapter_providers_use_the_declared_chat_transport() {
             "glm-5.3",
             CliProtocol::OpenaiChat,
             "https://opencode.ai/zen/go/v1",
-            "@ai-sdk/openai-compatible",
             "gpt-5.6-luna",
         ),
     ] {
@@ -1819,9 +2231,17 @@ async fn opencode_cli_adapter_providers_use_the_declared_chat_transport() {
             .plan_write(&paths, &target, &provider, &environment(temp.path()))
             .await
             .unwrap();
-        let config = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
-        assert!(config.contains(expected_package));
-        assert!(config.contains(expected_endpoint));
+        // The standard connection matches the fixed native contract: OpenCode's own provider
+        // implementation is used and CLISwitch writes no transport override.
+        let config_text = String::from_utf8(plan.files[0].target_content.clone()).unwrap();
+        assert!(!config_text.contains("npm"));
+        assert!(!config_text.contains(expected_endpoint));
+        let config = parse_jsonc_value(&config_text).unwrap();
+        assert_eq!(config["model"], format!("{provider_id}/{model_id}"));
+        assert!(config.get("provider").is_none());
+        let auth =
+            parse_jsonc_value(std::str::from_utf8(&plan.files[1].target_content).unwrap()).unwrap();
+        assert_eq!(auth[provider_id]["type"], "api");
 
         // A manually entered model ID must not route the saved connection to another protocol.
         let wrong_route_target = ConfigurationTarget::Api {
